@@ -22,18 +22,22 @@ export const FIRST_PARTY_PROVISION_NATIVE_CLIENTS: readonly { clientId: string; 
 ];
 
 /**
- * The three cases where the owner approves on OpenKey's own page and OpenKey sets their space up with it. One line
+ * The four cases where the owner approves on OpenKey's own page and OpenKey sets their space up with it. One line
  * each: set a case to `false` to turn it off.
  * - `approval-request`: a signed approval request approved at openkey.so/a/<id>.
  * - `device-approval`: a device authorization approved on OpenKey's page.
  * - `delegate-link-local`: the legacy /delegate link, only when it returns to a loopback address or by paste.
  *   COMPATIBILITY allowance for the CLI and Courier, not a security boundary: any app can send a link that names a
  *   loopback callback, so the page tells the owner what approving does and that the requester's words are unchecked.
+ * - `account-setup`: the owner set their account up on TinyCloud hosting on OpenKey's account setup page
+ *   (/widget/account-setup), with a fresh passkey answer (or email code) for that one request. Taken only from a
+ *   consumed `account_setup_request` row in the approve handler (routes/account-setup.ts), never from a request field.
  */
 export const OWN_PAGE_APPROVAL_ENABLED = {
   'approval-request': true,
   'device-approval': true,
   'delegate-link-local': true,
+  'account-setup': true,
 } as const satisfies Record<string, boolean>;
 
 export type OwnPageApproval = keyof typeof OWN_PAGE_APPROVAL_ENABLED;
@@ -116,6 +120,7 @@ export const STORED_PROVISION_AUTHORITIES = [
   'approval-request',
   'device-approval',
   'delegate-link-local',
+  'account-setup',
 ] as const;
 
 export type StoredProvisionAuthority = (typeof STORED_PROVISION_AUTHORITIES)[number];
