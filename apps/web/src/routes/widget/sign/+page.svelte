@@ -47,6 +47,8 @@
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
+  import AccountSetupCard from '$lib/components/signing/account-setup-card.svelte';
+  import { ACCOUNT_SETUP_COMPLETED, hostSigningRefusal } from '$lib/account-setup';
   import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
     createWidgetTransport,
@@ -1078,7 +1080,8 @@
     } catch (e: any) {
       if (!isCurrent()) return;
       renewalAnswerPending = false;
-      if (e instanceof ServerRefusalError) refuse(e);
+      if (accountSetupRefusal(e)) { /* the card or the refusal is on screen */ }
+      else if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
@@ -1316,6 +1319,41 @@
 
   let refusalMessage = $state<string | null>(null);
 
+  // A host message refused because the owner's TinyCloud account is not set up shows the account setup card. Once the
+  // owner has set the account up, the widget asks the API once more; a second host-signing refusal tells the app the
+  // account is set up (ACCOUNT_SETUP_COMPLETED), so it repeats its request without hosting the account's spaces.
+  let accountSetupNeeded = $state(false);
+  let accountSetupDone = false;
+
+  function accountSetupRefusal(failure: unknown): boolean {
+    const refusal = hostSigningRefusal(failure, origin);
+    if (!refusal) return false;
+    if (accountSetupDone) {
+      accountSetupNeeded = false;
+      refusalMessage = 'Your TinyCloud account is set up. Return to the app to continue.';
+      refused = true;
+      error = refusalMessage;
+      if (!refusalSent) {
+        refusalSent = true;
+        sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: ACCOUNT_SETUP_COMPLETED } });
+      }
+      return true;
+    }
+    if (refusal !== 'setup') return false;
+    accountSetupNeeded = true;
+    error = '';
+    return true;
+  }
+
+  function accountSetupFinished() {
+    accountSetupNeeded = false;
+    accountSetupDone = true;
+    previewToken = null;
+    heldPreview = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
+
   function unreadableReply(status: number) {
     replyFailureStatus = status;
     error = '';
@@ -1486,6 +1524,8 @@
     {/if}
   {:else if replyFailureStatus !== null}
     <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
+  {:else if accountSetupNeeded && key}
+    <AccountSetupCard keyId={key.id} requestOrigin={origin} ondone={accountSetupFinished} oncancel={cancel} />
   {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>

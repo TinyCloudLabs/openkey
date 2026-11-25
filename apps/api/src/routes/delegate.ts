@@ -34,6 +34,7 @@ import {
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
 import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe, spaceHostRequest } from '../services/tinycloud-siwe';
 import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
+import { isTinyCloudBootstrapComplete, trustedTinyCloudBootstrapHost } from '../services/tinycloud-bootstrap';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -416,6 +417,23 @@ function approvalSetsUpAccount(input: { approvalRequest: boolean; device: boolea
 }
 
 const HOST_SIGNING_REFUSAL_BODY = { error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY } as const;
+
+/**
+ * The refusal body of the sign widget's prepare and sign steps. `accountSetup: 'required'` when the managed key's
+ * account is not set up on TinyCloud hosting (no complete setup row on the trusted node for chain 1): the widget then
+ * offers OpenKey's own account setup page. The code is `host_signing_first_party_only` either way.
+ */
+async function hostSigningRefusalBody(key: { id: string; keyType: string }) {
+  if (key.keyType !== 'MANAGED') return HOST_SIGNING_REFUSAL_BODY;
+  try {
+    if (await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId: 1, host: trustedTinyCloudBootstrapHost() })) {
+      return HOST_SIGNING_REFUSAL_BODY;
+    }
+    return { ...HOST_SIGNING_REFUSAL_BODY, accountSetup: 'required' as const };
+  } catch {
+    return HOST_SIGNING_REFUSAL_BODY;
+  }
+}
 
 /**
  * The rule of POST /api/keys/:id/sign for a message this route has OpenKey's managed key sign (`refusesThirdPartySpaceHost`).
@@ -3227,7 +3245,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     message: body.siwe, key,
     authority: () => originProvisionAuthority(siweOriginChecked && typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined),
   })) {
-    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+    return c.json(await hostSigningRefusalBody(key), 403);
   }
   const immutable = extractImmutableSiweFields(body.siwe, {
     chainId,
@@ -4048,7 +4066,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // the origin the context was bound to at /authorize-sign-prepare (the SIWE was checked against it there). A request
   // with no checked origin, a handoff ticket included, is another site.
   if (await refusesSpaceHost({ message: signedMessage, key, authority: () => originProvisionAuthority(bound.requestOrigin) })) {
-    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+    return c.json(await hostSigningRefusalBody(key), 403);
   }
   // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
   // own signature is its confirmation. A passkey sign-in this web sign flow was opened with covers the check for
