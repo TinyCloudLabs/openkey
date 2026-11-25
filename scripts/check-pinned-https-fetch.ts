@@ -46,6 +46,15 @@ const server = createServer({ key, cert }, (req, res) => {
   }
 });
 
+const untrustedRequests: (string | undefined)[] = [];
+const untrusted = createServer(
+  { key: readFileSync(`${fixture}/untrusted-key.pem`), cert: readFileSync(`${fixture}/untrusted-cert.pem`) },
+  (req, res) => {
+    untrustedRequests.push(req.url);
+    res.end(JSON.stringify(manifest));
+  },
+);
+
 let fixturePort: number;
 let acceptedAt: string | undefined;
 let clientHello: Buffer | undefined;
@@ -102,7 +111,7 @@ try {
   // server_name extension: 18 bytes, one 13-byte DNS name.
   const expectedSni = Buffer.concat([Buffer.from([0, 0, 0, 18, 0, 16, 0, 0, 13]), Buffer.from('manifest.test')]);
   assert(clientHello?.includes(expectedSni), 'the first TLS request sends manifest.test as SNI');
-  assert.deepEqual(requests, [{ path: '/.well-known/openkey-manifest.json', host: 'manifest.test' }]);
+  assert.deepEqual(requests, [{ path: '/.well-known/openkey-manifest.json', host: `manifest.test:${address.port}` }]);
   console.log('PASS: manifest GET uses the validated address, SNI and Host');
 
   const wrongHost = new URL(`https://other.test:${address.port}/wrong-host`);
@@ -130,6 +139,20 @@ try {
   assert(elapsed >= 4_900 && elapsed < 7_000, `deadline took ${elapsed} ms`);
   assert(trickleWrites >= 3, 'the fixture sends body bytes before the deadline');
   console.log(`PASS: body deadline after ${Math.round(elapsed)} ms (Bun ${Bun.version})`);
+
+  // A certificate for manifest.test that is not in NODE_EXTRA_CA_CERTS: the hostname matches, the chain is untrusted.
+  untrusted.listen(0, '127.0.0.1');
+  await once(untrusted, 'listening');
+  const untrustedAddress = untrusted.address();
+  assert(untrustedAddress && typeof untrustedAddress !== 'string');
+  const untrustedUrl = new URL(`https://manifest.test:${untrustedAddress.port}/untrusted`);
+  assert.deepEqual(await pinnedHttpsGet(untrustedUrl, '127.0.0.1', maxBytes), { ok: false, kind: 'request' });
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+  assert.deepEqual(await pinnedHttpsGet(untrustedUrl, '127.0.0.1', maxBytes), { ok: false, kind: 'request' });
+  if (savedTlsEnv === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  else process.env.NODE_TLS_REJECT_UNAUTHORIZED = savedTlsEnv;
+  assert.equal(untrustedRequests.length, 0);
+  console.log('PASS: TLS rejects an untrusted certificate for the right hostname before any request');
 } finally {
   resolver.lookup = savedLookup;
   if (savedTlsEnv === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
@@ -139,4 +162,6 @@ try {
   server.closeAllConnections();
   gate.close();
   server.close();
+  untrusted.closeAllConnections();
+  untrusted.close();
 }
