@@ -67,6 +67,26 @@ export const UNVERIFIED_REQUESTER = {
   approvedLine: 'You can close this window.',
   /** In place of `DONE.declined.line`. */
   declinedLine: 'Whoever sent this link has been told no. If that was a mistake, ask for a new link.',
+  /**
+   * One line under `line`, set only when the link's signer is a listed requester and its request is outside what that
+   * requester may ask for. `{app}` is the listed requester's verified name; the "Requested by" value stays `name`.
+   * `unreadable` is for a request OpenKey could not read, or one with no permissions.
+   */
+  reasons: {
+    lifetime: 'This link asks for longer access than {app} is allowed to ask for.',
+    service: 'This link asks for a service {app} is not allowed to use.',
+    action: 'This link asks to do something {app} is not allowed to do.',
+    path: 'This link asks for data outside what {app} is allowed to reach.',
+    space: 'This link asks for a space {app} is not allowed to ask for.',
+    renewal: 'This link asks to renew access, which {app} is not allowed to ask for.',
+    context: '{app} doesn’t send this kind of request.',
+    unreadable: 'OpenKey couldn’t read this link’s request.',
+  },
+} as const;
+
+/** The key an approval request's access goes to, under the "Requested by" line: this label, then the key. */
+export const RECIPIENT_KEY = {
+  label: 'Access goes to',
 } as const;
 
 /**
