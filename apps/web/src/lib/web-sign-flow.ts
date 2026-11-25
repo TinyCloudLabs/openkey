@@ -68,6 +68,26 @@ export function takePopupSignFlow(storage: FlowStorage | null = tabStorage()): s
   return flowId;
 }
 
+// One document serves one sign request. The login round trip is a client-side navigation, so the sign page can be
+// created more than once in the same document; each instance reads the same id, drawn or carried once.
+let documentFlowId: string | null = null;
+
+/**
+ * The pop-up page's flow id for this document: the id carried across the login page when there is one, otherwise a new
+ * one, and the same id for every page instance created in this document. A new document draws or reads its own.
+ */
+export function popupSignFlowId(storage: FlowStorage | null = tabStorage()): string {
+  const carried = takePopupSignFlow(storage);
+  if (carried) documentFlowId = carried;
+  documentFlowId ??= newWebSignFlowId();
+  return documentFlowId;
+}
+
+/** Ends this document's flow id when its request ends, so a later request in the same document draws its own. */
+export function forgetPopupSignFlow(): void {
+  documentFlowId = null;
+}
+
 /**
  * The flow id the login page names on its passkey sign-in: only when the page returns the user to the sign pop-up, and
  * only a carried id with the web shape. A login for anything else names no flow.
