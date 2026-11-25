@@ -99,9 +99,10 @@ describe("one secret's own key in the summary", () => {
   it("names the secret from the KV path the request pairs with its key, beside other permissions", () => {
     const notes = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default/kv/notes/`;
     const summary = rows({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT, CREATE], [notes]: [KV_GET] });
-    expect(summary).toContainEqual(["Read the secret OPENAI_API_KEY", "sensitive", null]);
-    expect(summary).toContainEqual(["Create a key for the new secret OPENAI_API_KEY.", "attention", "It can't read any of your secrets."]);
-    expect(summary.filter(([text]) => text === "Read the secret OPENAI_API_KEY")).toHaveLength(1);
+    expect(summary).toEqual([
+      ["Read the secret OPENAI_API_KEY", "sensitive", null],
+      ["Read application data", "standard", null],
+    ]);
   });
 
   it("an exact secret key keeps the app's length; the secrets/ prefix and a whole network start at one hour", () => {

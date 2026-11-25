@@ -200,6 +200,11 @@ export interface WidgetSigningTransport {
    * `onChange` must make the next preview carry the choice (and the window, when given).
    */
   renewal?: RenewalChoice;
+  /**
+   * Set while the app's sign-in asked for renewal and the prepare answer has not arrived: the access line reads
+   * "Checking renewal…" instead of a length. Clears when the answer lands (offer or not) or the prepare fails.
+   */
+  renewalPending?: boolean;
 
   /**
    * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the

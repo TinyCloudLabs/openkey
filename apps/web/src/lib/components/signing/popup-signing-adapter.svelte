@@ -102,6 +102,7 @@
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   renewal={transport.renewal ?? null}
+  renewalPending={transport.renewalPending ?? false}
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   oncePickCapped={transport.expiry?.oncePickCapped ?? false}
   elevated={transport.elevated ?? null}

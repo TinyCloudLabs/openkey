@@ -226,7 +226,6 @@ describe('access to all secrets or all encrypted data starts at one hour', () =>
     ['every app\'s keys (apps/)', decrypt('/apps/'), 'This access can open a wide range of your data.'],
     ['a one-segment prefix (shared/)', decrypt('/shared/'), 'This access can open a wide range of your data.'],
     ['a deeper prefix outside apps/ (shared/team/)', decrypt('/shared/team/'), 'This access can open a wide range of your data.'],
-    ['every secret (vault/secrets/)', kvGet('vault/secrets/'), 'This access can open all your secrets.'],
   ])('%s', (_name: string, att: Attenuations, cautionLine: string) => {
     const { target, calls, cleanup } = mounted(modelOf(att));
     expect(calls).toEqual([H]);
@@ -236,6 +235,19 @@ describe('access to all secrets or all encrypted data starts at one hour', () =>
     expect(options.map((option) => text(option.closest('label')))).toEqual(['1 hour', '7 days (what the app asked)']);
     expect(options.map((option) => option.checked)).toEqual([true, false]);
     expect(text(caution(target))).toBe(cautionLine);
+    cleanup();
+  });
+
+  test('every secret (vault/secrets/) is one row with a 1 hour | 7 days (asked) toggle and one caution line', () => {
+    const { target, calls, cleanup } = mounted(modelOf({ [`${FIXTURE_META.ownSpace.replace(/:default$/, ':secrets')}/kv/vault/secrets/`]: { 'tinycloud.kv/get': [{}] } }));
+    expect(calls).toEqual([H]);
+    expect(text(target.querySelector('.statement-primary'))).toBe('Read all your secret values');
+    expect(target.querySelector('[data-testid="approval-expiry-line"]')).toBeNull();
+    expect(text(target.querySelector('[data-testid="approval-expiry-toggle"] legend'))).toBe('How long access lasts');
+    const options = [...target.querySelectorAll<HTMLInputElement>('[data-testid="approval-expiry-toggle"] input[type="radio"]')];
+    expect(options.map((option) => text(option.closest('label')))).toEqual(['1 hour', '7 days (asked)']);
+    expect(options.map((option) => option.checked)).toEqual([true, false]);
+    expect(text(target.querySelector('[data-testid="approval-expiry-compact-caution"]'))).toBe('Covers every secret in your vault.');
     cleanup();
   });
 

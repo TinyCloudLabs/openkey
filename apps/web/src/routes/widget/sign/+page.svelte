@@ -136,6 +136,8 @@
   let renewalTurnedOff = $state(false);
   let renewalMaxLeaseMs = $state<number | null>(null);
   let renewalLeaseMs = $state<number | null>(null);
+  // The app asked for renewal and the prepare answer has not arrived: the face holds its access line until it does.
+  let renewalAnswerPending = $state(false);
   // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
   let renewalConfirmed = $state(false);
   let renewalDefaulted = false;
@@ -147,6 +149,7 @@
   }
   // Adopt the prepare answer's offer. The first offer sets the default tick (spec D11/D12, never the Once tier).
   function adoptRenewalOffer(offer: unknown) {
+    renewalAnswerPending = false;
     const seconds = renewalAsk && offer && typeof offer === 'object' && 'leaseLifetimeSeconds' in offer
       ? offer.leaseLifetimeSeconds
       : undefined;
@@ -356,6 +359,7 @@
     renewalLeaseMs = null;
     renewalConfirmed = false;
     renewalDefaulted = false;
+    renewalAnswerPending = renewalAsk !== null;
     // Capture the caller-supplied presentation envelope. It has already
     // been validated + size-bounded by the widget transport; here we only
     // stash the resulting object so the review model can render it. Trust
@@ -1071,6 +1075,7 @@
       };
     } catch (e: any) {
       if (!isCurrent()) return;
+      renewalAnswerPending = false;
       if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Preview failed';
@@ -1565,6 +1570,7 @@
         renewal: canUseAuthorizeSignFn() && renewalMaxLeaseMs !== null
           ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, turnedOff: renewalTurnedOff, onChange: changeRenewal }
           : undefined,
+        renewalPending: renewalAnswerPending && !refused && !siweRefusal && !error,
         // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
         // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the
         // next preview (or the exact-byte sign) and the server refuses to sign an extra permission that is not among them.

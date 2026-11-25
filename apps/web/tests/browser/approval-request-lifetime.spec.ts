@@ -12,7 +12,8 @@ const AUDIENCE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 const KV_GET = 'tinycloud.kv/get';
 
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
-const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/` };
+const SECRETS_SPACE = `tinycloud:pkh:eip155:1:${ADDRESS}:secrets`;
+const secret = { service: 'tinycloud.kv', space: SECRETS_SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SECRETS_SPACE}/kv/vault/secrets/` };
 const network = `urn:tinycloud:encryption:${OWNER}:default`;
 const decrypt = {
   service: 'tinycloud.encryption',
@@ -127,17 +128,20 @@ test('the approval face shows the requested 30 days', async ({ page }, testInfo)
 for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, decrypt]]] as const) {
   test(`one ${name} grant starts the entire 30-day request at one hour and explains why`, async ({ page }, testInfo) => {
     const expiries = await openReview(page, { grants: [...grants] });
-    const choice = page.getByRole('group', { name: 'How long', exact: true });
-    const caution = page.getByTestId('approval-expiry-once-caution');
+    const secrets = name === 'secrets';
+    const choice = page.getByRole('group', { name: secrets ? 'How long access lasts' : 'How long', exact: true });
+    const caution = page.getByTestId(secrets ? 'approval-expiry-compact-caution' : 'approval-expiry-once-caution');
+    const lengthText = secrets ? page.getByTestId('approval-expiry-announcement') : line(page);
     await expect(approve(page)).toBeEnabled();
-    await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
+    if (secrets) await expect(lengthText).toHaveText(/^Access lasts 1 hour, until /);
+    else await expect(lengthText).toHaveText("This app's access to your data lasts 1 hour.");
     await expect(choice).toBeVisible();
     await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
-    await expect(choice.getByRole('radio', { name: '7 days (the longest allowed)' })).not.toBeChecked();
-    await expect(caution).toHaveText(name === 'secrets' ? 'This access can open all your secrets.' : 'This access can open all your encrypted data.');
+    await expect(choice.getByRole('radio', { name: secrets ? '7 days' : '7 days (the longest allowed)', exact: true })).not.toBeChecked();
+    await expect(caution).toHaveText(secrets ? 'Covers every secret in your vault.' : 'This access can open all your encrypted data.');
     expect(expiries.at(-1)).toBe('3600s');
     await testInfo.attach(`${name} approval face`, {
-      body: `${await line(page).innerText()}\n${await choice.innerText()}\n${await caution.innerText()}`, contentType: 'text/plain',
+      body: `${await lengthText.innerText()}\n${await choice.innerText()}\n${await caution.innerText()}`, contentType: 'text/plain',
     });
 
     if (name === 'secrets') {
@@ -148,7 +152,8 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     await expect(fold.getByRole('button', { name: '24 hours' })).toBeVisible();
     await fold.getByLabel('Or type a time').fill('2h');
     await fold.getByRole('button', { name: 'Set' }).click();
-    await expect(line(page)).toHaveText("This app's access to your data lasts 2 hours.");
+    if (secrets) await expect(page.getByTestId('approval-expiry-length-line')).toHaveText(/^Access lasts 2 hours, until /);
+    else await expect(line(page)).toHaveText("This app's access to your data lasts 2 hours.");
     expect(expiries.at(-1)).toBe('7200s');
     await fold.getByLabel('Or type a time').fill('31d');
     await fold.getByRole('button', { name: 'Set' }).click();
@@ -163,7 +168,8 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     await fold.getByLabel('Or type a time').fill('30m');
     await fold.getByRole('button', { name: 'Set' }).click();
     await expect(approve(page)).toBeEnabled();
-    await expect(line(page)).toHaveText("This app's access to your data lasts 30 minutes.");
+    if (secrets) await expect(page.getByTestId('approval-expiry-length-line')).toHaveText(/^Access lasts 30 minutes, until /);
+    else await expect(line(page)).toHaveText("This app's access to your data lasts 30 minutes.");
     expect(expiries.at(-1)).toBe('1800s');
   });
 }

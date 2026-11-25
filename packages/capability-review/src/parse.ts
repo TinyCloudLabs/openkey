@@ -631,13 +631,14 @@ function buildActions(
 
 function ownerFromSpace(space: string): {
   owner: string | null;
+  chainId: string | null;
   ownedBySelf: boolean | null;
 } {
   const match = space.match(
-    /^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40})(?::|$)/,
+    /^tinycloud:pkh:eip155:(\d+):(0x[a-fA-F0-9]{40})(?::|$)/,
   );
-  if (!match) return { owner: null, ownedBySelf: null };
-  return { owner: match[1]!.toLowerCase(), ownedBySelf: null };
+  if (!match) return { owner: null, chainId: null, ownedBySelf: null };
+  return { owner: match[2]!.toLowerCase(), chainId: match[1]!, ownedBySelf: null };
 }
 
 function buildGrants(
@@ -670,7 +671,7 @@ function buildGrants(
     // the named keys belong to the signer.
     const ownedBySelf = encryption
       ? encryption.ownerDid.toLowerCase() === `did:pkh:eip155:${signer.chainId}:${signer.address}`.toLowerCase()
-      : ownership.owner === null ? null : ownership.owner === signerAddress;
+      : ownership.owner === null ? null : ownership.owner === signerAddress && ownership.chainId === String(signer.chainId);
     // Blocker 4 follow-up (Defect 2): grant ID service segment is the
     // resource-derived service (canonicalized to `tinycloud.<short>`)
     // when the wire carried one; falls back to the ability-derived

@@ -91,8 +91,8 @@ export interface StatementEntry {
   showsRawText?: true;
   /** A second sentence shown in smaller type under the row, where one line cannot hold the whole statement. */
   detail?: string;
-  /** The name and exact key path behind a named secret read. */
-  secret?: { name: string; keyPath: string };
+  /** The name and exact key path behind a named secret read; `kvPath` is its value's path when its key is not requested. */
+  secret?: { name: string; keyPath: string; kvPath?: string };
 }
 
 /** Family/action-aware structural verb classification. */
@@ -486,6 +486,41 @@ export function grantOnceReach(grant: CapabilityGrant): OnceReach | null {
   }
   const holdsVault = KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service);
   return holdsVault && grant.path !== "" && WHOLE_VAULT_PATHS.has(grant.path) ? "secrets" : "wide";
+}
+
+/** The canonical secrets space of an account, exactly: `tinycloud:pkh:eip155:<chain>:<address>:secrets`. */
+const SIGNER_SECRETS_SPACE = /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:secrets$/;
+
+/**
+ * The part a grant plays in the request that reads every secret, or null for any other grant: `value` is a KV `get`
+ * on `vault/secrets` or `vault/secrets/` in the signer's secrets space, `key` is a decrypt on the `secrets/` prefix of the `default` network. Each
+ * has exactly that one action: a grant with a write, a wildcard or any other ability is not a read of every secret.
+ * The whole vault (`vault/`), a bare `secrets/` KV path and the scoped prefix are wider or narrower than that and are
+ * not either part. Both parts are in the signer's own space or network: another account's secrets are not "your" secrets.
+ */
+export function allSecretsReadPart(grant: CapabilityGrant): "value" | "key" | null {
+  if (grant.ownedBySelf !== true || grant.serviceMismatch === true || grant.actions.length !== 1) return null;
+  const ability = grant.actions[0]!.ability;
+  if (KV_SERVICES.has(grant.service)) {
+    const reads = KV_GET_ABILITIES.has(ability) && grant.appScopeNearMiss !== true && SIGNER_SECRETS_SPACE.test(grant.space);
+    return reads && (grant.path === "vault/secrets" || grant.path === "vault/secrets/") ? "value" : null;
+  }
+  if (ENCRYPTION_SERVICES.has(grant.service) && ability === "tinycloud.encryption/decrypt") {
+    const view = canonicalEncryptionUrn(grant);
+    return view.kind === "urn" && view.parsed.kind === "prefix" && view.parsed.network === "default" && view.parsed.keyPath === "secrets/"
+      ? "key"
+      : null;
+  }
+  return null;
+}
+
+/** A grant on a scoped secret (`vault/secrets/scoped/<scope>/NAME`, or a key or prefix under `secrets/scoped/`). */
+export function isScopedSecretGrant(grant: CapabilityGrant): boolean {
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const view = canonicalEncryptionUrn(grant);
+    return view.kind === "urn" && view.parsed.kind !== "network" && view.parsed.keyPath.toLowerCase().startsWith("secrets/scoped");
+  }
+  return (KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service)) && /^vault\/secrets\/scoped(\/|$)/.test(grant.path);
 }
 
 const RECOGNIZED_DELEGATION_ACTIONS = new Set([
@@ -2135,7 +2170,8 @@ function ownSecretKvOf(grant: CapabilityGrant): { name: string; keyPath: string 
 }
 
 /**
- * Rows for a grant on one secret's own key, or on one secret's KV path paired with decrypt on its key.
+ * Rows for a grant on one secret's own key, or on one secret's KV path (paired with decrypt on its key, or read where
+ * nothing in the request decrypts more than one secret's own key).
  * The secret is named by the KV path the request pairs with its key (`vault/secrets/OPENAI_API_KEY`), otherwise by
  * the key's own lowercase name. Null for every other grant, which keeps its ordinary rows.
  */
@@ -2143,6 +2179,7 @@ function secretKeyRows(
   grant: CapabilityGrant,
   names: ReadonlyMap<string, string>,
   decryptKeys: ReadonlySet<string>,
+  readsAlone: boolean,
 ): StatementEntry[] | null {
   const keyPath = ownSecretKeyPath(grant);
   if (keyPath !== null) {
@@ -2150,7 +2187,10 @@ function secretKeyRows(
     const verbs = grant.actions.map((action) => namedKeyVerbOf(action.ability));
     if (verbs.length === 0 || verbs.some((verb) => verb !== "decrypt" && verb !== "create")) return null;
     const resource = resourceOf(grant);
-    return verbs.map((verb) => verb === "decrypt"
+    // A grant that also decrypts shows only the read: its key creation is listed under the exact grants, and the
+    // sentence that it can't read secrets would be untrue of it.
+    const decrypts = verbs.includes("decrypt");
+    return verbs.filter((verb) => verb === "decrypt" || !decrypts).map((verb) => verb === "decrypt"
       ? { primaryText: secretReadText(name), service: grant.service, resource, severity: "sensitive" as const, secret: { name, keyPath } }
       : {
           primaryText: `Create a key for the new secret ${name}.`,
@@ -2161,14 +2201,14 @@ function secretKeyRows(
         });
   }
   const secret = ownSecretKvOf(grant);
-  if (secret === null || !decryptKeys.has(secret.keyPath)) return null;
+  if (secret === null || !(decryptKeys.has(secret.keyPath) || readsAlone)) return null;
   if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
   return [{
     primaryText: secretReadText(secret.name),
     service: grant.service,
     resource: resourceOf(grant),
     severity: "sensitive",
-    secret,
+    secret: decryptKeys.has(secret.keyPath) ? secret : { ...secret, kvPath: grant.path },
   }];
 }
 
@@ -2205,7 +2245,10 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
     if (kv !== null) names.set(kv.keyPath, kv.name);
     if (grantDecryptsOneSecret(grant)) decryptKeys.add(ownSecretKeyPath(grant)!);
   }
-  const rows = grants.map((grant) => ({ grant, statements: secretKeyRows(grant, names, decryptKeys) ?? buildStatements(grant) }));
+  // A read of one secret names it when its own key is requested, or when nothing in the request decrypts more than
+  // one secret's own key: a wider decrypt (a prefix or the whole network) opens secrets the row would not name.
+  const readsAlone = !grants.some((grant) => grant.actions.some((action) => action.ability.endsWith("/decrypt")) && ownSecretKeyPath(grant) === null);
+  const rows = grants.map((grant) => ({ grant, statements: secretKeyRows(grant, names, decryptKeys, readsAlone) ?? buildStatements(grant) }));
   // The plural row names its secret when every grant behind it reads that one secret in that one space.
   const reads = rows
     .filter((row) => row.statements.some((statement) => statement.primaryText === READ_SECRETS_ROW))
