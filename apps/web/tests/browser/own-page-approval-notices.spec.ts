@@ -1,5 +1,5 @@
-// TC-4115: on OpenKey's own approval pages, the owner is told that approving may create their TinyCloud space, and that the
-// requester's name and reason are the requester's own words. A link says how it returns the delegation, so the server can tell
+// TC-4115: on OpenKey's own approval pages, the owner is told that approving creates their TinyCloud space only when the server
+// says the approval sets it up, and that the requester's name and reason are the requester's own words. A link says how it returns the delegation, so the server can tell
 // an owner approving a CLI link from a link that is neither. Real pages, API fixtures only.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
@@ -16,7 +16,7 @@ const KV_GET = 'tinycloud.kv/get';
 const NOTES = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
 
 const CREATES = 'Approving also creates your TinyCloud space, where your data from this request is kept.';
-const MAY_CREATE = "If you don't have a TinyCloud space, approving creates one.";
+const NO_SPACE_NOTE = /If you don't have a TinyCloud space|approving creates one/;
 const REQUESTER_TEXT = "Written by whoever sent this request. OpenKey can't confirm it.";
 const UNVERIFIED_LINK = 'OpenKey can’t confirm who made this link.';
 
@@ -25,7 +25,7 @@ type SpaceSetup = { space: string; plan: 'setup' | 'auto-sign-off' | 'no-setup' 
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
 /** What /prepare returns for one `notes/` read, with the notice the server chose for this account (or none). */
-function prepareResponse(spaceSetup: SpaceSetup | null, setsUpAccount?: boolean) {
+function prepareResponse(spaceSetup: SpaceSetup | null) {
   const now = Date.now();
   const recap = makeRecapResource({ [NOTES.resource]: { [KV_GET]: [{}] } });
   const siwe = [
@@ -46,12 +46,11 @@ function prepareResponse(spaceSetup: SpaceSetup | null, setsUpAccount?: boolean)
     selectedActionKeys: permissions.flatMap((permission) => permission.actions.map((action) => action.key)),
     authorizationContext: { token: 'preview', expiresAt: now + 600_000, baselineAbilitiesDigest: 'digest' },
     ...(spaceSetup ? { spaceSetup } : {}),
-    ...(setsUpAccount === undefined ? {} : { setsUpAccount }),
   };
 }
 
 /** Answers every API call; returns the bodies the page sent to /prepare. */
-async function mockApi(page: Page, spaceSetup: SpaceSetup | null, setsUpAccount?: boolean) {
+async function mockApi(page: Page, spaceSetup: SpaceSetup | null) {
   const prepareBodies: Array<Record<string, unknown>> = [];
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
@@ -83,7 +82,7 @@ async function mockApi(page: Page, spaceSetup: SpaceSetup | null, setsUpAccount?
     }
     if (url.pathname === '/api/delegate/prepare') {
       prepareBodies.push(route.request().postDataJSON() as Record<string, unknown>);
-      return json(route, prepareResponse(spaceSetup, setsUpAccount));
+      return json(route, prepareResponse(spaceSetup));
     }
     return json(route, { error: `Unmocked ${url.pathname}` }, 404);
   });
@@ -113,12 +112,14 @@ async function expectReasonLabel(page: Page, reason: string) {
 test.use({ viewport: { width: 390, height: 844 } });
 
 test.describe('an approval request page', () => {
-  test('says approving may create the space, and who wrote the request text', async ({ page }) => {
+  test('says who wrote the request text, and says nothing about creating a space when the server reports no setup', async ({ page }) => {
     const bodies = await mockApi(page, null);
     await page.goto(requestPath);
     await expect(approveButton(page)).toBeEnabled();
 
-    await expect(page.getByRole('note').filter({ hasText: MAY_CREATE })).toHaveText(MAY_CREATE);
+    // The server reports no space to set up (a reviewer, or a space that exists): the page does not say one is created.
+    await expect(page.getByText(NO_SPACE_NOTE)).toHaveCount(0);
+    await expect(page.getByText(CREATES)).toHaveCount(0);
     await expectReasonLabel(page, 'Read app data');
     // The unverified-link line stays as it is.
     await expect(page.getByRole('dialog')).toContainText(UNVERIFIED_LINK);
@@ -134,17 +135,8 @@ test.describe('an approval request page', () => {
     await expect(approveButton(page)).toBeEnabled();
 
     await expect(page.getByRole('note').filter({ hasText: CREATES })).toHaveText(CREATES);
-    await expect(page.getByText(MAY_CREATE)).toHaveCount(0);
+    await expect(page.getByText(NO_SPACE_NOTE)).toHaveCount(0);
     await shot(page, 'approval-request-creates');
-  });
-
-  test('does not say approving may create the space when the server says it will not set the account up', async ({ page }) => {
-    await mockApi(page, null, false);
-    await page.goto(requestPath);
-    await expect(approveButton(page)).toBeEnabled();
-
-    await expect(page.getByText(MAY_CREATE)).toHaveCount(0);
-    await expect(page.getByText(CREATES)).toHaveCount(0);
   });
 });
 
@@ -176,7 +168,7 @@ test.describe('a link', () => {
     await expect(approveButton(page)).toBeEnabled();
 
     await expect(page.getByText(CREATES)).toHaveCount(0);
-    await expect(page.getByText(MAY_CREATE)).toHaveCount(0);
+    await expect(page.getByText(NO_SPACE_NOTE)).toHaveCount(0);
     await expect(page.getByRole('note').filter({ hasText: "Approving this link won't set it up." })).toBeVisible();
     await shot(page, 'link-no-setup');
   });
@@ -206,7 +198,8 @@ test.describe('a device request', () => {
     await page.getByRole('link', { name: 'Yes, it matches. Review the request' }).click();
     await expect(approveButton(page)).toBeEnabled();
     await expectReasonLabel(page, DEVICE_REASON);
-    await expect(page.getByRole('note').filter({ hasText: MAY_CREATE })).toHaveText(MAY_CREATE);
+    await expect(page.getByText(NO_SPACE_NOTE)).toHaveCount(0);
+    await expect(page.getByText(CREATES)).toHaveCount(0);
     await shot(page, 'device-review');
   });
 });

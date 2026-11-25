@@ -205,8 +205,6 @@
   let shortCode = $state('');
   let shortCodeFailure = $state<{ status: number; code: unknown } | null>(null);
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
-  // The server's answer to "will approving set the account up?"; only an explicit `false` withdraws the line that says it may.
-  let setsUpAccount = $state(true);
   let ownFolderLine = $state<string | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
@@ -484,8 +482,6 @@
     }
   }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
-  // The owner approves a signed approval request or a device request in OpenKey's own page; OpenKey sets their space up with it.
-  const ownPageApproval = approvalRequestMode || deviceTransactionId !== '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
@@ -1013,7 +1009,6 @@
 
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
-    setsUpAccount = data.setsUpAccount !== false;
     ownFolderLine = ownFolderOnlyLine(data);
     permissionOptions = permissions;
     selectedActionKeys = Array.isArray(data.selectedActionKeys)
@@ -1086,7 +1081,6 @@
     preparedData = null;
     siweMessage = '';
     spaceSetup = null;
-    setsUpAccount = true;
     ownFolderLine = null;
     spaceReadiness = null;
     permissionOptions = [];
@@ -2179,10 +2173,10 @@
         {#if ownFolderLine}
           <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">{ownFolderLine}</div>
         {/if}
-        {#if spaceSetup?.plan === 'setup' || (ownPageApproval && !spaceSetup && setsUpAccount)}
-          <!-- The server says the account has no space and this approval sets it up (or, for an approval or device request that can't be told, may): said once, in place of the generic setup note. -->
+        {#if spaceSetup?.plan === 'setup'}
+          <!-- The server says the account has no space and this approval sets it up: said once, in place of the generic setup note. -->
           <div role="note" class="p-3 border rounded-xl text-sm bg-blue-50 border-blue-200 text-blue-700">
-            {spaceSetup ? OWN_PAGE_APPROVAL.creates : OWN_PAGE_APPROVAL.mayCreate}
+            {OWN_PAGE_APPROVAL.creates}
           </div>
         {:else if spaceSetup}
           <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">

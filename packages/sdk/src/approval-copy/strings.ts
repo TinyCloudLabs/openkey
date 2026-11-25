@@ -70,12 +70,11 @@ export const UNVERIFIED_REQUESTER = {
 
 /**
  * The owner approves in OpenKey's own page and OpenKey sets up their TinyCloud space as part of it (a signed approval
- * request or a device request). `creates` is for an account known to have no space yet; `mayCreate` for one that
- * can't be told. `requesterText` labels the requester's reason as written by the requester.
+ * request or a device request). `creates` is for an approval that sets the space up. `requesterText` labels the
+ * requester's reason as written by the requester.
  */
 export const OWN_PAGE_APPROVAL = {
   creates: 'Approving also creates your TinyCloud space, where your data from this request is kept.',
-  mayCreate: "If you don't have a TinyCloud space, approving creates one.",
   requesterText: "Written by whoever sent this request. OpenKey can't confirm it.",
 } as const;
 

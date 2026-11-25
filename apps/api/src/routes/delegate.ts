@@ -2527,7 +2527,6 @@ delegateRouter.post('/prepare', async (c) => {
     spaceId: preparedResult.spaceId,
     requestedSpaces: preparedResult.requestedSpaces.map(space => ({ ...space, spaceReady: null })),
     spaceSetup,
-    setsUpAccount,
     ownerDid,
     address,
     chainId,

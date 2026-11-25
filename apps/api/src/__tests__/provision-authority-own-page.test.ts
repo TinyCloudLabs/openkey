@@ -400,7 +400,6 @@ async function expectNoticeFollowsSwitch(approval: keyof typeof OWN_PAGE_APPROVA
   const on = await prepare();
   expect(on.status).toBe(200);
   expect(on.body.spaceSetup).toEqual({ space: 'default', plan: 'setup' });
-  expect(on.body.setsUpAccount).toBe(true);
 
   const enabled = OWN_PAGE_APPROVAL_ENABLED as Record<string, boolean>;
   enabled[approval] = false;
@@ -408,7 +407,6 @@ async function expectNoticeFollowsSwitch(approval: keyof typeof OWN_PAGE_APPROVA
     const off = await prepare();
     expect(off.status).toBe(200);
     expect(off.body.spaceSetup).toEqual({ space: 'default', plan: 'no-setup' });
-    expect(off.body.setsUpAccount).toBe(false);
     const approved = await approve({ prepareExtra, permissions });
     expect(approved.status).toBe(200);
     expectNoAccountSetUp();
@@ -429,7 +427,6 @@ describe('the notice before approving', () => {
   test('for a link that returns anywhere else says approving does not set the account up', async () => {
     const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions: wholeSpace('default'), linkDelivery: 'callback', linkCallback: 'https://evil.example/cb' });
     expect(prepared.body.spaceSetup).toEqual({ space: 'default', plan: 'no-setup' });
-    expect(prepared.body.setsUpAccount).toBe(false);
   });
 });
 
