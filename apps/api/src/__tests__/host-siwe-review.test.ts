@@ -107,8 +107,10 @@ describe('readSpaceHostFacts', () => {
     expect(readSpaceHostFacts(review('not a sign-in message'))).toBeNull();
   });
 
-  test("another owner's space has no facts", () => {
-    expect(readSpaceHostFacts(review(hostSiwe({ spaces: [space('default', OTHER_OWNER)] })))).toBeNull();
+  test("another owner's space has host facts like the signer's own", () => {
+    const facts = readSpaceHostFacts(review(hostSiwe({ spaces: [space('default', OTHER_OWNER)] })));
+    expect(facts?.spaces.map((s) => s.spaceId)).toEqual([space('default', OTHER_OWNER)]);
+    expect(facts?.peerDid).toBe(PEER);
   });
 
   test('a URI that is not one node key gives no node key; a SIWE with a bad or second URI line is not reviewable', () => {

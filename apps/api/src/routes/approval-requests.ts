@@ -2,11 +2,13 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
 import { LATEST_SIWE_TIME_MS, MIN_DELEGATION_EXPIRY_MS } from '../services/approval-expiry';
+import { MAX_ISSUED_AT_SKEW_MS } from '../services/tinycloud-manage-key-policy';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError, type ApprovalRequestRecord } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
+import { FixedWindowCounter } from '../middleware/fixed-window-counter';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
-import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
+import { SESSION_PROOF_MAX_SKEW_SECONDS, verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
 import { createPrismaDelegationCodeStore, type ApprovalCode } from './delegation-codes';
 import { verifyMessage } from 'ethers';
@@ -121,6 +123,11 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
     if (!bytes || !verifyHeader(header, body.signature) || header.type !== 'openkey-approval-request' || header.bodyCid !== body.bodyCid || Date.parse(header.expiresAt) - Date.parse(header.issuedAt) > 86400_000) {
       throw new ApprovalResultError('invalid_request', 'Signed approval request header is invalid', 400);
     }
+    // The length cap above reads Expires At minus Issued At, so an Issued At ahead of the clock would stretch the
+    // real life past it. The signed header's Issued At is refused past the clock skew.
+    if (Date.parse(header.issuedAt) > Date.now() + MAX_ISSUED_AT_SKEW_MS) {
+      throw new ApprovalResultError('invalid_request', 'The signed approval request header Issued At is in the future. Set Issued At to the current time and send the request.', 400);
+    }
     const x = Buffer.from(bytes).toString('base64url');
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x })).digest('base64url');
     if (!verifySessionProofClaims(proof, { sessionJwk: { x }, sessionJkt: jkt, htu: `${apiOrigin}/api/approval-requests/${id}/result`, clientId: 'openkey-approval-result-v1', credential: JSON.stringify(['discover', id, body.bodyCid, '', '']) })) {
@@ -133,6 +140,80 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
   }
   const result = await service.discover(id, body, proof, c.req.header('OpenKey-Delegation-Claim'));
   return c.json(result, result.status === 'pending' ? 202 : 200);
+});
+
+const leaseStatusRate = new FixedWindowCounter(60_000);
+const leaseStatusProofs = new Map<string, Map<string, number>>();
+const LEASE_STATUS_PER_MINUTE = 60;
+const MAX_LEASE_STATUS_PROOFS_PER_KEY = 128;
+const MAX_LEASE_STATUS_KEYS = 10_000;
+let nextLeaseStatusKeySweep = 0;
+
+function rememberLeaseStatusProof(keyId: string, jti: string, iat: number): number {
+  const now = Date.now();
+  let proofs = leaseStatusProofs.get(keyId);
+  if ((proofs?.get(jti) ?? 0) > now) {
+    throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
+  }
+
+  if (!proofs) {
+    // The process tracks up to 10,000 distinct keys. When every slot holds a live proof,
+    // only new keys wait. Expired keys free slots without reopening live proofs.
+    if (leaseStatusProofs.size >= MAX_LEASE_STATUS_KEYS && now >= nextLeaseStatusKeySweep) {
+      keys: for (const [key, remembered] of leaseStatusProofs) {
+        for (const expiresAt of remembered.values()) if (expiresAt > now) continue keys;
+        leaseStatusProofs.delete(key);
+      }
+      nextLeaseStatusKeySweep = now + 1000;
+    }
+    if (leaseStatusProofs.size >= MAX_LEASE_STATUS_KEYS) return 1;
+    proofs = new Map();
+    leaseStatusProofs.set(keyId, proofs);
+  }
+
+  let earliestExpiry = Infinity;
+  for (const [nonce, expiresAt] of proofs) {
+    if (expiresAt <= now) proofs.delete(nonce);
+    else earliestExpiry = Math.min(earliestExpiry, expiresAt);
+  }
+  if (proofs.size >= MAX_LEASE_STATUS_PROOFS_PER_KEY) return Math.ceil((earliestExpiry - now) / 1000);
+  if (!leaseStatusRate.hit(keyId, now, LEASE_STATUS_PER_MINUTE)) {
+    return leaseStatusRate.retryAfterSeconds(keyId, now);
+  }
+  proofs.set(jti, (iat + 2 * SESSION_PROOF_MAX_SKEW_SECONDS) * 1000);
+  return 0;
+}
+
+approvalRequestRouter.post('/approval-requests/:id/lease-status', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  if (!/^[a-z2-7]{26}$/.test(id) || typeof body?.bodyCid !== 'string' || !body.bodyCid ||
+    (body.originalCid !== null && (typeof body.originalCid !== 'string' || !body.originalCid))) {
+    throw new ApprovalResultError('invalid_request', 'Approval reference is invalid', 400);
+  }
+  const { record, keyId, jti, iat } = await approvalResultService().authenticateLeaseStatus(id, body, c.req.header('OpenKey-Session-Proof'));
+  const retryAfter = rememberLeaseStatusProof(keyId, jti, iat);
+  if (retryAfter) return c.json({ error: 'Too many requests', code: 'rate_limited' }, 429,
+    { 'Retry-After': String(retryAfter) });
+
+  if (!record.resultRef) return c.json({ leaseState: 'none', originalCid: null });
+  const lease = await prisma.renewalLease.findUnique({
+    where: { approvalRequestId: id },
+    select: { admittedAt: true, originalCid: true, revokedAt: true, leaseExpiresAt: true },
+  });
+  if (!lease?.admittedAt) return c.json({ leaseState: 'none', originalCid: null });
+  if (lease.originalCid !== body.originalCid) {
+    throw new ApprovalResultError('request_binding', 'Original grant CID does not match the approved lease', 409);
+  }
+  const stoppedAt = lease.revokedAt;
+  const leaseState = stoppedAt ? 'stopped' : lease.leaseExpiresAt.getTime() <= Date.now() ? 'expired' : 'active';
+  return c.json({
+    leaseState,
+    originalCid: lease.originalCid,
+    windowEnd: record.delegationExpiresAt?.toISOString(),
+    stoppedAt: stoppedAt?.toISOString(),
+    leaseExpiresAt: lease.leaseExpiresAt.toISOString(),
+  });
 });
 
 approvalRequestRouter.post('/approval-results/:ref/fetch', async (c) => c.json(await approvalResultService().fetch(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));

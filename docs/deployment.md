@@ -797,6 +797,7 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 
 3. Set environment variables:
    - `VITE_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
+   - For a production upload, build with `VITE_API_URL=https://api.openkey.so` and run `bun run audit:web:prod` before uploading.
    - `VITE_CONSOLE_ORIGIN=https://console.openkey.so`
    - Optional, for deployments outside production (staging MCP, extra
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
@@ -811,19 +812,32 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      client registered for it (`docs/resource-server-token-status.md`); none of
      these establishes an assistant's acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
-   - Optional: `VITE_TINYCLOUD_ONE_REQUESTER_DIDS` (comma-separated Ed25519
-     `did:key:z6Mk…` keys). A one-tap approval request (`/a/…`) signed by one
-     of these keys is shown as requested by TinyCloud One, with "return to
-     TinyCloud One" on its last page; any other signer is shown as not
-     verified, with no requester name. Each deployment (production, preview,
-     dev) lists the key its TinyCloud One gateway signs with; the built-in list
-     (`TINYCLOUD_ONE_REQUESTER_DIDS`) is empty until production's key is set.
    - Optional: `VITE_OPENKEY_NETWORK_DECRYPT_CAP=enabled`, set together with
      the API's `OPENKEY_NETWORK_DECRYPT_CAP`. The popup, frame and command-line
      approval screens then stop a whole network's decrypt at 7 days, as the API
      does. The API's flag is the one that holds the grant.
 
-4. Deploy
+4. Production Git auto-deploys are disabled for the `openkey` Pages project.
+   From a clean checkout at the release commit, set `CLOUDFLARE_API_TOKEN`
+   and `CLOUDFLARE_ACCOUNT_ID`, then use the direct-upload script:
+
+   ```bash
+   scripts/release/openkey-web-direct-upload.sh <commit-sha> preview
+   # QA-probe the preview deployment, then record its Cloudflare deployment ID.
+   scripts/release/openkey-web-direct-upload.sh <commit-sha> production --preview-verified <preview-deployment-id>
+   ```
+
+   The script requires the project's expected build command, passes only its
+   readable `VITE_*` variables into a clean build environment, runs
+   `bun install --frozen-lockfile` and the fixed web build, checks the API host
+   in the artifact, runs `bun run audit:web:prod`, and only then uploads.
+   Install, build and audit use a temporary home removed on exit; API requests
+   send the Cloudflare token through curl's stdin header rather than argv.
+   Preview checks `/auth/register` and `/auth/login` for HTTP 200. Production prints the
+   previous canonical deployment ID before upload; roll back with
+   `POST /accounts/<account-id>/pages/projects/openkey/deployments/<id>/rollback`.
+   If Pages Git builds are re-enabled, append `&& bun run audit:web:prod`
+   to the project's build command too.
 
 Attach both `openkey.so` and `console.openkey.so` custom domains to this Pages
 deployment. The console hostname only serves the `/console` route tree, while

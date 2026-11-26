@@ -5,10 +5,11 @@
 # - gitleaks: a pull request scans only its own commits, with the baseline
 #   (.gitleaksignore) and config (.gitleaks.toml) read from its BASE commit, so a
 #   PR can't allowlist its own leak; baseline changes go in their own PR. A push to
-#   main scans the whole history against main's own baseline and config. Rotate a
+#   main scans the history of the pushed commit (main's own history, not other
+#   branches) against main's own baseline and config. Rotate a
 #   leaked value; never baseline it.
-# - Web artifact audit: the exact Cloudflare Pages build (`bun run build --filter
-#   @openkey/web`, which ends in `bun run audit:web`).
+# - Web artifact audit: the Cloudflare Pages build with the production API URL,
+#   followed by an audit that checks for the URL in the artifacts.
 # - API image scan: builds the API image from the Dockerfile and runs trivy against
 #   the baseline .trivyignore.yaml, so only a NEW fixable CRITICAL/HIGH fails.
 name: Pre-release security
@@ -67,9 +68,11 @@ jobs:
             --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --no-banner --exit-code 1 "$base"
 
       # --ignore-gitleaks-allow: an inline `gitleaks:allow` comment must not hide a finding.
-      - name: Scan the full history
+      - name: Scan the history of the pushed commit
         if: github.event_name != 'pull_request'
-        run: gitleaks git --config .gitleaks.toml --ignore-gitleaks-allow --redact --no-banner --exit-code 1 .
+        # The pushed commit's history only: a fixture on another open branch can't turn main red, and each
+        # pull request's own scan covers that branch's commits.
+        run: gitleaks git --config .gitleaks.toml --ignore-gitleaks-allow --log-opts="--full-history ${GITHUB_SHA}" --redact --no-banner --exit-code 1 .
 
   web-artifact:
     name: Web artifact audit
@@ -108,7 +111,12 @@ jobs:
 
       # The Cloudflare Pages build command; it fails on an audit finding.
       - name: Build the web as Cloudflare Pages does, then audit it
+        env:
+          VITE_API_URL: https://api.openkey.so
         run: bun run build --filter @openkey/web
+
+      - name: Verify the production API URL in the web artifacts
+        run: bun run audit:web:prod
 
   api-image:
     name: API image scan

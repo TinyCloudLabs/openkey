@@ -20,6 +20,7 @@ import { createReviewerAdminRouter } from './routes/reviewer-admin';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
+import { accountSetupRouter } from './routes/account-setup';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
 import { allowBeforeTerms, allowBeforeTermsWhen, allowBrowserBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
@@ -385,6 +386,8 @@ app.route('/api/keys/nostr', nostrKeysRouter);
 // that has not accepted them.
 app.route('/api/account/terms', createAccountTermsRouter(authPrisma));
 app.route('/api/account', accountRouter);
+// OpenKey's own account setup page: cookie session from an OpenKey origin only.
+app.route('/api/account-setup', accountSetupRouter);
 
 // Passkey proxy routes (for iframe embed mode)
 app.route('/api/passkey', passkeyProxyRouter);

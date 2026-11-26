@@ -14,6 +14,7 @@ import {
 } from '@tinycloud/bootstrap';
 import { siweExpirationTime } from '@openkey/capability-review';
 import { ensureEip55, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
+import { decodeHexUtf8 } from './siwe-origin';
 
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 
@@ -61,6 +62,80 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
     expirationTime: expirationTime !== null ? new Date(expirationTime) : undefined,
     entries,
   };
+}
+
+/** The abilities in the `space` namespace: `host` creates a space on the node. */
+const SPACE_ABILITY_PREFIX = 'tinycloud.space/';
+export const SPACE_HOST_ABILITY = 'tinycloud.space/host';
+/** Space abilities that read and create nothing. Matched as exact strings, with no prefix match, case folding or trim. */
+const SPACE_READ_ABILITIES: readonly string[] = ['tinycloud.space/list', 'tinycloud.space/info'];
+
+export interface SpaceHostTarget {
+  address: string;
+  chainId: number;
+  /** The space's name: the part of its id after the owner (`default`, `public`, an app's own name). */
+  name: string;
+}
+
+/** What signing a message lets a site do about spaces on the node. */
+export type SpaceHostRequest =
+  /** No space ability in it. */
+  | { kind: 'none' }
+  /** A space ability whose targets cannot be read, or any space ability other than `host`, `list` and `info` (a wildcard, say). */
+  | { kind: 'unreadable' }
+  /** `host` for exactly these spaces: every one is derived from the ReCap's own resources. */
+  | { kind: 'hosts'; targets: SpaceHostTarget[] };
+
+const SPACE_ID = /^tinycloud:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^\s:/][^\s]*)$/;
+
+/** Any ReCap resource, in any case: the text is parsed whenever one is present, never judged from its raw bytes. */
+const RECAP_RESOURCE = /urn:recap:/i;
+
+/**
+ * Reads what a message would let a site do with spaces: as written and, for `0x…` hex, as the UTF-8 bytes a signature
+ * would cover. A message with any ReCap resource is parsed by the same wasm parser the node reads it with, so JSON
+ * escapes, unicode escapes, duplicate keys and the rest are decoded exactly as the node decodes them; the raw bytes
+ * are never searched. The targets come from the parsed entries (owner address and name out of the space id), never
+ * from the text around them. A ReCap that cannot be parsed to the end is `unreadable`, as is a space-agnostic,
+ * wildcard or other space ability and a target that is not a space id: the answer is then to refuse. The exact
+ * abilities `tinycloud.space/list` and `tinycloud.space/info` read and create nothing: an entry with only those
+ * names no target.
+ */
+export function spaceHostRequest(message: string): SpaceHostRequest {
+  const decoded = decodeHexUtf8(message);
+  const targets: SpaceHostTarget[] = [];
+  for (const text of decoded === null ? [message] : [message, decoded]) {
+    if (!RECAP_RESOURCE.test(text)) continue;
+    let entries: RecapEntry[];
+    try {
+      entries = parseRecapFromSiwe(text) as RecapEntry[];
+    } catch {
+      return { kind: 'unreadable' };
+    }
+    if (!Array.isArray(entries)) return { kind: 'unreadable' };
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || !Array.isArray(entry.actions ?? [])) return { kind: 'unreadable' };
+      const service = typeof entry.service === 'string' ? entry.service.toLowerCase() : '';
+      const actions = entry.actions ?? [];
+      if (actions.some((action) => typeof action !== 'string')) return { kind: 'unreadable' };
+      const spaceActions = service === 'space' || service === 'tinycloud.space'
+        ? actions
+        : actions.filter((action) => action.toLowerCase().startsWith(SPACE_ABILITY_PREFIX) || action === '*');
+      if (spaceActions.length === 0) continue;
+      if (spaceActions.some((action) => action !== SPACE_HOST_ABILITY && !SPACE_READ_ABILITIES.includes(action))) return { kind: 'unreadable' };
+      if (!spaceActions.includes(SPACE_HOST_ABILITY)) continue;
+      const id = SPACE_ID.exec(entry.space ?? '');
+      if (!id) return { kind: 'unreadable' };
+      let address: string;
+      try {
+        address = ensureEip55(id[2]!);
+      } catch {
+        return { kind: 'unreadable' };
+      }
+      targets.push({ chainId: Number(id[1]), address, name: id[3]! });
+    }
+  }
+  return targets.length === 0 ? { kind: 'none' } : { kind: 'hosts', targets };
 }
 
 /**

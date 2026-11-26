@@ -8,9 +8,11 @@
 import {
   grantIsBroadOnce,
   grantIsOwnShareFolder,
+  grantOnceReach,
   grantReachesSecretDataOrDecryption,
   renewalEntryVerdict,
   type CapabilityGrant,
+  type OnceReach,
 } from '@openkey/capability-review';
 
 /**
@@ -22,6 +24,15 @@ import {
  */
 export function isOnceTier(grants: readonly CapabilityGrant[]): boolean {
   return grants.some(grantIsBroadOnce);
+}
+
+/**
+ * What the one-hour tier reaches across these grants, for the caution under the length choice: a whole network over
+ * the secrets over a wide range of data. Null where no grant is in the tier.
+ */
+export function onceReachOf(grants: readonly CapabilityGrant[]): OnceReach | null {
+  const reaches = grants.map(grantOnceReach);
+  return reaches.includes('network') ? 'network' : reaches.includes('secrets') ? 'secrets' : reaches.includes('wide') ? 'wide' : null;
 }
 
 /**

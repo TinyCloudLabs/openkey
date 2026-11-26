@@ -107,7 +107,10 @@ export async function readReply(
     if (isDefiniteRefusal(response.status, code)) {
       throw new ServerRefusalError(text, response.status, code);
     }
-    throw Object.assign(new Error(text), { status: response.status, code });
+    // A host-signing refusal for an account that is not set up says so: the sign widget offers account setup.
+    const accountSetup = failure !== null && typeof failure === 'object' && 'accountSetup' in failure && failure.accountSetup === 'required'
+      ? { accountSetup: 'required' as const } : {};
+    throw Object.assign(new Error(text), { status: response.status, code, ...accountSetup });
   }
   let parsed: unknown;
   try {

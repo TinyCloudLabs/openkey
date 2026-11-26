@@ -90,6 +90,9 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
   ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
   ['20261123_0001_native_standing_renewal', 'd393544e72a00e8644c9cb044f165fc18be56f5e84fd5b21f189d87a7ed0fbbf'],
+  ['20261124_0002_tinycloud_bootstrap_authority', '1dc898a4ffa69aa926fcbd197f00e4543cd9d5afc13c8772f3b3e71386bbb44e'],
+  ['20261125_0001_account_setup_request', '4e7aa3d81c35c67126bb04a733eba0e47a9679aeeec9b6330fb824da68a41cee'],
+  ['20261125_0002_bootstrap_authority_account_setup', '585f1528893926937e54c73055d96cff060b6e9e82bbb3a67c6066403e7c76a8'],
 ]);
 
 export type MigrationRow = {

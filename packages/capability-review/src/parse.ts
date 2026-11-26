@@ -47,6 +47,8 @@ export interface ParseContext {
    * required-action heuristics.
    */
   requiredActionIds?: string[];
+  /** Exact encryption resources named by the widget renewal request. */
+  renewalOnlyResources?: readonly string[];
   /**
    * Explicit selection to render. If omitted, all parsed actions are
    * considered selected (default consent).
@@ -637,13 +639,14 @@ function buildActions(
 
 function ownerFromSpace(space: string): {
   owner: string | null;
+  chainId: string | null;
   ownedBySelf: boolean | null;
 } {
   const match = space.match(
-    /^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40})(?::|$)/,
+    /^tinycloud:pkh:eip155:(\d+):(0x[a-fA-F0-9]{40})(?::|$)/,
   );
-  if (!match) return { owner: null, ownedBySelf: null };
-  return { owner: match[1]!.toLowerCase(), ownedBySelf: null };
+  if (!match) return { owner: null, chainId: null, ownedBySelf: null };
+  return { owner: match[2]!.toLowerCase(), chainId: match[1]!, ownedBySelf: null };
 }
 
 function buildGrants(
@@ -652,6 +655,7 @@ function buildGrants(
   signer: SignerInfo,
 ): CapabilityGrant[] {
   const signerAddress = signer.address.toLowerCase();
+  const renewalOnly = new Set(ctx.renewalOnlyResources);
   return entries.map((entry): CapabilityGrant => {
     // Resource ownership is relative to the signer. Application identity is
     // a separate manifest concern and must never be inferred from an EVM
@@ -668,13 +672,14 @@ function buildGrants(
     });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
+    // The URI of a top-level ReCap encryption resource is kept in space.
     const encryption = parseEncryptionResource(entry.space);
     // Top-level encryption resources use an owner DID rather than a
     // tinycloud: space. Check the chain as well as the address before saying
     // the named keys belong to the signer.
     const ownedBySelf = encryption
       ? encryption.ownerDid.toLowerCase() === `did:pkh:eip155:${signer.chainId}:${signer.address}`.toLowerCase()
-      : ownership.owner === null ? null : ownership.owner === signerAddress;
+      : ownership.owner === null ? null : ownership.owner === signerAddress && ownership.chainId === String(signer.chainId);
     // Blocker 4 follow-up (Defect 2): grant ID service segment is the
     // resource-derived service (canonicalized to `tinycloud.<short>`)
     // when the wire carried one; falls back to the ability-derived
@@ -687,6 +692,7 @@ function buildGrants(
     const idService = effectiveServiceForId(entry.service, entry.resourceService);
     return {
       id: permissionId(idService, entry.space, entry.path),
+      ...(encryption?.kind === "key" && renewalOnly.has(entry.space) ? { renewalOnly: true as const } : {}),
       family,
       severity,
       service: entry.service,

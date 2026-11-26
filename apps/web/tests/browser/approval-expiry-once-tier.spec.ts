@@ -14,7 +14,7 @@ import {
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
-const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${address}`;
 const NETWORK_DECRYPT = {
   [`urn:tinycloud:encryption:${owner}:default`]: { 'tinycloud.encryption/decrypt': [{}] },
 };
@@ -80,8 +80,11 @@ test('decrypt on the secrets/ prefix without the opt-in starts at one hour, and 
   const decrypt = siweWithResources([makeRecapResource(PREFIX_DECRYPT)], { domain: HOST, uri: ORIGIN });
   const before = Date.now();
   const { frame, previews } = await open(page, {}, decrypt);
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 7 days');
+  await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(/^Access lasts 1 hour, until /);
+  const choice = frame.getByRole('group', { name: 'How long access lasts', exact: true });
+  await expect(choice.getByRole('radio', { name: '1 hour', exact: true })).toBeChecked();
+  await expect(choice.getByRole('radio', { name: '7 days, as the app asked', exact: true })).not.toBeChecked();
+  await expect(frame.getByTestId('approval-expiry-compact-caution')).toHaveText('Covers every secret in your vault.');
   const latest = previews.at(-1)!;
   aboutAnHour(latest.expirationTime, before);
 });
@@ -98,12 +101,12 @@ test('decrypt on the whole network without the opt-in starts at one hour', async
 test('without the opt-in the owner can still choose longer', async ({ page }) => {
   const decrypt = siweWithResources([makeRecapResource(PREFIX_DECRYPT)], { domain: HOST, uri: ORIGIN });
   const { frame, previews } = await open(page, {}, decrypt);
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(/^Access lasts 1 hour, until /);
   await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('2d');
   await frame.getByLabel('Or type a time').press('Enter');
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('2 days');
+  await expect(frame.getByTestId('approval-expiry-length-line')).toHaveText(/^Access lasts 2 days, until /);
   await expect.poll(() => previews.at(-1)?.expirationTime).toBeTruthy();
   const asked = Date.parse(String(previews.at(-1)!.expirationTime));
   expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
@@ -121,3 +124,64 @@ for (const [description, request] of [
     expect(previews[0]).not.toHaveProperty('expirationTime');
   });
 }
+
+// TC-4156: the inline choice sends an explicit length for every option. A preview with no expirationTime is signed as
+// one hour on a popup or frame, so "what the app asked" must travel as a length. The fixture message is issued at
+// 2026-07-31T00:00:00Z, so its expirationTime sets how long the app asked for.
+const within = (value: unknown, expected: number) => {
+  const asked = Date.parse(String(value));
+  expect(asked).toBeGreaterThanOrEqual(expected - 5000);
+  expect(asked).toBeLessThanOrEqual(expected + 5000);
+};
+
+test('choosing what the app asked for prepares that length, and 1 hour again prepares 1 hour', async ({ page }) => {
+  const decrypt = siweWithResources([makeRecapResource(NETWORK_DECRYPT)], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, {}, decrypt);
+  const choice = frame.getByRole('group', { name: 'How long', exact: true });
+  await choice.getByRole('radio', { name: '7 days (what the app asked)' }).check();
+  await expect(choice.getByRole('radio', { name: '7 days (what the app asked)' })).toBeChecked();
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await expect.poll(() => Date.parse(String(previews.at(-1)?.expirationTime)) > Date.now() + 86_400_000).toBe(true);
+  within(previews.at(-1)!.expirationTime, Date.now() + 7 * 86_400_000);
+  await choice.getByRole('radio', { name: '1 hour' }).check();
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect.poll(() => Date.parse(String(previews.at(-1)?.expirationTime)) < Date.now() + 2 * 3_600_000).toBe(true);
+  within(previews.at(-1)!.expirationTime, Date.now() + 3_600_000);
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+});
+
+test('an ask over 7 days offers the longest allowed and never prepares more than 7 days', async ({ page }) => {
+  const decrypt = siweWithResources([makeRecapResource(NETWORK_DECRYPT)], {
+    domain: HOST,
+    uri: ORIGIN,
+    expirationTime: '2026-08-30T00:00:00.000Z',
+  });
+  const { frame, previews } = await open(page, {}, decrypt);
+  const choice = frame.getByRole('group', { name: 'How long', exact: true });
+  await expect(choice.getByRole('radio', { name: '7 days (the longest allowed)' })).not.toBeChecked();
+  await choice.getByRole('radio', { name: '7 days (the longest allowed)' }).check();
+  await expect.poll(() => Date.parse(String(previews.at(-1)?.expirationTime)) > Date.now() + 86_400_000).toBe(true);
+  within(previews.at(-1)!.expirationTime, Date.now() + 7 * 86_400_000);
+});
+
+test('a request that asks for an hour or less shows the caution and no choice', async ({ page }) => {
+  const decrypt = siweWithResources([makeRecapResource(NETWORK_DECRYPT)], {
+    domain: HOST,
+    uri: ORIGIN,
+    expirationTime: '2026-07-31T00:30:00.000Z',
+  });
+  const { frame } = await open(page, {}, decrypt);
+  await expect(frame.getByTestId('approval-expiry-once-caution')).toHaveText('This access can open all your encrypted data.');
+  await expect(frame.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
+});
+
+test('the choice and the caution fit a 390 px frame without sideways scrolling', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const decrypt = siweWithResources([makeRecapResource(NETWORK_DECRYPT)], { domain: HOST, uri: ORIGIN });
+  const { frame } = await open(page, {}, decrypt);
+  const group = frame.getByRole('group', { name: 'How long', exact: true });
+  await expect(group).toBeVisible();
+  expect(await frame.locator('html').evaluate((root) => root.scrollWidth - root.clientWidth)).toBeLessThanOrEqual(0);
+  const box = await group.boundingBox();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+});

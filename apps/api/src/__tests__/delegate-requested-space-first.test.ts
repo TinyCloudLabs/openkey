@@ -206,7 +206,8 @@ const wholeSpace = (space: string) => [
 
 /** The first approval of a new account: the CLI asks for the `default` space. */
 async function approveDefault() {
-  const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions: wholeSpace('default') });
+  // The CLI's link, approved by the owner on OpenKey's own page, returning to the CLI's loopback listener.
+  const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions: wholeSpace('default'), linkDelivery: 'callback', linkCallback: 'http://127.0.0.1:8123/callback' });
   expect(prepared.status).toBe(200);
   return post('/', {
     keyId: keyRecord.id,

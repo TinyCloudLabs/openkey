@@ -1,8 +1,9 @@
-// Which OpenKey pages may be shown inside another page's frame. The login page opens in its own window; a page that
-// frames it could lay its own elements over its buttons, so it refuses every parent. The sign pages and every other
-// page are not listed and keep their headers.
+// Which OpenKey pages may be shown inside another page's frame. The login page and the account setup page open in
+// their own window; a page that frames them could lay its own elements over their buttons, so they refuse every
+// parent. The sign pages, the embedded account setup hand-off and every other page are not listed and keep their
+// headers.
 
-const UNFRAMEABLE_PATHS: Record<string, true> = { '/auth/login': true };
+const UNFRAMEABLE_PATHS: Record<string, true> = { '/auth/login': true, '/widget/account-setup': true };
 
 /** The `Content-Security-Policy` value that forbids framing for this path, or null when the page's headers are left as they are. */
 export function framePolicyFor(pathname: string): string | null {
