@@ -2,7 +2,7 @@
 // parsing and showing a duration, turning the chosen one into the instant the
 // server writes into the signed message, and the renewal lease choices.
 
-import { parseSiweFields } from '@openkey/capability-review';
+import { parseSiweFields, type OnceReach } from '@openkey/capability-review';
 
 const S = 1000;
 const M = 60 * S;
@@ -69,6 +69,105 @@ export function onceDefaultExpiryMs(onceTier: boolean, requestedMs: number | nul
   return onceTier && requestedMs !== null && requestedMs > ONCE_DEFAULT_EXPIRY_MS ? ONCE_DEFAULT_EXPIRY_MS : null;
 }
 
+/** The longer length the one-time choice offers next to 1 hour, and how its label says where the length comes from. */
+export interface OnceLongerChoice {
+  ms: number;
+  label: string;
+}
+
+/**
+ * The second option of the one-time choice (the first is always 1 hour): what the app asked for, or the longest the
+ * surface allows when that is shorter ("7 days (the longest allowed)"). `capMs` is the limit the surface's server
+ * puts on this pick, null where it puts none. Null when the app asked for an hour or less or for nothing.
+ */
+export function onceLongerChoice(askedMs: number | null, capMs: number | null): OnceLongerChoice | null {
+  if (askedMs === null || askedMs <= ONCE_DEFAULT_EXPIRY_MS) return null;
+  const ms = capMs !== null && askedMs > capMs ? capMs : askedMs;
+  const clamped = ms !== askedMs;
+  if (ms <= ONCE_DEFAULT_EXPIRY_MS) return null;
+  return { ms, label: `${formatDuration(ms)} (${clamped ? 'the longest allowed' : 'what the app asked'})` };
+}
+
+/** The one line under the one-time choice: what this access can open. */
+export function onceCautionLine(reach: OnceReach): string {
+  if (reach === 'network') return 'This access can open all your encrypted data.';
+  if (reach === 'secrets') return 'This access can open all your secrets.';
+  return 'This access can open a wide range of your data.';
+}
+
+/**
+ * A line of copy split around a secret's name, so the name can be set on one line; null when the name is not in it.
+ * `run` is the name and the punctuation that follows it, which stays on the line of the name.
+ */
+export function splitAroundName(text: string, name: string | null): { before: string; run: string; after: string } | null {
+  const at = name === null || name === '' ? -1 : text.lastIndexOf(name);
+  if (name === null || at < 0) return null;
+  const end = at + name.length;
+  const punctuation = /^[.,;:!?]*/.exec(text.slice(end))![0];
+  return { before: text.slice(0, at), run: name + punctuation, after: text.slice(end + punctuation.length) };
+}
+
+/**
+ * Every word of the compact secret block on the sign face: the row, the caution under it and the length toggle
+ * (one place to change them). The row for one named secret is the review's own "Read the secret <name>".
+ */
+export const SECRET_BLOCK_COPY = {
+  /** The row when several named secrets are read, and when all of them are. */
+  rowSeveral: 'Read secret values',
+  rowAll: 'Read all your secret values',
+  cautionOne: (name: string) => `Only ${name}. No other secret.`,
+  cautionSeveral: (count: number) => `Only these ${count} secrets. Names are in Advanced details.`,
+  cautionAll: 'Covers every secret in your vault.',
+  /** The group under Advanced details that lists the secrets by name, each with its exact path. */
+  groupHeading: 'Secrets',
+  groupHint: 'The secrets this request reads.',
+  groupRow: (name: string) => `Secret: ${name}`,
+  /** The toggle's name for a screen reader (visually hidden). */
+  groupName: 'How long access lasts',
+  /** The tag after the length the app asked for, and after the longest length when that is less than the ask. */
+  askedTag: 'asked',
+  longestTag: 'longest allowed',
+  /** Added to the screen-reader name and the tooltip of the segment the app asked for. */
+  askedSuffix: ', as the app asked',
+  /** The line where there is nothing to choose between (the app asked for an hour or less), and the announcement after a pick. */
+  /** The end beside the toggle: "until Dec 1", "until 1:06 PM". */
+  until: (end: string) => `until ${end}`,
+  lasts: (end: string) => `Access lasts ${end}.`,
+  /** The renewal checkbox's words while it is unticked (ticked, it says how long it renews). */
+  renewLabel: (lease: string) => `Renew automatically for up to ${lease}`,
+} as const;
+
+/** The longer length of the compact toggle, next to 1 hour: the app's ask, or the longest allowed when that is less. */
+export interface SecretLongerChoice {
+  ms: number;
+  label: string;
+  asked: boolean;
+}
+
+/** Like `onceLongerChoice`, with the compact toggle's words. Null where the app asked for an hour or less or for nothing. */
+export function secretLongerChoice(askedMs: number | null, capMs: number | null): SecretLongerChoice | null {
+  const longer = onceLongerChoice(askedMs, capMs);
+  if (longer === null) return null;
+  const asked = longer.ms === askedMs;
+  return { ms: longer.ms, asked, label: `${formatDuration(longer.ms)} (${asked ? SECRET_BLOCK_COPY.askedTag : SECRET_BLOCK_COPY.longestTag})` };
+}
+
+/**
+ * Where a window of `lengthMs` ends, as the toggle and the announcement say it: a day or more ends on a day ("Dec 1"),
+ * a shorter one at a time of day ("1:06 PM"), in the owner's time zone. `endMs` is the end itself: the signed
+ * Expiration Time, not a time counted from when the screen opened.
+ */
+export function formatEndAt(endMs: number, lengthMs: number, timeZone?: string): string {
+  const now = Date.now();
+  if (lengthMs >= D) return formatEndDay(endMs - now, now, timeZone);
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone }).format(endMs).replace(/\s/g, ' ');
+}
+
+/** A length with where it ends, for the announcement and a length picked under "How long it lasts": "7 days, until Dec 1". */
+export function formatLengthWithEnd(ms: number, endMs: number, timeZone?: string): string {
+  return `${formatDuration(ms)}, until ${formatEndAt(endMs, ms, timeZone)}`;
+}
+
 /** The lease shown when the box is first ticked: the default, or less when the requester asked for less. */
 export function defaultLeaseMs(maxLeaseMs: number): number {
   return Math.min(DEFAULT_LEASE_MS, maxLeaseMs);
@@ -77,6 +176,9 @@ export function defaultLeaseMs(maxLeaseMs: number): number {
 /** Longer than this shows the warning. There is no upper limit. */
 export const LONG_EXPIRY_MS = 365 * D;
 export const LONG_EXPIRY_WARNING = "That's a long time. OpenKey can't cancel it early once you approve.";
+
+/** Shown in place of the access line while the app has asked for renewal and the server has not yet said whether it offers it. */
+export const RENEWAL_CHECKING_LINE = 'Checking renewal…';
 
 export type ParsedExpiry = { ok: true; ms: number } | { ok: false; message: string };
 

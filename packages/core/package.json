@@ -33,6 +33,6 @@
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",
-    "@tinycloud/share-envelope": "1.6.0-beta.1"
+    "@tinycloud/share-envelope": "1.7.0"
   }
 }

@@ -27,32 +27,16 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { promises as dns } from "node:dns";
 import net from "node:net";
-import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { parseManifestKeys, type ManifestKeys } from "./app-key-gate";
 import { appIdValid } from "./key-resource";
+import { pinnedHttpsGet } from "./pinned-https-fetch";
 
 const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
 const APP_KEYS_PATH = "/.well-known/openkey-app-keys.json";
-const REQUEST_TIMEOUT_MS = 5_000;
+const DNS_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
 const MAX_DNS_LOOKUPS = 32;
 let activeDnsLookups = 0;
-
-const reservedIPv6 = new net.BlockList();
-for (const [address, prefix] of [
-  ["::", 96],             // IPv4-compatible, unspecified and loopback
-  ["::ffff:0:0", 96],     // IPv4-mapped
-  ["64:ff9b::", 32],      // Translation prefixes, including 64:ff9b:1::/48
-  ["100::", 64],          // Discard-only
-  ["2001::", 23],         // IETF protocol assignments
-  ["2002::", 16],         // 6to4
-  ["fc00::", 7],          // Unique local
-  ["fe80::", 10],         // Link local
-  ["fec0::", 10],         // Deprecated site local
-  ["ff00::", 8],          // Multicast
-] as const) {
-  reservedIPv6.addSubnet(address, prefix, "ipv6");
-}
 
 /**
  * Sol MAJOR-2: a single declared scoped-secret entry extracted from the
@@ -149,7 +133,7 @@ export async function fetchAndBindWellKnownManifest(input: {
   const { reportedOrigin, declaredDigest } = input;
 
   // 1-3. Structural URL validation, private-host rejection, DNS pin.
-  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(DNS_TIMEOUT_MS);
   const origin = await resolveGuardedOrigin(reportedOrigin, signal);
   if (!origin.ok) return { ok: false, reason: origin.reason };
 
@@ -160,7 +144,7 @@ export async function fetchAndBindWellKnownManifest(input: {
   }
 
   // 5. Fetch with timeout, size cap, no redirects.
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH, signal);
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
 
   // Parse, canonicalize, digest, compare, and extract as one fail-closed
@@ -185,11 +169,10 @@ interface GuardedFailure {
   reason: string;
   /** The HTTP status, when the origin answered with a non-2xx one. */
   status?: number;
-  invalidContentType?: boolean;
   dnsCapacity?: boolean;
 }
 type GuardedOrigin = GuardedOriginOk | GuardedFailure;
-type GuardedBytes = { ok: true; bytes: Uint8Array } | GuardedFailure;
+type GuardedBytes = { ok: true; bytes: Uint8Array; contentType?: string } | GuardedFailure;
 
 /**
  * Steps 1-3 of every guarded fetch: the origin is an https origin with no
@@ -216,20 +199,11 @@ async function resolveGuardedOrigin(reportedOrigin: string, signal: AbortSignal)
     return { ok: false, reason: "reportedOrigin resolves to a private host" };
   }
 
-  // 3. DNS resolve + reject private/reserved IPs. Uses `dns.lookup` so it
-  //    matches what the network stack itself would use.
-  //
-  // SECURITY (Sol MAJOR-4 — DNS rebinding): a later fetch that re-resolves
-  //  the hostname would be TOCTOU-vulnerable: an attacker's DNS could
-  //  return a public IP here and a private IP on the fetch. To defeat this
-  //  we pick ONE validated address here and pin the actual HTTPS
-  //  connection to it via a custom undici dispatcher below. TLS SNI /
-  //  hostname validation stays bound to `url.hostname`, so the fetch
-  //  refuses if the presented cert is not for the reported origin.
+  // 3. Resolve once and validate every answer before choosing the socket address.
   if (activeDnsLookups >= MAX_DNS_LOOKUPS) {
     return { ok: false, reason: "DNS lookup capacity reached", dnsCapacity: true };
   }
-  let pinnedAddress: string | null = null;
+  let pinnedAddress: string;
   try {
     const addresses = await lookupBeforeDeadline(url.hostname, signal);
     if (!addresses.length) {
@@ -277,69 +251,28 @@ async function lookupWithSlot(hostname: string) {
 }
 
 /**
- * GET the well-known file at the validated IP within the remaining deadline.
+ * GET the well-known file through the pinned HTTPS transport: the validated
+ * address is the socket destination, TLS identity is the origin's host, and
+ * the transport enforces the deadline, the size cap and the redirect refusal.
+ * The failure reasons are the manifest fetch's.
  */
-async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string, signal: AbortSignal): Promise<GuardedBytes> {
-  const baseConnect = buildConnector();
-  const pinnedConnector: buildConnector.connector = (options, callback) => {
-    baseConnect({ ...options, hostname: pinnedAddress }, callback);
-  };
-  const dispatcher = new Agent({ connect: pinnedConnector });
-  let cancelBody: (() => Promise<void>) | undefined;
-  try {
-    let res: Awaited<ReturnType<typeof undiciFetch>>;
-    try {
-      res = await undiciFetch(`${url.origin}${path}`, {
-        method: "GET",
-        redirect: "error",
-        signal,
-        dispatcher,
-        headers: { Accept: "application/json" },
-      });
-    } catch {
-      return { ok: false, reason: "fetch threw" };
-    }
-    cancelBody = () => res.body?.cancel() ?? Promise.resolve();
-    if (!res.ok) {
-      return { ok: false, reason: `fetch returned status ${res.status}`, status: res.status };
-    }
-    if (path === APP_KEYS_PATH) {
-      const contentType = res.headers.get("content-type");
-      if (!contentType || contentType.includes(",") ||
-        contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-        return { ok: false, reason: "response Content-Type is not application/json", invalidContentType: true };
+async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string): Promise<GuardedBytes> {
+  // 5. Fetch with timeout, size cap and no redirects.
+  const result = await pinnedHttpsGet(new URL(path, url.origin), pinnedAddress, MAX_BYTES);
+  if (!result.ok) {
+    switch (result.kind) {
+      case "request": return { ok: false, reason: "fetch threw" };
+      case "body": return { ok: false, reason: "response body read threw" };
+      case "limit": return { ok: false, reason: "response exceeded 64KB" };
+      case "no-body": return { ok: false, reason: "response body has no reader" };
+      case "status": {
+        const { status } = result;
+        const redirect = status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+        return { ok: false, reason: redirect ? "fetch threw" : `fetch returned status ${status}`, status };
       }
-    }
-    const reader = res.body?.getReader();
-    if (!reader) return { ok: false, reason: "response body has no reader" };
-    cancelBody = () => reader.cancel();
-
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        total += value.byteLength;
-        if (total > MAX_BYTES) return { ok: false, reason: "response exceeded 64KB" };
-        chunks.push(value);
-      }
-    } catch {
-      return { ok: false, reason: "response body read threw" };
-    }
-    cancelBody = undefined;
-    return { ok: true, bytes: concatBytes(chunks, total) };
-  } finally {
-    // Status, media type and size checks can stop consumption early.
-    // Destroying the dispatcher closes the socket without draining the body.
-    void cancelBody?.().catch(() => {});
-    try {
-      await dispatcher.destroy();
-    } catch {
-      // Bun supplies a compatibility dispatcher. Cancel the body above.
     }
   }
+  return { ok: true, bytes: result.bytes, contentType: result.contentType };
 }
 
 export type AppKeysFileFetch =
@@ -352,12 +285,17 @@ export type AppKeysFileFetch =
  * the caller reads the bytes it gets, once.
  */
 export async function fetchAppKeysFile(host: string): Promise<AppKeysFileFetch> {
-  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(DNS_TIMEOUT_MS);
   const origin = await resolveGuardedOrigin(`https://${host}`, signal);
   if (!origin.ok) return { ok: false, kind: origin.dnsCapacity ? "busy" : "unavailable", reason: origin.reason };
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH, signal);
-  if (fetched.ok) return fetched;
-  if (fetched.invalidContentType) return { ok: false, kind: "invalid", reason: fetched.reason };
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH);
+  if (fetched.ok) {
+    const type = fetched.contentType;
+    if (!type || type.includes(",") || type.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+      return { ok: false, kind: "invalid", reason: "response Content-Type is not application/json" };
+    }
+    return { ok: true, bytes: fetched.bytes };
+  }
   return {
     ok: false,
     kind: fetched.status === 404 || fetched.status === 410 ? "missing" : "unavailable",
@@ -682,16 +620,6 @@ function extractDeclaredPermissions(input: unknown): DeclaredPermission[] | unde
   return out.length > 0 ? out : undefined;
 }
 
-function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.byteLength;
-  }
-  return out;
-}
-
 function isLiterallyPrivateHostname(host: string): boolean {
   const lower = host.toLowerCase();
   if (lower === "localhost") return true;
@@ -706,7 +634,7 @@ function isLiterallyPrivateHostname(host: string): boolean {
 function isPrivateOrReservedAddress(address: string): boolean {
   const family = net.isIP(address);
   if (family === 4) return isPrivateIPv4(address);
-  if (family === 6) return reservedIPv6.check(address, "ipv6");
+  if (family === 6) return isPrivateIPv6(address);
   // Non-IP → treat as unresolvable, err on the side of blocking.
   return true;
 }
@@ -736,5 +664,35 @@ function isPrivateIPv4(address: string): boolean {
   if (a === 203 && b === 0 && c === 113) return true;
   if (a >= 224 && a <= 239) return true;
   if (a >= 240) return true;
+  return false;
+}
+
+function isPrivateIPv6(address: string): boolean {
+  // Normalize equivalent IPv6 spellings before applying prefix checks.
+  let normalized: string;
+  try {
+    normalized = new URL(`https://[${address}]`).hostname.slice(1, -1);
+  } catch {
+    return true;
+  }
+  // The serializer emits at most one "::" and no dotted quad.
+  const halves = normalized.split("::");
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  const groups = [...head, ...Array<string>(Math.max(missing, 0)).fill("0"), ...tail].map((g) => parseInt(g, 16));
+  if (halves.length > 2 || groups.length !== 8 || groups.some((g) => !Number.isInteger(g))) return true;
+  const first = groups[0]!;
+  const second = groups[1]!;
+  // Only global unicast 2000::/3 is public; every other prefix fails closed. That
+  // covers ::/96 and ::1, ::ffff:0:0/96 IPv4-mapped, 64:ff9b::/96 and 64:ff9b:1::/48
+  // translation, 100::/64 discard, fc00::/7 unique-local, fe80::/10 link-local,
+  // fec0::/10 site-local and ff00::/8 multicast.
+  if ((first & 0xe000) !== 0x2000) return true;
+  // 2002::/16 6to4 and 3fff::/20 documentation.
+  if (first === 0x2002 || (first === 0x3fff && second <= 0x0fff)) return true;
+  // 2001::/23 IETF protocol assignments (includes 2001::/32 Teredo) is refused whole
+  // because most of it is not globally reachable; 2001:db8::/32 documentation.
+  if (first === 0x2001 && (second < 0x0200 || second === 0x0db8)) return true;
   return false;
 }

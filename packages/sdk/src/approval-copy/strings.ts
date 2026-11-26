@@ -34,6 +34,7 @@ export const LOADER = {
 
 /** The starting window and its upper limit on a signed approval request. */
 export const APPROVAL_EXPIRY = {
+  /** @deprecated The approval page offers a choice of 1 hour or the length the app asked for, so this line is not shown. */
   onceStart: 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.',
   shortenLimit: 'This approval can last up to {duration}.',
   /** A signed request for a secret's own key whose start is shorter than its maximum. */
@@ -66,6 +67,36 @@ export const UNVERIFIED_REQUESTER = {
   approvedLine: 'You can close this window.',
   /** In place of `DONE.declined.line`. */
   declinedLine: 'Whoever sent this link has been told no. If that was a mistake, ask for a new link.',
+  /**
+   * One line under `line`, set only when the link's signer is a listed requester and its request is outside what that
+   * requester may ask for. `{app}` is the listed requester's verified name; the "Requested by" value stays `name`.
+   * `unreadable` is for a request OpenKey could not read, or one with no permissions.
+   */
+  reasons: {
+    lifetime: 'This link asks for longer access than {app} is allowed to ask for.',
+    service: 'This link asks for a service {app} is not allowed to use.',
+    action: 'This link asks to do something {app} is not allowed to do.',
+    path: 'This link asks for data outside what {app} is allowed to reach.',
+    space: 'This link asks for a space {app} is not allowed to ask for.',
+    renewal: 'This link asks to renew access, which {app} is not allowed to ask for.',
+    context: '{app} doesn’t send this kind of request.',
+    unreadable: 'OpenKey couldn’t read this link’s request.',
+  },
+} as const;
+
+/** The key an approval request's access goes to, under the "Requested by" line: this label, then the key. */
+export const RECIPIENT_KEY = {
+  label: 'Access goes to',
+} as const;
+
+/**
+ * The owner approves in OpenKey's own page and OpenKey sets up their TinyCloud space as part of it (a signed approval
+ * request or a device request). `creates` is for an approval that sets the space up. `requesterText` labels the
+ * requester's reason as written by the requester.
+ */
+export const OWN_PAGE_APPROVAL = {
+  creates: 'Approving also creates your TinyCloud space, where your data from this request is kept.',
+  requesterText: "Written by whoever sent this request. OpenKey can't confirm it.",
 } as const;
 
 export const CLOSE_TAB = 'Close this tab';
@@ -223,7 +254,7 @@ export const DEVICE = {
   /** The code tiles' label: `{first}` and `{second}` are the code's halves, one character at a time ("W D J B"). */
   codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
-  reasonNote: 'This reason comes from the caller and isn’t verified.',
+  reasonNote: OWN_PAGE_APPROVAL.requesterText,
   /** The list of what is asked for. */
   asksList: 'Requested access',
   sensitive: 'Sensitive',

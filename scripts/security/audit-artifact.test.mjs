@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { auditDirectory } from './audit-artifact.mjs';
 
 function artifact(files) {
@@ -54,4 +56,37 @@ test('each forbidden shape is reported by file and label, never by value', () =>
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+const apiBase = 'https://api.openkey.so';
+const auditScript = fileURLToPath(new URL('./audit-artifact.mjs', import.meta.url));
+
+test('missing required text fails the artifact audit', (t) => {
+  const dir = artifact({ 'index.html': '<p>OpenKey</p>' });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  assert.deepEqual(auditDirectory(dir, { requireText: [apiBase] }).problems, [
+    `required text not found in any file: ${apiBase}`,
+  ]);
+});
+
+test('required text in a nested bundle satisfies the audit across directories', (t) => {
+  const pages = artifact({ 'index.html': '<p>OpenKey</p>' });
+  const bundle = artifact({ '_app/immutable/entry.js': `export const api = "${apiBase}";` });
+  t.after(() => rmSync(pages, { recursive: true, force: true }));
+  t.after(() => rmSync(bundle, { recursive: true, force: true }));
+
+  const result = spawnSync(process.execPath, [auditScript, `--require-text=${apiBase}`, pages, bundle], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('repeated required text flags report only the missing string', (t) => {
+  const dir = artifact({ '_app/immutable/entry.js': `export const api = "${apiBase}";` });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const missing = 'https://example.com';
+  const result = spawnSync(process.execPath, [auditScript, `--require-text=${missing}`, `--require-text=${apiBase}`, dir], { encoding: 'utf8' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /required text not found in any file: https:\/\/example\.com/);
+  assert.ok(!result.stderr.includes(apiBase));
 });
