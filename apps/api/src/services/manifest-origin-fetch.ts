@@ -38,6 +38,20 @@ const MAX_BYTES = 64 * 1024;
 const MAX_DNS_LOOKUPS = 32;
 let activeDnsLookups = 0;
 
+function guardedDeadline() {
+  const controller = new AbortController();
+  const end = performance.now() + FETCH_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return {
+    signal: controller.signal,
+    expired: () => {
+      if (performance.now() >= end) controller.abort();
+      return controller.signal.aborted;
+    },
+    clear: () => clearTimeout(timer),
+  };
+}
+
 /**
  * Sol MAJOR-2: a single declared scoped-secret entry extracted from the
  * origin-bound manifest. The trust rule for surfacing a KV/secret grant
@@ -131,33 +145,35 @@ export async function fetchAndBindWellKnownManifest(input: {
   ownerHint?: string;
 }): Promise<OriginBindResult> {
   const { reportedOrigin, declaredDigest } = input;
+  // One owned timer begins before DNS and remains live through the body read.
+  const deadline = guardedDeadline();
+  try {
+    const origin = await resolveGuardedOrigin(reportedOrigin, deadline.signal);
+    if (!origin.ok) return { ok: false, reason: origin.reason };
+    if (deadline.expired()) return { ok: false, reason: "reportedOrigin DNS lookup threw" };
 
-  // 1-3. Structural URL validation, private-host rejection, DNS pin.
-  // The same deadline covers DNS, connection and the response body.
-  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-  const origin = await resolveGuardedOrigin(reportedOrigin, signal);
-  if (!origin.ok) return { ok: false, reason: origin.reason };
+    const normalizedDeclared = declaredDigest.trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(normalizedDeclared)) {
+      return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
+    }
 
-  // 4. Declared digest sanity: 64 lowercase hex chars.
-  const normalizedDeclared = declaredDigest.trim().toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(normalizedDeclared)) {
-    return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
+    const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH, deadline.signal);
+    if (deadline.expired()) return { ok: false, reason: "response body read threw" };
+    if (!fetched.ok) return { ok: false, reason: fetched.reason };
+
+    // Parse, canonicalize, digest, compare, and extract as one fail-closed
+    // operation. The SDK computes the same canonical JSON digest from its
+    // in-memory manifest, so harmless whitespace or object-key ordering in the
+    // published file cannot break origin binding.
+    return bindWellKnownManifestBytes(
+      fetched.bytes,
+      normalizedDeclared,
+      input.owner,
+      input.ownerHint,
+    );
+  } finally {
+    deadline.clear();
   }
-
-  // 5. Fetch with timeout, size cap, no redirects.
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH, signal);
-  if (!fetched.ok) return { ok: false, reason: fetched.reason };
-
-  // Parse, canonicalize, digest, compare, and extract as one fail-closed
-  // operation. The SDK computes the same canonical JSON digest from its
-  // in-memory manifest, so harmless whitespace or object-key ordering in the
-  // published file cannot break origin binding.
-  return bindWellKnownManifestBytes(
-    fetched.bytes,
-    normalizedDeclared,
-    input.owner,
-    input.ownerHint,
-  );
 }
 
 interface GuardedOriginOk {
@@ -286,22 +302,28 @@ export type AppKeysFileFetch =
  * the caller reads the bytes it gets, once.
  */
 export async function fetchAppKeysFile(host: string): Promise<AppKeysFileFetch> {
-  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-  const origin = await resolveGuardedOrigin(`https://${host}`, signal);
-  if (!origin.ok) return { ok: false, kind: origin.dnsCapacity ? "busy" : "unavailable", reason: origin.reason };
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH, signal);
-  if (fetched.ok) {
-    const type = fetched.contentType;
-    if (!type || type.includes(",") || type.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-      return { ok: false, kind: "invalid", reason: "response Content-Type is not application/json" };
+  const deadline = guardedDeadline();
+  try {
+    const origin = await resolveGuardedOrigin(`https://${host}`, deadline.signal);
+    if (!origin.ok) return { ok: false, kind: origin.dnsCapacity ? "busy" : "unavailable", reason: origin.reason };
+    if (deadline.expired()) return { ok: false, kind: "unavailable", reason: "reportedOrigin DNS lookup threw" };
+    const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH, deadline.signal);
+    if (deadline.expired()) return { ok: false, kind: "unavailable", reason: "response body read threw" };
+    if (fetched.ok) {
+      const type = fetched.contentType;
+      if (!type || type.includes(",") || type.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+        return { ok: false, kind: "invalid", reason: "response Content-Type is not application/json" };
+      }
+      return { ok: true, bytes: fetched.bytes };
     }
-    return { ok: true, bytes: fetched.bytes };
+    return {
+      ok: false,
+      kind: fetched.status === 404 || fetched.status === 410 ? "missing" : "unavailable",
+      reason: fetched.reason,
+    };
+  } finally {
+    deadline.clear();
   }
-  return {
-    ok: false,
-    kind: fetched.status === 404 || fetched.status === 410 ? "missing" : "unavailable",
-    reason: fetched.reason,
-  };
 }
 
 type JsonValue =

@@ -1,6 +1,6 @@
 import { Client } from 'undici/index.js';
 import { isIP } from 'node:net';
-import { checkServerIdentity, connect } from 'node:tls';
+import { checkServerIdentity, connect, type TLSSocket } from 'node:tls';
 
 const DEADLINE_MS = 5_000;
 
@@ -13,8 +13,18 @@ type PinnedHttpsResult =
 export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, callerSignal?: AbortSignal): Promise<PinnedHttpsResult> {
   if (url.protocol !== 'https:' || !isIP(ip)) return { ok: false, kind: 'request' };
   const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
-  const intrinsicDeadline = AbortSignal.timeout(DEADLINE_MS);
-  const signal = callerSignal ? AbortSignal.any([callerSignal, intrinsicDeadline]) : intrinsicDeadline;
+  const started = performance.now();
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const timer = setTimeout(() => controller.abort(), DEADLINE_MS);
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  if (callerSignal?.aborted) abortFromCaller();
+  let activeSocket: TLSSocket | undefined;
+  const expired = () => {
+    if (performance.now() - started >= DEADLINE_MS) controller.abort();
+    return signal.aborted;
+  };
   // The package Client parses HTTP on a socket we verify before handing it over.
   const client = new Client(url.origin, {
     pipelining: 0,
@@ -24,16 +34,14 @@ export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, cal
         callback(signal.reason, null);
         return;
       }
-      const socket = connect({
+      const socket = activeSocket = connect({
         host: ip,
         port: Number(url.port || 443),
         servername: isIP(hostname) ? undefined : hostname,
         rejectUnauthorized: true,
       });
-      const abort = () => socket.destroy(signal.reason);
       const onError = (error: Error) => callback(error, null);
-      signal.addEventListener('abort', abort, { once: true });
-      socket.once('close', () => signal.removeEventListener('abort', abort));
+      socket.once('close', () => { if (activeSocket === socket) activeSocket = undefined; });
       socket.once('error', onError);
       socket.once('secureConnect', () => {
         const cert = socket.getPeerCertificate();
@@ -46,6 +54,12 @@ export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, cal
       });
     },
   });
+  const abortActive = () => {
+    activeSocket?.destroy(signal.reason);
+    void client.destroy(signal.reason instanceof Error ? signal.reason : undefined);
+  };
+  signal.addEventListener('abort', abortActive, { once: true });
+  if (signal.aborted) abortActive();
   let hasHeaders = false;
   try {
     const response = await client.request({
@@ -63,6 +77,7 @@ export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, cal
     const chunks: Buffer[] = [];
     for await (const chunk of response.body) chunks.push(chunk);
     const contentType = response.headers['content-type'];
+    if (expired()) return { ok: false, kind: 'body' };
     return {
       ok: true,
       bytes: chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks),
@@ -75,6 +90,9 @@ export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, cal
     }
     return { ok: false, kind: hasHeaders ? 'body' : 'request' };
   } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
+    signal.removeEventListener('abort', abortActive);
     await client.destroy();
   }
 }

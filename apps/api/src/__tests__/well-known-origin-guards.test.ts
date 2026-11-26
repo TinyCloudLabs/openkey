@@ -83,11 +83,11 @@ test('DNS and body share one five-second deadline that destroys the unfinished r
   const dnsTimer = setTimeout(() => releaseDns([{ address: '93.184.216.34', family: 4 }]), 3_000);
   let bodyTimer: NodeJS.Timeout | undefined;
   const { promise: socketClosedBeforeBodyEnd, resolve: closed } = Promise.withResolvers<boolean>();
-  fixture.handler = (_req, res) => {
+  fixture.handler = (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.write('{');
     bodyTimer = setTimeout(() => res.end('}'), 3_000);
-    res.once('close', () => closed(!res.writableEnded));
+    req.socket.once('close', () => closed(!res.writableEnded));
   };
 
   try {
