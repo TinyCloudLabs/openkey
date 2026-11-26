@@ -11,7 +11,7 @@
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { APPROVAL_EXPIRY, CODE, DONE, ONE_SECRET, STOPS, STOP_PARTS, UNVERIFIED_REQUESTER, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
+  import { APPROVAL_EXPIRY, CODE, DONE, ONE_SECRET, OWN_PAGE_APPROVAL, STOPS, STOP_PARTS, UNVERIFIED_REQUESTER, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
@@ -37,16 +37,19 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
-    approvalRequester,
+    verifiedApprovalRequester,
     delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
     isLoopbackHostname,
-    isEd25519DidKey,
-    TINYCLOUD_ONE_REQUESTER_DIDS,
+    TINYCLOUD_ONE_VERIFIED_REQUESTERS,
+    VERIFIED_REQUESTERS,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
+  import { signedScopeOfMessage, type RequesterScopeRequest } from '$lib/requester-scope-policy';
+  import { withLiveRequester } from '$lib/live-requester-model';
+  import { requesterRefusalLine } from '$lib/requester-refusal-line';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
@@ -263,7 +266,6 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
-  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -395,6 +397,8 @@
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
   let approvalRequestStartMs = $state<number | null>(null);
+  // What the request asked for before the 7-day limit on secrets and decrypt cut it.
+  let approvalRequestAskedMs = $state<number | null>(null);
   // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
   // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
   let renewalMaxLeaseMs = $state<number | null>(null);
@@ -575,6 +579,8 @@
   let requestReason = $state(normalizeReason(reasonParam));
   // The signer of a one-tap request, as the API checked it at /load; it alone can name the requester.
   let approvalIssuer = $state('');
+  // What the loaded request asks for, as `/load` returned it; a listed signer is named only for a request inside its policy.
+  let approvalRequestScope = $state<RequesterScopeRequest | null>(null);
   // Set when a `permissions` parameter is present (even empty) but
   // unreadable: the request is refused rather than falling back to the
   // default abilities, which apply only when the parameter is absent.
@@ -608,10 +614,32 @@
     ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  // What is signed: the grants and lifetime of the prepared message, read from the bytes the key will sign. A listed
+  // signer is named only when this and the loaded request both stay inside its policy; before a message is prepared,
+  // and for a message that adds or widens anything, no signer is named.
+  const signedScope = $derived(approvalRequestMode && siweMessage && selectedKey
+    ? signedScopeOfMessage(siweMessage, {
+        label: selectedKey.label ?? `Key ${selectedKey.keyIndex}`,
+        address: selectedKey.address,
+        chainId: 1,
+        provenance: selectedKey.keyType === 'EXTERNAL' ? 'external' : 'managed',
+      })
+    : null);
+  // The key-only TinyCloud One list does not name a requester here: a key with no policy would be named for any
+  // request it signs.
   const requester = $derived(approvalRequestMode
-    ? approvalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey))
+    ? verifiedApprovalRequester(approvalIssuer, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, approvalRequestScope, signedScope)
     : delegateRequester(approvedCallback));
-  // A one-tap request for one named secret names TinyCloud One in its heading only when One's key signed it.
+  // When a listed signer is shown as not verified because its request or prepared message is outside its policy, the
+  // one line saying why; any other unverified link has none.
+  const requesterRefusalText = $derived(approvalRequestMode && !requester
+    ? requesterRefusalLine(approvalIssuer, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, approvalRequestScope, signedScope)
+    : null);
+  // The names below read the live requester, not the one the review model was built with: the model is kept while
+  // the owner narrows the request, and a name frozen into it would stay after a later message stops being named.
+  const expiredRequesterName = $derived(reviewModel ? requester?.displayName?.trim() || '' : '');
+  const reviewModelShown = $derived(withLiveRequester(reviewModel, requester));
+  // A one-tap request for one named secret names its verified signer in its heading.
   const oneSecretWords = $derived(approvalRequestMode
     ? {
         headline: requester ? fill(ONE_SECRET.heading, { requester: requester.displayName }) : ONE_SECRET.headingUnnamed,
@@ -760,12 +788,14 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       approvalIssuer = typeof request.issuer === 'string' ? request.issuer : '';
+      approvalRequestScope = { permissions: request.permissions, grantLifetimeSeconds: request.grantLifetimeSeconds, renewal: request.renewal, context: request.context };
       requestReason = normalizeReason(request.reason);
       // A request that decrypts secrets lasts 7 days at most, whatever it signed; the server refuses more.
       const maxSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
       expiryMaxMs = maxSeconds * 1000;
       const startSeconds = approvalRequestStartSeconds(maxSeconds, request.suggestedLifetimeSeconds);
       approvalRequestStartMs = Math.max(MIN_EXPIRY_MS, startSeconds * 1000);
+      approvalRequestAskedMs = Math.max(MIN_EXPIRY_MS, approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds) * 1000);
       expiryParam = `${startSeconds}s`;
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
       if (request.renewal && result.renewalAvailable === true) {
@@ -977,6 +1007,16 @@
     if ((approvalRequestMode || deviceTransactionId) && renewal) body.renewal = renewal;
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
+    // A plain link says how it returns the delegation. The API classifies this itself (a loopback callback or a code
+    // to copy); it is a compatibility allowance, not a check of who made the link.
+    if (!approvalRequestMode && !deviceTransactionId) {
+      if (callback) {
+        body.linkDelivery = 'callback';
+        body.linkCallback = callback;
+      } else {
+        body.linkDelivery = 'paste';
+      }
+    }
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
       method: 'POST',
@@ -1371,7 +1411,7 @@
     const refreshed = parseCapabilityReview({
       message: data.prepared.siwe,
       signer: reviewModel.signer,
-      requester: reviewModel.requester,
+      requester: withLiveRequester(reviewModel, requester)!.requester,
       reason: reviewModel.reason,
       metadataTrust: reviewModel.metadataTrust,
       editable: true,
@@ -1831,8 +1871,8 @@
     }
   }
 
-  // The end pages. `requesterName` is the app or command the review named.
-  const requesterName = $derived(expiredRequesterName || requester?.displayName || '');
+  // The end pages. `requesterName` is the app or command named now, by the live requester.
+  const requesterName = $derived(requester?.displayName ?? '');
   // The full code was opened in place of the short one; its countdown no longer ends the page.
   let fullCodeOpen = $state(false);
   const codeExpired = $derived(!!shortCode && !!codeCountdown?.expired && !fullCodeOpen);
@@ -2163,11 +2203,13 @@
         {#if ownFolderLine}
           <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">{ownFolderLine}</div>
         {/if}
-        {#if spaceSetup}
-          <div
-            role="note"
-            class={`p-3 border rounded-xl text-sm ${spaceSetup.plan === 'setup' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-surface-50 border-surface-200 text-surface-700'}`}
-          >
+        {#if spaceSetup?.plan === 'setup'}
+          <!-- The server says the account has no space and this approval sets it up: said once, in place of the generic setup note. -->
+          <div role="note" class="p-3 border rounded-xl text-sm bg-blue-50 border-blue-200 text-blue-700">
+            {OWN_PAGE_APPROVAL.creates}
+          </div>
+        {:else if spaceSetup}
+          <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">
             {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}
@@ -2186,13 +2228,14 @@
           -->
           <div bind:this={actionRow}>
             <CliSigningAdapter
-              model={reviewModel}
+              model={reviewModelShown!}
               initialSelection={reviewSelection}
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
               oneSecret={oneSecretWords}
-              unverifiedRequester={approvalRequestMode && !requester ? UNVERIFIED_REQUESTER : null}
+              unverifiedRequester={approvalRequestMode && !requester ? { name: UNVERIFIED_REQUESTER.name, line: UNVERIFIED_REQUESTER.line, reason: requesterRefusalText } : null}
+              recipientKey={approvalRequestMode && did ? did : null}
               signInApp={requester?.displayName ?? null}
               transport={{
                 approving: delegating || updatingPermissions,
@@ -2226,9 +2269,9 @@
                   bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
                   // The most the requester signed; the default shown can be shorter (its suggestion).
                   maxMs: expiryMaxMs,
-                  shortenOnly: approvalRequestStartMs === null ? null : {
+                  shortenOnly: approvalRequestStartMs === null || approvalRequestAskedMs === null ? null : {
                     startMs: approvalRequestStartMs,
-                    onceNote: APPROVAL_EXPIRY.onceStart,
+                    askedMs: approvalRequestAskedMs,
                     limitNote: (ms) => fill(APPROVAL_EXPIRY.shortenLimit, { duration: formatDuration(ms) }),
                     lengthNote: (startMs, maxMs) => startMs < maxMs
                       ? fill(APPROVAL_EXPIRY.lengthen, { start: formatDuration(startMs), max: formatDuration(maxMs) })

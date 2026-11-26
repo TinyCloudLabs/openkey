@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
+import type { DelegateLinkDelivery } from "./delegate-link-delivery";
 import { siweExpirationTime } from "@openkey/capability-review";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
@@ -117,6 +118,17 @@ export interface AuthorizationContextIssueInput {
   /** Normalised requesting-app origin, for the per-sign-in count record only. */
   appOrigin?: string;
   /**
+   * The requesting site's origin as the widget verified it, set only when the SIWE named exactly that origin at
+   * prepare time. It decides whether OpenKey may set up the account on the node (`mayProvision`); absent
+   * means the request was not attributed.
+   */
+  requestOrigin?: string;
+  /**
+   * How a legacy /delegate link returns its delegation, as the server classified it at prepare time (never read
+   * from the approval). It decides whether the link counts as `delegate-link-local`; absent means it does not.
+   */
+  linkDelivery?: DelegateLinkDelivery;
+  /**
    * `apps/` encryption key grants admitted for the original SIWE at prepare
    * time: the resources as written and the abilities admitted on each.
    */
@@ -158,6 +170,8 @@ interface StoredContext {
   };
   verifiedManifest?: VerifiedManifestFields;
   appOrigin?: string;
+  requestOrigin?: string;
+  linkDelivery?: DelegateLinkDelivery;
   admittedAppKeys?: AdmittedAppKey[];
   expiryChangeable?: boolean;
   renewal?: BoundRenewalChoice;
@@ -412,6 +426,8 @@ export function issueAuthorizationContext(
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
+    requestOrigin: input.requestOrigin,
+    linkDelivery: input.linkDelivery,
     admittedAppKeys: input.admittedAppKeys,
     expiryChangeable: input.expiryChangeable,
     renewal: input.renewal,
@@ -870,6 +886,10 @@ export interface PeekSuccess {
     allowedActionIds: string[];
     initialSelectionActionIds: string[];
     appOrigin?: string;
+    /** The requesting site's origin, checked against the SIWE at prepare time; absent when the request was not attributed. */
+    requestOrigin?: string;
+    /** How a legacy /delegate link returns its delegation, as the server classified it at prepare time. */
+    linkDelivery?: DelegateLinkDelivery;
     admittedAppKeys?: AdmittedAppKey[];
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
@@ -925,6 +945,8 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       allowedActionIds: [...stored.allowedActionIds],
       initialSelectionActionIds: [...stored.initialSelectionActionIds],
       appOrigin: stored.appOrigin,
+      requestOrigin: stored.requestOrigin,
+      linkDelivery: stored.linkDelivery,
       admittedAppKeys: stored.admittedAppKeys,
       expiryChangeable: stored.expiryChangeable,
       renewal: stored.renewal,

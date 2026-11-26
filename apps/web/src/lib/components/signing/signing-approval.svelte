@@ -57,6 +57,8 @@
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildSummaryStatements,
+    type SummaryStatement,
+    RENEWAL_ONLY_COPY,
     grantIsAppKeyDecrypt,
     sensitiveSummaryCount,
     grantHeading,
@@ -65,6 +67,8 @@
     SIWE_WITHOUT_EXPIRY,
     NAMED_SECRET_DECRYPT_ROW,
     oneNamedSecret,
+    secretListLabel,
+    secretReadParts,
     sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
@@ -82,10 +86,15 @@
     allSecretsCard,
     allSecretsReach,
     grantDecryptsOneSecret,
+    grantOnceReach,
+    allSecretsReadPart,
+    isScopedSecretGrant,
     secretLifetimeCapApplies,
     SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
   } from "@openkey/capability-review";
+  import { OWN_PAGE_APPROVAL, RECIPIENT_KEY } from "@openkey/sdk/approval-copy";
+  import { shortRecipientKey } from "$lib/recipient-key";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import { NETWORK_DECRYPT_CAP } from "$lib/network-decrypt-cap";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
@@ -97,12 +106,17 @@
   import type { ApproveVisibility } from "$lib/approve-visibility";
   import {
     ONCE_DEFAULT_EXPIRY_MS,
+    SECRET_BLOCK_COPY,
+    splitAroundName,
     accessLastsLine,
+    onceCautionLine,
     onceDefaultExpiryMs,
+    onceLongerChoice,
     remainingAccessMs,
     requestedExpiryMs,
+    secretLongerChoice,
   } from "$lib/approval-expiry";
-  import { isOnceTier, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
+  import { isOnceTier, onceReachOf, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -169,8 +183,15 @@
      * time.
      */
     onceExpiryDefault?: boolean;
+    /**
+     * Set by the popup and frame pages: the server limits an owner's pick on a one-time approval to 7 days, whatever
+     * the web cap flags say, so the one-time choice offers no more.
+     */
+    oncePickCapped?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
+    /** The app asked for renewal and the server has not answered yet; the access line reads "Checking renewal…". */
+    renewalPending?: boolean;
     /**
      * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
      * encryption network, or on keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
@@ -191,7 +212,12 @@
      * Set only by a one-tap approval whose signer OpenKey can't name: the "Requested by" value, with a line under
      * it, while the request names no requester.
      */
-    unverifiedRequester?: { name: string; line: string } | null;
+    unverifiedRequester?: { name: string; line: string; reason?: string | null } | null;
+    /**
+     * The key an approval request's access goes to (its `did:key`), set only by the approval request page. It is
+     * shown under the requester line in short form, with the whole key on opening it.
+     */
+    recipientKey?: string | null;
     /**
      * The app a sign-in is for, set by a surface that took the name from OpenKey's own list of requesters and never
      * from the request (the CLI link page). A manifest name or origin host the request carries is read from the model.
@@ -231,13 +257,16 @@
     expiryMaxMs = null,
     shortenOnlyExpiry = null,
     onceExpiryDefault = false,
+    oncePickCapped = false,
     renewal = null,
+    renewalPending = false,
     elevated = null,
     approveVisibility = null,
     claimed = null,
     oneSecret = null,
     signInApp = null,
     unverifiedRequester = null,
+    recipientKey = null,
     onApprove,
     onCancel,
     onRetry,
@@ -297,23 +326,92 @@
   // currently approving. Advanced details deliberately retains the baseline
   // grants so Edit/Reset can re-add a removed action, but a removed decrypt or
   // secret action must never survive in the top-level final review.
-  const selectedGrants = $derived(
+  const renewalOn = $derived(renewal?.leaseMs != null);
+  const selectedWithRenewal = $derived(
     model.permissions.flatMap((grant) => {
       const actions = grant.actions.filter((action) => selection.has(action.id));
       return actions.length > 0 ? [{ ...grant, actions }] : [];
     }),
   );
 
-  // Statements for the summary view. The rows, and the count in the Sensitive
-  // header, come from one function so the header always counts the rows marked
-  // Sensitive below it (capability-review `buildSummaryStatements`).
-  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
-  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const selectedGrants = $derived(
+    renewalOn ? selectedWithRenewal : selectedWithRenewal.filter((grant) => !grant.renewalOnly),
+  );
+  const renewalOnlyStatements = $derived(
+    buildSummaryStatements(selectedWithRenewal.filter((grant) => grant.renewalOnly)),
+  );
+  const plainSummaryStatements = $derived(
+    buildSummaryStatements(selectedGrants.filter((grant) => !grant.renewalOnly)),
+  );
+  // The compact secret block: when every Sensitive row of a request that carries a length choice reads secrets, the
+  // reading is one row (the name for one secret, "Read secret values" for several or all) with one caution line
+  // and the length toggle under it. The names of several secrets stay under Advanced details.
+  const secretBlock = $derived.by(() => {
+    if (!onExpiryChange || model.protocol !== "tinycloud-siwe-recap") return null;
+    // A scoped secret's row would show its bare name without the scope, so a request that has one keeps its own rows.
+    if (selectedGrants.some(isScopedSecretGrant)) return null;
+    const rows = plainSummaryStatements;
+    const oneName = oneNamedSecret(selectedGrants);
+    const named = rows.filter((row) => row.secret !== undefined);
+    let covered: Set<string>;
+    let caution: string;
+    let one = false;
+    let all = false;
+    let row: string = SECRET_BLOCK_COPY.rowSeveral;
+    if (onceTier && onceReachOf(onceGrants) === "secrets") {
+      // Only the read of every secret reads as one row: a KV read of the secrets directory, a decrypt on the secrets
+      // prefix, or both, each with that one action. A write, a wildcard, a wider path or the scoped prefix keeps the
+      // rows of its own.
+      if (onceGrants.some((grant) => grantOnceReach(grant) !== null && allSecretsReadPart(grant) === null)) return null;
+      // Everything that opens the secrets as a whole reads as the one row, whichever way the request words it.
+      covered = new Set(
+        onceGrants.filter((grant) => grantOnceReach(grant) === "secrets").flatMap((grant) => buildSummaryStatements([grant]).map((row) => row.key)),
+      );
+      caution = SECRET_BLOCK_COPY.cautionAll;
+      row = SECRET_BLOCK_COPY.rowAll;
+      all = true;
+    } else if (oneName !== null) {
+      covered = new Set([NAMED_SECRET_DECRYPT_ROW]);
+      caution = SECRET_BLOCK_COPY.cautionOne(oneName);
+      one = true;
+    } else if (named.length > 0) {
+      covered = new Set(named.map((row) => row.key));
+      one = named.length === 1;
+      caution = one ? SECRET_BLOCK_COPY.cautionOne(named[0]!.secret!.name) : SECRET_BLOCK_COPY.cautionSeveral(named.length);
+    } else {
+      return null;
+    }
+    if (rows.some((row) => row.severity === "sensitive" && !covered.has(row.key))) return null;
+    // A decrypt that only renewal adds reaches the same secrets once renewal is on: "No other secret" is untrue of a
+    // key for another secret, so the request keeps its own rows.
+    const namedKeys = new Set(named.map((entry) => entry.secret!.keyPath));
+    const stray = renewalOnlyStatements.some((entry) =>
+      entry.secret ? !all && !namedKeys.has(entry.secret.keyPath) : entry.severity === "sensitive" && !covered.has(entry.key));
+    if (stray) return null;
+    // The secrets the row covers, from the same rows that make the count in the caution: none for the whole vault.
+    const secrets = all ? [] : named.flatMap((entry) => (entry.secret ? [entry.secret] : []));
+    return { covered, caution, one, row, secrets, name: one ? (oneName ?? named[0]!.secret!.name) : null };
+  });
+  const summaryStatements = $derived.by(() => {
+    if (secretBlock === null || secretBlock.one) return plainSummaryStatements;
+    const first = plainSummaryStatements.findIndex((row) => secretBlock.covered.has(row.key));
+    if (first < 0) return plainSummaryStatements;
+    const row: SummaryStatement = { key: "secret-values", primaryText: secretBlock.row, severity: "sensitive", unmapped: false, codeSpans: false };
+    return plainSummaryStatements.flatMap((other, index) => (index === first ? [row] : secretBlock.covered.has(other.key) ? [] : [other]));
+  });
+  const secretStatements = $derived(summaryStatements.filter((statement) => statement.secret !== undefined));
+  const groupSecrets = $derived(secretStatements.length >= 4);
+  const effectiveStatements = $derived(
+    renewalOn && renewalOnlyStatements.length > 0 ? buildSummaryStatements(selectedGrants) : summaryStatements,
+  );
+  const sensitiveCount = $derived(sensitiveSummaryCount(effectiveStatements));
+  const renewalSensitive = $derived(renewalNeedsSensitiveConfirm(selectedWithRenewal));
   const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
   const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
   // A signed request that can open all secrets or all encrypted data starts as a whole at one hour or less.
-  const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
+  const onceGrants = $derived(shortenOnlyExpiry ? model.permissions : selectedGrants);
+  const onceTier = $derived(isOnceTier(onceGrants));
   const onceDefaultMs = $derived(
     onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
       ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
@@ -344,16 +442,26 @@
   const onceDefaultPending = $derived(
     onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === null && (shortenOnlyExpiry !== null || !onceDefaultSent),
   );
+  // The default starts once the tier holds and the owner has picked nothing. Leaving the tier (the broad access is
+  // removed) drops only the one-hour default, so the app's ask applies again; the owner's own pick is kept, and
+  // adding the access back starts at one hour again only when the owner had picked nothing. A pick of "what the app
+  // asked" is the app's ask itself and ends with the tier.
   $effect(() => {
-    if (approving || previewPending || !onExpiryChange || ownerChoseExpiry) return;
-    if (onceDefaultMs !== null) {
-      if (expiryMs === null && !onceDefaultSent) {
-        onceDefaultSent = true;
-        onExpiryChange(onceDefaultMs);
-      }
-    } else if (onceDefaultSent) {
+    if (approving || previewPending || !onExpiryChange) return;
+    if (onceDefaultMs === null) {
+      if (!onceDefaultSent) return;
       onceDefaultSent = false;
+      if (ownerChoseExpiry) {
+        if (expiryMs === null) ownerChoseExpiry = false;
+        return;
+      }
       if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+      return;
+    }
+    if (ownerChoseExpiry) return;
+    if (expiryMs === null && !onceDefaultSent) {
+      onceDefaultSent = true;
+      onExpiryChange(onceDefaultMs);
     }
   });
   // An app's longer time on secret keys starts at the 7 days the server allows (the one-hour start, where it applies,
@@ -370,13 +478,31 @@
     ownerChoseExpiry = true;
     onExpiryChange?.(ms);
   }
-  const onceDefaultShown = $derived(onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === onceDefaultMs);
-  const signedOnceNote = $derived(
-    shortenOnlyExpiry && onceTier && renewal?.leaseMs == null &&
-    (expiryMs ?? shortenOnlyExpiry.startMs) <= ONCE_DEFAULT_EXPIRY_MS
-      ? shortenOnlyExpiry.onceNote
-      : null,
-  );
+  // The one-time choice: 1 hour, or what the app asked for. The longer option goes no higher than what the server
+  // allows this surface: a popup or frame limits every one-time pick to 7 days, a link or device follows the secret
+  // cap, and a signed request follows the start it was capped to (its `askedMs` is the app's own ask).
+  const onceCapMs = $derived(secretCapMs ?? (oncePickCapped ? SECRET_GRANT_MAX_SECONDS * 1000 : null));
+  const onceChoice = $derived.by(() => {
+    if (!onceExpiryDefault || !onExpiryChange || model.protocol !== "tinycloud-siwe-recap" || !onceTier) return null;
+    const reach = onceReachOf(onceGrants);
+    if (reach === null) return null;
+    const asked = shortenOnlyExpiry ? shortenOnlyExpiry.askedMs : requestedExpiry;
+    const cap = shortenOnlyExpiry
+      ? (shortenOnlyExpiry.startMs < shortenOnlyExpiry.askedMs ? shortenOnlyExpiry.startMs : null)
+      : onceCapMs;
+    return { longer: onceLongerChoice(asked, cap), caution: onceCautionLine(reach) };
+  });
+  // The length toggle of the compact secret block: 1 hour, or the app's ask (the longest allowed when that is less).
+  const compactChoice = $derived.by(() => {
+    if (secretBlock === null) return null;
+    const asked = shortenOnlyExpiry ? shortenOnlyExpiry.askedMs : requestedExpiry;
+    // Where the one-time rules apply a signed request goes no higher than its start; otherwise it may be lengthened up to
+    // the most the fold allows.
+    const cap = shortenOnlyExpiry
+      ? (onceTier ? (shortenOnlyExpiry.startMs < shortenOnlyExpiry.askedMs ? shortenOnlyExpiry.startMs : null) : expiryFoldMaxMs)
+      : onceTier ? onceCapMs : unsignedMaxMs;
+    return { longer: secretLongerChoice(asked, cap), caution: secretBlock.caution, name: secretBlock.name, endsAt: model.expiry ?? null, explicit: onceTier || shortenOnlyExpiry !== null };
+  });
   // A signed request for a secret's own key says where it starts and the most it can be.
   const signedLengthNote = $derived(
     shortenOnlyExpiry && !onceTier && renewal?.leaseMs == null && expiryFoldMaxMs !== null &&
@@ -404,6 +530,12 @@
   const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  const renewalOnlyLine = $derived.by(() => {
+    const app = requesterShown || RENEWAL_ONLY_COPY.appFallback;
+    if (!renewal) return previewPending ? null : RENEWAL_ONLY_COPY.unavailable(app);
+    if (renewal.turnedOff) return RENEWAL_ONLY_COPY.turnedOff(app);
+    return RENEWAL_ONLY_COPY.dependsOnRenewal(app);
+  });
   // The sign-in heading is set in the largest text, so it names only what the request cannot write: a manifest name
   // OpenKey verified, else the verified origin host, else a name the surface took from OpenKey's own list. A recap
   // that hosts a new space on a node sets up hosting for the owner, so it keeps the protocol heading.
@@ -416,9 +548,6 @@
   // The id on a matched manifest comes from that manifest; an id the app sent beside a matched manifest that names
   // none is the app's own word, which the manifest neither confirms nor contradicts.
   const manifestMatched = $derived(model.metadataTrust.status === "origin-bound" || model.metadataTrust.status === "verified");
-  // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
-  // nothing identifies the requester (a link, a device sign-in, an approval link).
-  const onceNoteSite = $derived(originHost ?? "This request");
   // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
     !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatLocalAccessEnd) : null,
@@ -428,8 +557,8 @@
     return rows.filter((row, index) => rows.findIndex((other) => other.primaryText === row.primaryText) === index);
   });
 
-  function isSelected(action: CapabilityAction): boolean {
-    return selection.has(action.id);
+  function isSelected(grant: CapabilityGrant, action: CapabilityAction): boolean {
+    return (!grant.renewalOnly || renewalOn) && selection.has(action.id);
   }
 
   // The app keys of a request are approved with the rest of it or removed as
@@ -873,7 +1002,16 @@
       </p>
       {#if requesterUnverified}
         <p class="requester-line">{unverifiedRequester!.line}</p>
+        {#if unverifiedRequester!.reason}
+          <p class="requester-line" data-testid="requester-refusal">{unverifiedRequester!.reason}</p>
+        {/if}
       {/if}
+    {/if}
+    {#if recipientKey}
+      <details class="recipient-key">
+        <summary class="requester-line">{RECIPIENT_KEY.label} <code class="mono recipient-key-short">{shortRecipientKey(recipientKey)}</code></summary>
+        <code class="mono recipient-key-full" data-testid="recipient-key-full">{recipientKey}</code>
+      </details>
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
@@ -894,7 +1032,7 @@
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
-          This reason comes from the caller and is not verified.
+          {OWN_PAGE_APPROVAL.requesterText}
         </p>
       {/if}
     </section>
@@ -912,14 +1050,19 @@
     Count the badged rows only when mixed with unbadged rows. Not-granted
     informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
+  {#if sensitiveCount > 0 && sensitiveCount < effectiveStatements.length + notGrantableStatements.length && !(secretBlock !== null && sensitiveCount === 1)}
     <p class="sensitive-callout" role="status" aria-live="polite">
       {sensitiveRowsCallout(sensitiveCount)}
     </p>
   {/if}
 
-  {#snippet statementText(text: string, codeSpans: boolean)}
-    {#if codeSpans}
+  {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null, secret: SummaryStatement["secret"] = undefined)}
+    {@const parts = splitAroundName(text, name)}
+    {#if secret?.scope !== undefined}
+      {#each secretReadParts(secret.name, secret.scope) as part}{#if part.named}<span class="secret-name">{part.text}</span>{:else}{part.text}{/if}{/each}
+    {:else if parts}
+      {parts.before}<span class="secret-name">{parts.run}</span>{parts.after}
+    {:else if codeSpans}
       {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
     {:else}
       {text}
@@ -932,8 +1075,24 @@
     Requester provenance and exact resource identifiers are deliberately kept
     in Advanced details so the first viewport is useful to ordinary users.
   -->
+  {#snippet summaryRow(statement: SummaryStatement, active = true)}
+    <li class="summary-statement" data-severity={active ? statement.severity : undefined}>
+      <span class="statement-line">
+        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans, statement.secret?.name ?? (statement.key === NAMED_SECRET_DECRYPT_ROW ? oneNamedSecret(selectedGrants) : null), statement.secret)}</span>
+        {#if active && statement.severity === "sensitive"}
+          <span class="summary-sensitive-pill">Sensitive</span>
+        {/if}
+      </span>
+      {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
+        <span class="statement-detail">{oneSecret!.decryptNote}</span>
+      {:else if statement.detail}
+        <span class="statement-detail">{statement.detail}</span>
+      {/if}
+    </li>
+  {/snippet}
+
   <section class="summary" aria-label="Requested access">
-    {#if identity && summaryStatements.length > 0}
+    {#if identity && effectiveStatements.length > 0}
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
     {#if allSecretsSummaryCard}
@@ -948,30 +1107,50 @@
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
-          <li
-            class="summary-statement"
-            data-severity={statement.severity}
-          >
-            <span class="statement-line">
-              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
-              {#if statement.severity === "sensitive"}
-                <span class="summary-sensitive-pill">Sensitive</span>
-              {/if}
-            </span>
-            {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
-              <span class="statement-detail">{oneSecret!.decryptNote}</span>
-            {:else if statement.detail}
-              <span class="statement-detail">{statement.detail}</span>
+          {#if groupSecrets && statement.secret !== undefined}
+            {#if statement === secretStatements[0]}
+              <li class="summary-statement" data-severity="sensitive">
+                <details class="secret-summary">
+                  <summary>
+                    <span class="statement-line">
+                      <span class="statement-primary">Read {secretStatements.length} secrets</span>
+                      <span class="summary-sensitive-pill">Sensitive</span>
+                    </span>
+                    <span class="link show-secrets">Show the secrets</span>
+                    <span class="link hide-secrets">Hide the secrets</span>
+                  </summary>
+                  <ul class="secret-statements">
+                    {#each secretStatements as row (row.key)}
+                      <li><code class="mono">{secretListLabel(row.secret!)}</code></li>
+                    {/each}
+                  </ul>
+                </details>
+              </li>
             {/if}
-          </li>
+          {:else}
+            {@render summaryRow(statement)}
+          {/if}
         {/each}
       </ul>
-    {:else if !isMalformedRecap}
+    {:else if !isMalformedRecap && effectiveStatements.length === 0}
       <p class="summary-empty">
         {model.permissions.length > 0
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+    {#if renewalOnlyStatements.length > 0}
+      <section aria-label={RENEWAL_ONLY_COPY.heading}>
+        <h3 class="all-secrets-heading">{RENEWAL_ONLY_COPY.heading}</h3>
+        {#if renewalOnlyLine}
+          <p class="summary-note">{renewalOnlyLine}</p>
+        {/if}
+        <ul class="summary-statements">
+          {#each renewalOnlyStatements as statement (statement.key)}
+            {@render summaryRow(statement, renewalOn)}
+          {/each}
+        </ul>
+      </section>
     {/if}
     {#if appKeyAccessLine}
       <p class="summary-note">{appKeyAccessLine}</p>
@@ -995,14 +1174,15 @@
         maxMs={unsignedMaxMs}
         disabled={approving}
         onChange={chooseExpiry}
-        onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
-        onceNote={signedOnceNote}
+        {onceChoice}
+        compact={compactChoice}
         lengthNote={signedLengthNote}
         {renewal}
-        sensitive={renewalNeedsSensitiveConfirm(selectedGrants)}
+        {renewalPending}
+        sensitive={renewalSensitive}
         {requestedBy}
         chooser={false}
-        permissionCount={summaryStatements.length}
+        permissionCount={effectiveStatements.length}
       />
     {:else if !onExpiryChange && signedAsWrittenMs !== null}
       <p class="summary-note" data-testid="approval-access-line">{accessLastsLine("app", signedAsWrittenMs)}</p>
@@ -1222,6 +1402,7 @@
           maxMs={expiryFoldMaxMs}
           limitNote={shortenOnlyExpiry?.limitNote}
           disabled={approving}
+          explicitAsked={onceDefaultMs !== null}
           onChange={chooseExpiry}
           {renewal}
         />
@@ -1258,6 +1439,28 @@
         {#if editing && appKeyGrants.length > 0}
           <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
         {/if}
+        {#if secretBlock !== null && secretBlock.secrets.length > 0}
+          <details class="severity-bucket" data-severity="sensitive" aria-label={SECRET_BLOCK_COPY.groupHeading} data-testid="secrets-group" open>
+            <summary class="bucket-summary">
+              <span class="bucket-heading">{SECRET_BLOCK_COPY.groupHeading}</span>
+              <span class="bucket-hint">{SECRET_BLOCK_COPY.groupHint}</span>
+            </summary>
+            <div class="bucket-content">
+              <ul class="grant-list">
+                {#each secretBlock.secrets as secret (secret.keyPath)}
+                  {@const rowParts = splitAroundName(SECRET_BLOCK_COPY.groupRow(secret.name), secret.name)}
+                  <li class="grant">
+                    <div class="grant-heading">
+                      <span class="grant-title">{#if rowParts}{rowParts.before}<span class="secret-name">{rowParts.run}</span>{rowParts.after}{:else}{SECRET_BLOCK_COPY.groupRow(secret.name)}{/if}</span>
+                      <span class="grant-severity" data-severity="sensitive">Sensitive</span>
+                    </div>
+                    <code class="grant-path mono"><span class="grant-target" title={secret.kvPath ?? secret.keyPath}>{secret.kvPath ?? secret.keyPath}</span></code>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </details>
+        {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
@@ -1273,7 +1476,7 @@
               <ul class="grant-list">
                 {#each bucket.grants as grant}
                   {@const unselectedActions = grant.actions.filter(
-                    (action) => !isSelected(action),
+                    (action) => !isSelected(grant, action),
                   )}
                   <li class="grant">
                     <div class="grant-heading">
@@ -1316,16 +1519,16 @@
                       </label>
                     {/if}
                     <ul class="action-list">
-                      {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
+                      {#each editing ? grant.actions : grant.actions.filter((action) => isSelected(grant, action)) as action}
                         <li class="action">
                           {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
-                                checked={isSelected(action)}
+                                checked={isSelected(grant, action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled || isLockedByAppKeys(action)}
+                                disabled={approveDisabled || isLockedByAppKeys(action) || (grant.renewalOnly && !renewalOn)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
@@ -1551,6 +1754,21 @@
     font-weight: 600;
     color: #0f172a;
   }
+  .recipient-key summary {
+    cursor: pointer;
+  }
+  .recipient-key-short {
+    font-weight: 600;
+    color: #0f172a;
+  }
+  .recipient-key-full {
+    display: block;
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #475569;
+    overflow-wrap: anywhere;
+  }
   .context {
     display: flex;
     flex-direction: column;
@@ -1630,6 +1848,12 @@
   .summary-statement[data-severity="attention"] {
     color: #7c4a03;
   }
+  /* A secret's name stays on one line; only a name wider than the card breaks, at any point. */
+  .secret-name {
+    display: inline-block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
   .statement-primary {
     /* A long unbroken id (a 32-hex share key) wraps inside the row instead of pushing the Sensitive pill off the card. */
     min-width: 0;
@@ -1638,6 +1862,24 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .secret-summary > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .secret-summary > summary::-webkit-details-marker {
+    display: none;
+  }
+  .secret-summary:not([open]) .hide-secrets,
+  .secret-summary[open] .show-secrets {
+    display: none;
+  }
+  .secret-statements {
+    margin: 6px 0 0;
+    padding-inline-start: 18px;
+  }
+  .secret-statements > li + li {
+    margin-top: 4px;
   }
   .statement-detail {
     margin-top: 2px;

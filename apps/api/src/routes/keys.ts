@@ -12,6 +12,8 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { hostSigningRefusalBody, refusesThirdPartySpaceHost } from '../services/space-host-signing';
+import { originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -419,6 +421,11 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
+  // The asker is the widget's sender-checked `requestOrigin`, and only when the SIWE named exactly that origin. The raw
+  // body field on its own, the Origin header (always OpenKey's own here) and the SIWE domain are not the authority.
+  const authority = siweCheck.siwe && siweCheck.ok
+    ? originProvisionAuthority(typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined)
+    : UNATTRIBUTED_PROVISION_AUTHORITY;
   const appKeyRefusal = appKeyRefusalForMessage(body.message);
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
@@ -455,6 +462,14 @@ keysRouter.post('/:keyId/sign', async (c) => {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
 
+  // A signature on a space host message is the ability to create that space on the node, whichever site holds the
+  // signed bytes. TinyCloud's own apps are signed for. Any other site is signed for only to host the owner's own
+  // spaces, `default` included, for an owner whose primary space is hosted (`refusesThirdPartySpaceHost`); every other message,
+  // including a sign-in that names a space, is signed as before. Checked before the passkey gate and before unseal.
+  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [authority] })) {
+    return c.json(await hostSigningRefusalBody(prisma, key), 403);
+  }
+
   // TC-3442: the account's passkey setting, before the key is unsealed. A passkey sign-in the web sign page was opened
   // with covers it for five minutes; the cover is spent the moment this approval passes the gate.
   const webFlow = webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER));
@@ -481,7 +496,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
   const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
-    ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
+    ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format, authority }),
     waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {

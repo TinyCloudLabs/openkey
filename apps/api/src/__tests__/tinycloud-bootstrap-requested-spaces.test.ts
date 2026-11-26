@@ -6,11 +6,14 @@ import { createFakeBootstrapStore } from './fake-bootstrap-state';
 import { startFakeTinyCloudNode, type FakeTinyCloudNode } from './fake-tinycloud-node';
 import type { BootstrapSpaceName } from '@tinycloud/bootstrap';
 import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { originProvisionAuthority } from '../services/provision-authority';
 
 const service = await import('../services/tinycloud-bootstrap?requested-spaces' as string) as typeof import('../services/tinycloud-bootstrap');
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
 const key = { id: 'aggregate-key', address: account.address, keyType: 'MANAGED' };
+// A first-party app: only first-party authority sets an account up on the node.
+const authority = originProvisionAuthority('https://tinycloud.chat');
 const spaceId = (name: string) => `tinycloud:pkh:eip155:1:${account.address}:${name}`;
 const originalEnv = { host: process.env.TINYCLOUD_BOOTSTRAP_HOST, node: process.env.NODE_ENV, on: process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN };
 let node: FakeTinyCloudNode;
@@ -40,7 +43,7 @@ afterEach(() => {
 
 function run(spaces: readonly BootstrapSpaceName[] = ['default', 'public'], alreadyHosted = false) {
   return service.ensureTinyCloudBootstrap({
-    prisma: store.prisma, userId: 'aggregate-user', key, privateKey, host: node.url,
+    prisma: store.prisma, userId: 'aggregate-user', key, privateKey, host: node.url, authority,
     requestedSpaces: { spaces, alreadyHosted, nodeReportedUnhosted: true, report: (report) => { reports.push(report); } },
   });
 }
@@ -108,7 +111,7 @@ describe('TC-2490 aggregate requested-space bootstrap', () => {
     const result = await hostRequestedSpaceWithinBudget(({ alreadyHosted, report }) => {
       attempts.push(alreadyHosted);
       const work = service.ensureTinyCloudBootstrap({
-        prisma: store.prisma, userId: 'aggregate-user', key, privateKey, host: node.url,
+        prisma: store.prisma, userId: 'aggregate-user', key, privateKey, host: node.url, authority,
         requestedSpaces: { spaces: ['default', 'public'], alreadyHosted, nodeReportedUnhosted: true, report },
       });
       background = work;

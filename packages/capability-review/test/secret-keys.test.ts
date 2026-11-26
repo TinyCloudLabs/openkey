@@ -99,9 +99,10 @@ describe("one secret's own key in the summary", () => {
   it("names the secret from the KV path the request pairs with its key, beside other permissions", () => {
     const notes = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default/kv/notes/`;
     const summary = rows({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT, CREATE], [notes]: [KV_GET] });
-    expect(summary).toContainEqual(["Read the secret OPENAI_API_KEY", "sensitive", null]);
-    expect(summary).toContainEqual(["Create a key for the new secret OPENAI_API_KEY.", "attention", "It can't read any of your secrets."]);
-    expect(summary.filter(([text]) => text === "Read the secret OPENAI_API_KEY")).toHaveLength(1);
+    expect(summary).toEqual([
+      ["Read the secret OPENAI_API_KEY", "sensitive", null],
+      ["Read application data", "standard", null],
+    ]);
   });
 
   it("an exact secret key keeps the app's length; the secrets/ prefix and a whole network start at one hour", () => {
@@ -142,22 +143,37 @@ describe("the all-secrets card", () => {
     expect(reach({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT, CREATE] })).toBeNull();
   });
 
-  it("says the card's words, with the older-data sentence only beside a network decrypt", () => {
+  it("says the card's words, with the master key named only beside a network decrypt", () => {
     const trust = "Allow this only for your own tools on a device you trust.";
     expect(allSecretsCard({ kind: "read-and-add", alsoWholeAccount: true }, "secrets.tinycloud.xyz")).toEqual({
-      heading: "Let secrets.tinycloud.xyz read and add all your secrets?",
-      body: `It can also open older encrypted data on your account. ${trust}`,
+      heading: "Let secrets.tinycloud.xyz read and add all your secrets and use your master key?",
+      body: `Your master key can open all your encrypted data. ${trust}`,
       cue: null,
+    });
+    expect(allSecretsCard({ kind: "read", alsoWholeAccount: true }, null)).toEqual({
+      heading: "Let this app read all your secrets and use your master key?",
+      body: `Your master key can open all your encrypted data. ${trust}`,
+      cue: "OpenKey can't confirm the site.",
     });
     expect(allSecretsCard({ kind: "read", alsoWholeAccount: false }, "secrets.tinycloud.xyz")).toEqual({
       heading: "Let secrets.tinycloud.xyz read all your secrets?",
       body: trust,
       cue: null,
     });
-    expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, null)).toEqual({
-      heading: "Let this app open all your encrypted data?",
-      body: "That covers every secret and everything else you've encrypted in TinyCloud. Allow this only for an app you trust.",
+    expect(allSecretsCard({ kind: "read-and-add", alsoWholeAccount: false }, null)).toEqual({
+      heading: "Let this app read and add all your secrets?",
+      body: trust,
       cue: "OpenKey can't confirm which site asked.",
+    });
+    expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, null)).toEqual({
+      heading: "Use your master key to decrypt?",
+      body: "This app is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.",
+      cue: "OpenKey can't confirm the site.",
+    });
+    expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, "gk.gbafa.com")).toEqual({
+      heading: "Use your master key to decrypt?",
+      body: "gk.gbafa.com is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.",
+      cue: null,
     });
   });
 });

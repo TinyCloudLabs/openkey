@@ -1,6 +1,6 @@
 import { DONE, fill } from '@openkey/sdk/approval-copy';
 
-export type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
+export type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'no-setup' | 'external-wallet';
 
 export interface SpaceSetupNotice {
   space: string;
@@ -19,7 +19,7 @@ export function parseSpaceSetup(value: unknown): SpaceSetupNotice | null {
   if (
     typeof space !== 'string' ||
     !/^[a-z0-9][a-z0-9-]*$/.test(space) ||
-    (plan !== 'setup' && plan !== 'auto-sign-off' && plan !== 'external-wallet')
+    (plan !== 'setup' && plan !== 'auto-sign-off' && plan !== 'no-setup' && plan !== 'external-wallet')
   ) return null;
   return { space, plan };
 }
@@ -30,6 +30,9 @@ export function spaceSetupNoticeText(notice: SpaceSetupNotice): string {
   }
   if (notice.plan === 'auto-sign-off') {
     return `Your ‘${notice.space}’ space in TinyCloud may not be set up yet. Auto-Sign is off, so approving won't set it up. If it's needed, the app will tell you what to do.`;
+  }
+  if (notice.plan === 'no-setup') {
+    return `Your ‘${notice.space}’ space in TinyCloud may not be set up yet. Approving this link won't set it up. If it's needed, the app will tell you what to do.`;
   }
   return `Your ‘${notice.space}’ space in TinyCloud may not be set up yet. Approving with an external wallet won't set it up. If it's needed, the app will tell you what to do.`;
 }

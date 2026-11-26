@@ -102,6 +102,7 @@ async function openReview(page: Page, options: {
 }
 
 const line = (page: Page) => page.getByTestId('approval-expiry-line');
+const lengthLine = (page: Page) => page.getByTestId('approval-expiry-length-line');
 const lengthNote = (page: Page) => page.getByTestId('approval-expiry-length-note');
 const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exact: true });
 
@@ -119,9 +120,11 @@ async function typeTime(fold: Locator, value: string) {
 test('one secret\'s key starts at the suggested hour and may be lengthened up to the signed 7 days', async ({ page }, testInfo) => {
   const expiries = await openReview(page, { grants: [secret, keyDecrypt], grantLifetimeSeconds: 7 * DAY, suggestedLifetimeSeconds: HOUR });
   await expect(approve(page)).toBeEnabled();
-  await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
-  await expect(lengthNote(page)).toHaveText('This request starts at 1 hour, as the app asked. You can choose up to 7 days.');
-  await expect(page.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(lengthLine(page)).toHaveText('Access lasts 1 hour.');
+  await expect(page.getByRole('radio')).toHaveCount(0);
+  await expect(lengthNote(page)).toHaveCount(0);
+  await expect(page.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
+  await expect(page.getByTestId('approval-expiry-once-caution')).toHaveCount(0);
   await expect(page.getByTestId('all-secrets-card')).toHaveCount(0);
   await expect(page.getByRole('dialog').locator('.summary-statement .statement-primary')).toHaveText(['Read the secret OPENAI_API_KEY']);
   await expect(page.getByRole('dialog')).toContainText('Lets it open only this secret.');
@@ -130,7 +133,7 @@ test('one secret\'s key starts at the suggested hour and may be lengthened up to
 
   const fold = await openFold(page);
   await typeTime(fold, '3d');
-  await expect(line(page)).toContainText('3 days');
+  await expect(lengthLine(page)).toHaveText(/^Access lasts 3 days, until /);
   expect(expiries.at(-1)).toBe(`${3 * DAY}s`);
 
   await typeTime(fold, '8d');
@@ -141,22 +144,22 @@ test('one secret\'s key starts at the suggested hour and may be lengthened up to
 test('a request that starts at its 7-day maximum says so, and still offers shorter', async ({ page }) => {
   const expiries = await openReview(page, { grants: [secret, keyDecrypt], grantLifetimeSeconds: 7 * DAY, suggestedLifetimeSeconds: 7 * DAY });
   await expect(approve(page)).toBeEnabled();
-  await expect(line(page)).toContainText('7 days');
-  await expect(lengthNote(page)).toHaveText("This request lasts 7 days, as the app asked. That's the most it can be.");
+  await expect(page.getByRole('radio', { name: '7 days, as the app asked', exact: true })).toBeChecked();
+  await expect(lengthNote(page)).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
 
   const fold = await openFold(page);
   await fold.getByRole('button', { name: '24 hours', exact: true }).click();
   await expect(approve(page)).toBeEnabled();
-  await expect(line(page)).toHaveText("This app's access to your data lasts 1 day.");
+  await expect(lengthLine(page)).toHaveText(/^Access lasts 1 day, until /);
   expect(expiries.at(-1)).toBe(`${DAY}s`);
 });
 
 test('an app that signs 30 days for a secret gets 7 days at most', async ({ page }) => {
   const expiries = await openReview(page, { grants: [secret, keyDecrypt], grantLifetimeSeconds: 30 * DAY });
   await expect(approve(page)).toBeEnabled();
-  await expect(line(page)).toContainText('7 days');
-  await expect(lengthNote(page)).toHaveText("This request lasts 7 days, as the app asked. That's the most it can be.");
+  await expect(page.getByRole('radio', { name: '7 days', exact: true })).toBeChecked();
+  await expect(lengthNote(page)).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
 
   const fold = await openFold(page);
@@ -182,9 +185,9 @@ test('decrypt on the whole network starts at one hour and shows the all-secrets 
   await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
   await expect(lengthNote(page)).toHaveCount(0);
   const card = page.getByTestId('all-secrets-card');
-  await expect(card.getByRole('heading')).toHaveText('Let this app open all your encrypted data?');
-  await expect(card).toContainText("That covers every secret and everything else you've encrypted in TinyCloud. Allow this only for an app you trust.");
-  await expect(card).toContainText("OpenKey can't confirm which site asked.");
+  await expect(card.getByRole('heading')).toHaveText('Use your master key to decrypt?');
+  await expect(card).toContainText("This app is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.");
+  await expect(card).toContainText("OpenKey can't confirm the site.");
   await expect(page.getByRole('dialog')).not.toContainText('Read the secret OPENAI_API_KEY');
   expect(expiries.at(-1)).toBe(`${HOUR}s`);
   await testInfo.attach('whole network, all-secrets card', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });

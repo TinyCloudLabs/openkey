@@ -12,7 +12,7 @@ Nothing reaches production or npm unless these checks are green on the exact com
 | `dstack key-derivation known answer` | dstack-key-guard.yml | PR, push main | any change to the sealing-key derivation |
 | `TEE mode fails closed` | dstack-key-guard.yml | PR, push main | API starts in production without `TEE_MODE=production` |
 | `Major release sign-off` | major-release-guard.yml | PR only | a major bump without a human sign-off commit |
-| `gitleaks` | security.yml | PR, push main | a secret in the PR's commits (PR) or anywhere in history outside the baseline (main) |
+| `gitleaks` | security.yml | PR, push main | a secret in the PR's commits (PR) or anywhere in the pushed commit's history outside the baseline (main) |
 | `Web artifact audit` | security.yml | PR, push main | the Cloudflare Pages build fails `bun run audit:web` |
 | `API image scan` | security.yml | PR, push main | trivy finds a fixable CRITICAL/HIGH or a secret in the API image that isn't in `.trivyignore.yaml` |
 

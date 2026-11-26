@@ -806,7 +806,7 @@ describe('signing-approval mounted parity across production surface adapters (So
       ).toBe(true);
       expect(textIncludes(handle.container, 'Trust me, this is safe')).toBe(true);
       expect(
-        textIncludes(handle.container, 'This reason comes from the caller and is not verified.'),
+        textIncludes(handle.container, "Written by whoever sent this request. OpenKey can't confirm it."),
       ).toBe(true);
       expect(textIncludes(handle.container, 'Manifest signature is stale')).toBe(true);
       expect(textIncludes(handle.container, 'signature expired 2024-01-01')).toBe(true);
