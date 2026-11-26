@@ -462,3 +462,107 @@ test.each([
   await expect(res.json()).resolves.toMatchObject({ code: 'app_key_request_invalid', reason });
   expect(fetchAppKeysFile).not.toHaveBeenCalled();
 });
+
+test('prepare HTTP Date admits the reviewed default after a delayed clock rollover, including forwarding', async () => {
+  if (process.env.OPENKEY_DATE_CONTRACT_CHILD !== '1') {
+    const child = Bun.spawn([
+      process.execPath, 'test', import.meta.path, '--test-name-pattern=prepare HTTP Date admits the reviewed default',
+      '--timeout=15000',
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, OPENKEY_DATE_CONTRACT_CHILD: '1' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(exitCode, stderr).toBe(0);
+    return;
+  }
+
+  const realDate = Date;
+  let offsetMs = 0;
+  // Only the child changes its JS clock. Bun's native HTTP Date remains on the
+  // real clock, reproducing a stale server Date without altering other tests.
+  globalThis.Date = new Proxy(realDate, {
+    get(target, property, receiver) {
+      return property === 'now' ? () => realDate.now() + offsetMs : Reflect.get(target, property, receiver);
+    },
+    construct(target, args, newTarget) {
+      return Reflect.construct(target, args.length ? args : [realDate.now() + offsetMs], newTarget);
+    },
+  });
+  const origin = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => router.fetch(request) });
+  let upstreamDate: string | null = null;
+  const proxy = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: async (request) => {
+      const response = await fetch(`http://127.0.0.1:${origin.port}${new URL(request.url).pathname}`, {
+        method: request.method,
+        headers: request.headers,
+        body: await request.text(),
+      });
+      upstreamDate = response.headers.get('date');
+      return response;
+    },
+  });
+  const wireAdmitsDefault = (res: Response, body: Record<string, any>) => {
+    const date = realDate.parse(res.headers.get('date') ?? '');
+    const expiry = realDate.parse(body.appKey.defaultExpiresAt);
+    return Number.isFinite(date) && Number.isFinite(expiry) && expiry <= date + 60 * 60_000 + 999;
+  };
+  const prepareHttp = async (port: number) => {
+    const handoff = await claim(siweFor());
+    const res = await fetch(`http://127.0.0.1:${port}/authorize-sign-prepare`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        keyId: keyRecord.id, siwe: handoff.siwe, jwk: sessionJwk,
+        host: 'https://node.tinycloud.xyz', ticket: handoff.ticket,
+        appKey: { appId: APP_ID, key: KEY },
+      }),
+    });
+    return { res, body: await res.json() as Record<string, any> };
+  };
+  try {
+    fetchAppKeysFile.mockImplementationOnce(async () => {
+      // This integration test needs the real native HTTP clock, not fake timers:
+      // delay the listing, then cross a bounded wall-clock second boundary.
+      await Bun.sleep(1_100);
+      await Bun.sleep(1_000 - realDate.now() % 1_000 + 150);
+      offsetMs = 2_000;
+      return fileResult;
+    });
+    const direct = await prepareHttp(origin.port);
+    expect(direct.res.status).toBe(200);
+    expect(wireAdmitsDefault(direct.res, direct.body)).toBe(true);
+
+    const forwarded = await prepareHttp(proxy.port);
+    expect(forwarded.res.status).toBe(200);
+    expect(wireAdmitsDefault(forwarded.res, forwarded.body)).toBe(true);
+    expect(forwarded.res.headers.get('date')).toBe(upstreamDate);
+
+    // If the clock rolls backwards after preparedAt, the same strict consumer
+    // rule refuses the reply; the server must not stretch the expiry to hide it.
+    const bindContext = service.bindContext.bind(service);
+    service.bindContext = async (...args) => {
+      const result = await bindContext(...args);
+      offsetMs = -3_000;
+      return result;
+    };
+    const rollback = await prepareHttp(proxy.port);
+    expect(rollback.res.status).toBe(200);
+    expect(wireAdmitsDefault(rollback.res, rollback.body)).toBe(false);
+
+    fileResult = { ok: false, kind: 'missing', reason: 'fetch returned status 404' };
+    const failed = await prepareHttp(proxy.port);
+    expect(failed.res.status).toBe(403);
+    expect(failed.body.code).toBe('app_keys_file_missing');
+    expect(failed.body.appKey).toBeUndefined();
+    expect(failed.body.authorizationContextToken).toBeUndefined();
+  } finally {
+    proxy.stop(true);
+    origin.stop(true);
+    globalThis.Date = realDate;
+  }
+}, 30_000);

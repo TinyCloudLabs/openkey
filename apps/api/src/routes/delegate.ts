@@ -3602,6 +3602,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     });
   }
 
+  // Bun's automatic HTTP Date can lag a second at rollover; stamp the
+  // prepare reply after the default expiry and handoff context are settled.
+  c.header('Date', new Date().toUTCString());
+
   return c.json({
     authorizationContextToken: issued.token,
     expiresAt: issued.expiresAt,
