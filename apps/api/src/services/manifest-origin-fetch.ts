@@ -33,7 +33,7 @@ import { pinnedHttpsGet } from "./pinned-https-fetch";
 
 const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
 const APP_KEYS_PATH = "/.well-known/openkey-app-keys.json";
-const DNS_TIMEOUT_MS = 5_000;
+const FETCH_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
 const MAX_DNS_LOOKUPS = 32;
 let activeDnsLookups = 0;
@@ -133,7 +133,8 @@ export async function fetchAndBindWellKnownManifest(input: {
   const { reportedOrigin, declaredDigest } = input;
 
   // 1-3. Structural URL validation, private-host rejection, DNS pin.
-  const signal = AbortSignal.timeout(DNS_TIMEOUT_MS);
+  // The same deadline covers DNS, connection and the response body.
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   const origin = await resolveGuardedOrigin(reportedOrigin, signal);
   if (!origin.ok) return { ok: false, reason: origin.reason };
 
@@ -144,7 +145,7 @@ export async function fetchAndBindWellKnownManifest(input: {
   }
 
   // 5. Fetch with timeout, size cap, no redirects.
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH);
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH, signal);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
 
   // Parse, canonicalize, digest, compare, and extract as one fail-closed
@@ -256,9 +257,9 @@ async function lookupWithSlot(hostname: string) {
  * the transport enforces the deadline, the size cap and the redirect refusal.
  * The failure reasons are the manifest fetch's.
  */
-async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string): Promise<GuardedBytes> {
-  // 5. Fetch with timeout, size cap and no redirects.
-  const result = await pinnedHttpsGet(new URL(path, url.origin), pinnedAddress, MAX_BYTES);
+async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string, signal: AbortSignal): Promise<GuardedBytes> {
+  // 5. Fetch with the caller's deadline, size cap and no redirects.
+  const result = await pinnedHttpsGet(new URL(path, url.origin), pinnedAddress, MAX_BYTES, signal);
   if (!result.ok) {
     switch (result.kind) {
       case "request": return { ok: false, reason: "fetch threw" };
@@ -285,10 +286,10 @@ export type AppKeysFileFetch =
  * the caller reads the bytes it gets, once.
  */
 export async function fetchAppKeysFile(host: string): Promise<AppKeysFileFetch> {
-  const signal = AbortSignal.timeout(DNS_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   const origin = await resolveGuardedOrigin(`https://${host}`, signal);
   if (!origin.ok) return { ok: false, kind: origin.dnsCapacity ? "busy" : "unavailable", reason: origin.reason };
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH);
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH, signal);
   if (fetched.ok) {
     const type = fetched.contentType;
     if (!type || type.includes(",") || type.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {

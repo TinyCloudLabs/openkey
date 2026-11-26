@@ -10,10 +10,11 @@ type PinnedHttpsResult =
   | { ok: false; kind: 'status'; status: number };
 
 /** The caller validates the IP. The URL supplies the HTTP and TLS identity, not the socket destination. */
-export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number): Promise<PinnedHttpsResult> {
+export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, callerSignal?: AbortSignal): Promise<PinnedHttpsResult> {
   if (url.protocol !== 'https:' || !isIP(ip)) return { ok: false, kind: 'request' };
   const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
-  const signal = AbortSignal.timeout(DEADLINE_MS);
+  const intrinsicDeadline = AbortSignal.timeout(DEADLINE_MS);
+  const signal = callerSignal ? AbortSignal.any([callerSignal, intrinsicDeadline]) : intrinsicDeadline;
   // The package Client parses HTTP on a socket we verify before handing it over.
   const client = new Client(url.origin, {
     pipelining: 0,

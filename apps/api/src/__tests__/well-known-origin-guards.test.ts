@@ -75,3 +75,28 @@ test('timed-out DNS lookups keep their slots until the native lookup settles', a
     for (const release of releases) release([]);
   }
 }, 7_000);
+
+test('DNS and body share one five-second deadline that destroys the unfinished response', async () => {
+  // Live socket and native DNS work use platform timers; fake timers cannot exercise their abort/close path.
+  const { promise: dnsResult, resolve: releaseDns } = Promise.withResolvers<LookupAddress[]>();
+  lookup.mockImplementation(() => dnsResult);
+  const dnsTimer = setTimeout(() => releaseDns([{ address: '93.184.216.34', family: 4 }]), 3_000);
+  let bodyTimer: NodeJS.Timeout | undefined;
+  const { promise: socketClosedBeforeBodyEnd, resolve: closed } = Promise.withResolvers<boolean>();
+  fixture.handler = (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('{');
+    bodyTimer = setTimeout(() => res.end('}'), 3_000);
+    res.once('close', () => closed(!res.writableEnded));
+  };
+
+  try {
+    const result = await fetchAppKeysFile('example.test');
+    expect(result).toEqual({ ok: false, kind: 'unavailable', reason: 'response body read threw' });
+    expect(fixture.dialed).toHaveLength(1);
+    expect(await socketClosedBeforeBodyEnd).toBe(true);
+  } finally {
+    clearTimeout(dnsTimer);
+    clearTimeout(bodyTimer);
+  }
+}, 9_000);
