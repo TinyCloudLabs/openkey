@@ -1,5 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { TERMS_ACCEPTED } from './terms-fixtures';
+import { ORIGIN } from './e2e-port';
 
 // TC-3442: Sign Data answers the API's `/sign-typed-data/passkey` offer when the account's setting asks for it, and the
 // signature request carries the assertion. A passkey refusal shows the API's words and the next tap answers a fresh offer.
@@ -33,6 +35,7 @@ async function setup(page: Page, surface: string, opts: { required: boolean; ref
     }
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('WebAuthn.enable');
   const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: {
@@ -63,7 +66,7 @@ async function setup(page: Page, surface: string, opts: { required: boolean; ref
   }, { surface, typedData });
   const frame = page.frameLocator('#typed-data');
   await expect.poll(() => calls.offers.length).toBe(1);
-  expect(calls.offers[0]).toEqual(typedData);
+  expect(calls.offers[0]).toEqual({ ...typedData, requestOrigin: ORIGIN });
   const succeeded = async () => (await page.evaluate(() => (window as unknown as Recording).received))
     .filter((m) => m.type === 'openkey:signTypedData:response' && m.success === true).length;
   return { calls, frame, sign: frame.getByRole('button', { name: 'Sign Data', exact: true }), succeeded };

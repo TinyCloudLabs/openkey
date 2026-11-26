@@ -1,0 +1,161 @@
+# Pre-release security check. Every job always runs (no paths filter) and fails
+# closed, so each can be a required check (docs/security/required-checks.md), and
+# deploy-api.yml / changesets.yml refuse to ship a commit where any is not green.
+#
+# - gitleaks: a pull request scans only its own commits, with the baseline
+#   (.gitleaksignore) and config (.gitleaks.toml) read from its BASE commit, so a
+#   PR can't allowlist its own leak; baseline changes go in their own PR. A push to
+#   main scans the history of the pushed commit (main's own history, not other
+#   branches) against main's own baseline and config. Rotate a
+#   leaked value; never baseline it.
+# - Web artifact audit: the Cloudflare Pages build with the production API URL,
+#   followed by an audit that checks for the URL in the artifacts.
+# - API image scan: builds the API image from the Dockerfile and runs trivy against
+#   the baseline .trivyignore.yaml, so only a NEW fixable CRITICAL/HIGH fails.
+name: Pre-release security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned gitleaks
+        run: node scripts/security/install-tool.mjs gitleaks "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      # Baseline and config come from the base commit, never from the PR. gitleaks always also
+      # reads .gitleaksignore from the directory it scans (on top of --gitleaks-ignore-path), so
+      # it scans a worktree checked out at the base commit; the history (BASE..HEAD) is shared.
+      # Fallbacks: an empty ignore file, and the default rules as an explicit config.
+      - name: Scan the pull request's commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::missing base/head SHA" >&2; exit 1; }
+          base="$RUNNER_TEMP/gitleaks-base"
+          git worktree add --detach "$base" "$BASE_SHA"
+          [ -f "$base/.gitleaksignore" ] || : > "$base/.gitleaksignore"
+          config="$RUNNER_TEMP/gitleaks-base.toml"
+          if [ -f "$base/.gitleaks.toml" ]; then
+            cp "$base/.gitleaks.toml" "$config"
+          else
+            printf '[extend]\nuseDefault = true\n' > "$config"
+          fi
+          echo "baseline: $(grep -cvE '^\s*(#|$)' "$base/.gitleaksignore" || true) entries, config from ${BASE_SHA}"
+          cd "$base"
+          gitleaks git --config "$config" --gitleaks-ignore-path "$base/.gitleaksignore" --ignore-gitleaks-allow \
+            --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --no-banner --exit-code 1 "$base"
+
+      # --ignore-gitleaks-allow: an inline `gitleaks:allow` comment must not hide a finding.
+      - name: Scan the history of the pushed commit
+        if: github.event_name != 'pull_request'
+        # The pushed commit's history only: a fixture on another open branch can't turn main red, and each
+        # pull request's own scan covers that branch's commits.
+        run: gitleaks git --config .gitleaks.toml --ignore-gitleaks-allow --log-opts="--full-history ${GITHUB_SHA}" --redact --no-banner --exit-code 1 .
+
+  web-artifact:
+    name: Web artifact audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      # A PR can't loosen its own audit: use the base commit's .gitleaks.toml. Until the base has
+      # one (the PR that adds it), the PR's copy stays.
+      - name: Use the base commit's gitleaks config
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git cat-file -e "$BASE_SHA:.gitleaks.toml" 2>/dev/null; then
+            git show "$BASE_SHA:.gitleaks.toml" > .gitleaks.toml
+          else
+            echo "::notice::.gitleaks.toml is not on the base commit yet; using this PR's copy"
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Test the audit script
+        run: node --test scripts/security/audit-artifact.test.mjs .github/scripts/require-green.test.mjs
+
+      # The Cloudflare Pages build command; it fails on an audit finding.
+      - name: Build the web as Cloudflare Pages does, then audit it
+        env:
+          VITE_API_URL: https://api.openkey.so
+        run: bun run build --filter @openkey/web
+
+      - name: Verify the production API URL in the web artifacts
+        run: bun run audit:web:prod
+
+  api-image:
+    name: API image scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Same Dockerfile and build args as deploy-api.yml; reads its layer cache, never writes it.
+      - name: Build the API image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          load: true
+          push: false
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=openkey-api-image
+          tags: openkey-api:scan
+
+      # A PR can't widen its own baseline: use the base commit's .trivyignore.yaml. Until the base
+      # has one (the PR that adds it), the PR's copy stays.
+      - name: Use the base commit's trivy baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git cat-file -e "$BASE_SHA:.trivyignore.yaml" 2>/dev/null; then
+            git show "$BASE_SHA:.trivyignore.yaml" > .trivyignore.yaml
+          else
+            echo "::notice::.trivyignore.yaml is not on the base commit yet; using this PR's copy"
+          fi
+
+      - name: Scan the API image
+        run: scripts/security/scan-image.sh openkey-api:scan

@@ -124,6 +124,15 @@ export interface AuthResult {
 }
 
 /**
+ * What {@link OpenKey.setupAccount} resolves with. `published`: OpenKey set the account up on TinyCloud hosting and
+ * published its location record. `present`: the account has a location record; nothing was written.
+ * Neither carries the account's address or node: the app reads the registry itself.
+ */
+export interface AccountSetupResult {
+  outcome: 'published' | 'present';
+}
+
+/**
  * Confirmation returned by {@link OpenKey.signOut}. `requestId` is generated
  * by the SDK and echoed by the OpenKey-owned widget, so callers can associate
  * the acknowledgement with the sign-out they initiated.
@@ -141,18 +150,26 @@ export interface SignOutAcknowledgement {
 /**
  * The server's definite refusals of a signing request. Asking again with the same request cannot succeed.
  * `APP_KEY_GRANT_REFUSED`: the request asks for an encryption key this website may not be granted.
+ * `ACCOUNT_SETUP_COMPLETED`: the owner set the account up from the sign widget and the request is refused a second
+ * time: setup created the account's spaces, so the app asks without hosting them.
  */
-export type OpenKeyRefusalCode = 'APP_KEY_GRANT_REFUSED' | 'KEY_DELETE_NOT_GRANTABLE' | 'INVALID_SIWE_RECAP';
+export type OpenKeyRefusalCode = 'APP_KEY_GRANT_REFUSED' | 'KEY_DELETE_NOT_GRANTABLE' | 'INVALID_SIWE_RECAP' | 'ACCOUNT_SETUP_COMPLETED';
 
 export interface OpenKeyError {
-  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH' | OpenKeyRefusalCode;
+  code:
+    | 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH'
+    | 'ACCOUNT_SETUP_FAILED' | 'ACCOUNT_SETUP_UNAVAILABLE' | OpenKeyRefusalCode;
   message: string;
   /** On `POPUP_BLOCKED`: `'embedded-webview'` when the page runs in an app WebView that cannot open popups. */
   reason?: 'embedded-webview';
+  /** On `ACCOUNT_SETUP_UNAVAILABLE`: where the owner finishes setup (TinyCloud One). */
+  setupUrl?: string;
 }
 
 /** The widget reports a definite refusal as `{ code: 'UNKNOWN', message: <refusal code> }`. */
-const REFUSAL_CODES: ReadonlySet<string> = new Set<OpenKeyRefusalCode>(['APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP']);
+const REFUSAL_CODES: ReadonlySet<string> = new Set<OpenKeyRefusalCode>([
+  'APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP', 'ACCOUNT_SETUP_COMPLETED',
+]);
 
 // ======= OAuth 2.1 Types =======
 
@@ -223,8 +240,8 @@ export interface TinyCloudAuthorizationRequestV1 {
   presentation?: CapabilityPresentationEnvelopeV1;
   /**
    * Set only when the caller accepts a signed message whose `Expiration Time`
-   * differs from `siwe` (shorter or longer): OpenKey then shows "This permission
-   * expires in …" with the time under "How long it lasts", and signs the time the user picks. Read the signed
+   * differs from `siwe` (shorter or longer): OpenKey then shows "This app's access
+   * to your data lasts …" with the time under "How long it lasts", and signs the time the user picks. Read the signed
    * expiry from the returned `signedMessage`. Forwarded only when literally `true`.
    */
   expiryChangeable?: boolean;
@@ -424,6 +441,9 @@ type MessageType =
   | { type: 'openkey:sign-out:confirmed'; requestId: string; protocolVersion: 1 }
   | { type: 'openkey:sign-out:response'; success: true; requestId: string; protocolVersion: 1; revoked: boolean }
   | { type: 'openkey:sign-out:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
+  | { type: 'openkey:account-setup:request'; requestId: string; protocolVersion: 1; keyId?: string }
+  | { type: 'openkey:account-setup:response'; success: true; requestId: string; protocolVersion: 1; outcome: 'published' | 'present' }
+  | { type: 'openkey:account-setup:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number; requestId?: string; protocolVersion?: number; layoutId?: number }
   | { type: 'openkey:layout-applied'; height: number; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:layout-ready'; requestId: string; protocolVersion: 2; layoutId: number }
@@ -1202,6 +1222,36 @@ export class OpenKey {
     return this.openFlow<{ address: string; keyId: string }>('link-wallet', {
       type: 'openkey:link-wallet:request',
     }, opts?.mode);
+  }
+
+  /**
+   * Opens OpenKey's own account setup page, where the owner sets their TinyCloud account up on TinyCloud hosting with
+   * one approval. Call it from a user gesture: it opens a popup. When the popup is blocked, an embedded card opens and
+   * its button opens the same page.
+   *
+   * Resolves with the outcome only. Rejects with `USER_CANCELLED`, `POPUP_BLOCKED` (an app WebView that cannot open
+   * popups), `ACCOUNT_SETUP_FAILED` or `ACCOUNT_SETUP_UNAVAILABLE` (with `setupUrl`, where the owner finishes setup).
+   */
+  async setupAccount(opts?: { keyId?: string }): Promise<AccountSetupResult> {
+    const keyId = opts?.keyId ?? (this.lastAuth?.keyType === 'MANAGED' ? this.lastAuth.keyId : undefined);
+    const message = {
+      type: 'openkey:account-setup:request',
+      requestId: crypto.randomUUID(),
+      protocolVersion: 1,
+      ...(keyId ? { keyId } : {}),
+    };
+    let result: AccountSetupResult;
+    try {
+      result = await this.openFlow<AccountSetupResult>('account-setup', message, 'popup');
+    } catch (error) {
+      const failure = error as OpenKeyError;
+      if (failure?.code !== 'POPUP_BLOCKED' || failure.reason === 'embedded-webview') throw error;
+      result = await this.openFlow<AccountSetupResult>('account-setup', message, 'iframe');
+    }
+    if (result.outcome !== 'published' && result.outcome !== 'present') {
+      throw { code: 'ACCOUNT_SETUP_FAILED', message: 'OpenKey answered account setup with an unknown outcome.' } satisfies OpenKeyError;
+    }
+    return { outcome: result.outcome };
   }
 
   /**
@@ -2099,6 +2149,8 @@ export class OpenKey {
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
+                } else if (data.type === 'openkey:account-setup:response') {
+                  resolve({ outcome: data.outcome } as T);
                 } else if (data.type === 'openkey:sign-out:response') {
                   resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
                 } else if (data.type === 'openkey:externalSign:approve') {
@@ -2180,6 +2232,7 @@ export class OpenKey {
     if (action === 'sign-typed-data') return type === 'openkey:signTypedData:response';
     if (action === 'link-wallet') return type === 'openkey:link-wallet:response';
     if (action === 'sign-out') return type === 'openkey:sign-out:response';
+    if (action === 'account-setup') return type === 'openkey:account-setup:response';
     return false;
   }
 
@@ -2426,6 +2479,8 @@ export class OpenKey {
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
+          } else if (data.type === 'openkey:account-setup:response') {
+            resolve({ outcome: data.outcome } as T);
           } else if (data.type === 'openkey:sign-out:response') {
             resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
           } else if (data.type === 'openkey:externalSign:approve') {

@@ -7,6 +7,7 @@
 
 import { test, expect, type Locator, type Page, type Route, type TestInfo } from '@playwright/test';
 import { HOST, LOOPBACK_ORIGIN, ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -113,6 +114,7 @@ async function stubApi(page: Page, options: {
     }
     return json(route, {});
   });
+  await context.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   // Apple's page: the user consents, and the API's callback redirects to the
   // return URL the start request named (its error URL on a failure), with its answer.
   await context.route('https://appleid.apple.com/**', (route) => {

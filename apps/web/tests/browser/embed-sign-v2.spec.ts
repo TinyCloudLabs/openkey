@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { HOST, ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const key = {
@@ -26,6 +27,7 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
     await route.fulfill({ json: { key } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
     const frame = document.createElement('iframe');
@@ -128,6 +130,7 @@ for (const surface of ['sign', 'embed/sign']) {
     await page.route('**/api/auth/get-session**', (route) => route.fulfill({
       json: { session: { id: 's', userId: 'u' }, user: { id: 'u' } },
     }));
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.route('**/api/keys', (route) => route.fulfill({
       json: { keys: [{ ...key, id: 'archived-zero', label: 'Archived QA', archivedAt: '2026-11-01T00:00:00Z' }, primary, other] },
     }));
@@ -171,6 +174,7 @@ for (const surface of ['sign', 'embed/sign']) {
     await page.route('**/api/auth/get-session**', (route) => route.fulfill({
       json: { session: { id: 's', userId: 'u' }, user: { id: 'u' } },
     }));
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.route('**/api/keys', (route) => route.fulfill({ json: { keys: [
       { ...key, archivedAt: '2026-11-01T00:00:00Z' },
       { ...key, id: 'new-primary', isPrimary: true, address: '0x7777777777777777777777777777777777777777' },

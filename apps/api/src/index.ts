@@ -20,6 +20,7 @@ import { createReviewerAdminRouter } from './routes/reviewer-admin';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
+import { accountSetupRouter } from './routes/account-setup';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
 import { allowBeforeTerms, allowBeforeTermsWhen, allowBrowserBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
@@ -42,6 +43,7 @@ import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
 import { requireAccountOriginForSensitiveAuth } from './middleware/bearer-origin';
+import { mountEmailOtpRateLimit } from './middleware/email-otp-rate-limit';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
@@ -96,6 +98,8 @@ app.use('/api/auth/reviewer/*', bodyLimit({ maxSize: 4096 }));
 app.use('/api/review-account/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/auth/sign-in/reviewer', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/sign-in/email-otp', bodyLimit({ maxSize: 16384 }));
+// Email-code sends and checks are limited per target email (and by a shared ceiling) before any other auth work.
+mountEmailOtpRateLimit(app, process.env.NODE_ENV);
 app.use('/api/auth/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/*', createReviewerRouteGuard(authPrisma, async (headers) => {
   if (!headers.has('cookie') && !headers.has('authorization')) return [];
@@ -382,6 +386,8 @@ app.route('/api/keys/nostr', nostrKeysRouter);
 // that has not accepted them.
 app.route('/api/account/terms', createAccountTermsRouter(authPrisma));
 app.route('/api/account', accountRouter);
+// OpenKey's own account setup page: cookie session from an OpenKey origin only.
+app.route('/api/account-setup', accountSetupRouter);
 
 // Passkey proxy routes (for iframe embed mode)
 app.route('/api/passkey', passkeyProxyRouter);
@@ -491,7 +497,7 @@ const port = parseInt(process.env.API_PORT || '3001');
 
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
-// With OPENKEY_RENEWAL_LEASES=stop, revokes every live renewal lease (TC-3088). Does nothing for any other value.
+// Retries native lease withdrawal. OPENKEY_RENEWAL_LEASES=stop also revokes every live lease (TC-3088).
 if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
 // Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
 // Not behind the step-up switch: a record already written must still be revoked with the switch off.

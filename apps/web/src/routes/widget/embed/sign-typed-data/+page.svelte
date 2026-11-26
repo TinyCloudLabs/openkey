@@ -8,14 +8,19 @@
     type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { clearSessionToken, getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { originAuthority } from '$lib/requester-display';
+  import { registryTypedDataSignRefusal } from '@openkey/capability-review';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
 
   type KeyCredential = { token: string | null; sessionId: string | null | undefined };
   let keyReadCredential: KeyCredential | null = null;
@@ -40,9 +45,22 @@
   let requestVersion = $state(0);
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let signInNote = $state<string | null>(null);
 
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // In the frame the request is read only once the account is known to have agreed to the Terms.
+  const isAuthenticated = $derived(signedIn && (!inIframe || $termsGate.phase === 'open'));
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+  }
 
   // Exact embedding origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
@@ -129,12 +147,26 @@
     return () => { active = false; };
   });
 
+  // Hardening: typed-data signing. The registry's node-location struct is refused unless the requester is TinyCloud One;
+  // the host is told once, and nothing is offered or sent to the API.
+  const registryRefusal = $derived(typedData ? registryTypedDataSignRefusal(typedData, origin) : null);
+  let registryRefusalReported = false;
+  $effect(() => {
+    if (!registryRefusal || registryRefusalReported) return;
+    registryRefusalReported = true;
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: 'REGISTRY_RECORD_SIGN_REFUSED' },
+    });
+  });
+
   // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
   // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends
   // nothing until the offer for the current request has landed: it waits while the fetch is in flight and fetches
   // again after a failure.
   const passkeyOfferInput = $derived(
-    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData ? `${requestVersion}:${key.id}` : null,
+    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData && !registryRefusal ? `${requestVersion}:${key.id}` : null,
   );
   let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
   let passkeyOfferRevision = $state(0);
@@ -152,7 +184,7 @@
     }
     let current = true;
     passkeyOfferFetch = 'pending';
-    api.signTypedDataPasskey(offerKey.id, data).then(
+    api.signTypedDataPasskey(offerKey.id, data, origin ?? undefined).then(
       (need) => {
         if (!current) return;
         passkeyOffer = { input, need };
@@ -204,7 +236,7 @@
   }
 
   async function signTypedData() {
-    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing || registryRefusal) return;
 
     const credential = keyOwnerCredential;
     if (!checkKeyCredential(credential)) return;
@@ -232,7 +264,7 @@
     }
 
     try {
-      const result = await api.signTypedData(key.id, typedData, passkeyAssertion);
+      const result = await api.signTypedData(key.id, typedData, passkeyAssertion, origin ?? undefined);
       if (version !== requestVersion) return;
       if (!checkKeyCredential(credential)) return;
       sendResponse({
@@ -303,12 +335,17 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !isAuthenticated}
+    {#if registryRefusal}
+      <RegistryRecordRefusal variant="embed" onclose={sendClose} />
+    {:else if !signedIn}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this data"
-        onauthenticated={() => { embedAuthenticated = true; }}
+        note={signInNote}
+        onauthenticated={() => { signInNote = null; embedAuthenticated = true; }}
         {passkeysSupported}
       />
+    {:else if !isAuthenticated}
+      <TermsGate surface="embed" onsignedout={termsSignedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">

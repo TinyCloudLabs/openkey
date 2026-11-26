@@ -5,6 +5,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
@@ -36,6 +37,7 @@ async function mockServer(page: Page): Promise<Server> {
   await page.context().route('**/api/auth/get-session**', (route) => route.fulfill({ json: {
     session: { id: `session-${server.account}` }, user: { id: `user-${server.account}` },
   } }));
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.context().route('**/api/delegate/authorize-sign-prepare', (route) => {
     server.prepares++;
     const context = `context-${server.prepares}`;
@@ -112,7 +114,10 @@ test('popup: after another account takes over, Try again prepares the preview fo
   await sendRequest(page, 1);
   const approve = popup.locator('button.approve');
   await expect(approve).toBeEnabled({ timeout: 45_000 });
-  expect(server.used).toEqual([{ context: 'context-1', account: 'a' }]);
+  expect(server.used).toEqual([
+    { context: 'context-1', account: 'a' },
+    { context: 'context-1', account: 'a' },
+  ]);
 
   // Another account signs in elsewhere (better-auth's cross-tab message); the popup drops the key and offers Try again.
   server.account = 'b';
@@ -139,7 +144,10 @@ test('iframe: after the frame session changes, Try again prepares the preview fo
   const frame = page.frameLocator('#sign');
   const approve = frame.locator('button.approve');
   await expect(approve).toBeEnabled({ timeout: 45_000 });
-  expect(server.used).toEqual([{ context: 'context-1', account: 'a' }]);
+  expect(server.used).toEqual([
+    { context: 'context-1', account: 'a' },
+    { context: 'context-1', account: 'a' },
+  ]);
 
   // The frame's session becomes another account's (its storage is shared with this same-origin parent). Approve checks
   // the key against the session, drops it and offers Try again; nothing is signed.

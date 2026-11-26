@@ -36,6 +36,8 @@ describe('widget targets (TC-688, TC-690)', () => {
     'connect/+page.svelte',
     'embed/sign-typed-data/+page.svelte',
     'sign-typed-data/+page.svelte',
+    'embed/account-setup/+page.svelte',
+    'account-setup/+page.svelte',
   ]) {
     it(`${path} never posts to '*' and checks message origin and source`, () => {
       const page = source(path);

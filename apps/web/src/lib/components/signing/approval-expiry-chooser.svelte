@@ -23,15 +23,21 @@
     renewal?: RenewalChoice | null;
     /** The exact end of the window, shown after the choice; omitted where the screen shows it elsewhere. */
     endsAt?: string | null;
+    /**
+     * Report what the app asked for as that length, not as null. Set on a one-time approval, where null on a popup or
+     * frame means "no pick" and the server starts the approval at one hour.
+     */
+    explicitAsked?: boolean;
   }
 
-  let { requestedMs, chosenMs, maxMs = null, limitNote = expiryLimitNote, disabled = false, onChange, renewal = null, endsAt = null }: Props = $props();
+  let { requestedMs, chosenMs, maxMs = null, limitNote = expiryLimitNote, disabled = false, onChange, renewal = null, endsAt = null, explicitAsked = false }: Props = $props();
 
   const shownMs = $derived(chosenMs ?? requestedMs);
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
 
   function chooseWindow(ms: number) {
-    onChange(ms === requestedMs ? null : ms);
+    // On device sign-in, the default window changes with the renewal checkbox.
+    onChange(ms === requestedMs && !renewal?.deviceSignIn && !explicitAsked ? null : ms);
   }
 </script>
 

@@ -19,7 +19,7 @@
 // unreachable node, a wallet that must sign) leaves it unsettled, so a retry sends it again. Revoking an
 // already-revoked lease again is harmless at the node.
 import { randomBytes } from 'node:crypto';
-import type { PrismaClient } from '@openkey/db';
+import type { Prisma, PrismaClient } from '@openkey/db';
 import { siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
 import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto';
@@ -53,7 +53,8 @@ export type LeaseRevocationDatabase = Pick<PrismaClient, 'renewalLease' | 'ether
 export type LeaseScope =
   | { kind: 'lease'; leaseCid: string }
   | { kind: 'sign-in'; sessionId: string }
-  | { kind: 'all' };
+  | { kind: 'native-stop'; grantId?: string }
+  | { kind: 'all'; includeNativeStops?: true };
 
 /**
  * Why a lease was not stopped. `wallet_required`: an external wallet signed it, so only that wallet
@@ -89,17 +90,23 @@ const defaultDeps: LeaseRevocationDeps = {
   open: async (data) => symmetricDecrypt({ key: await secretKey(), data }),
 };
 
-function scopeWhere(scope: LeaseScope) {
-  switch (scope.kind) {
-    case 'lease': return { leaseCid: scope.leaseCid };
-    case 'sign-in': return { sessionId: scope.sessionId, approvalRequestId: null };
-    case 'all': return {};
-  }
+export function nativeStopsPendingWhere(now: Date): Prisma.NativeRenewalLeaseWhereInput {
+  return { stopRequested: true, revokeUntil: { gt: now } };
 }
 
-/** The leases in `scope` that may still renew: not settled by the node and not past their end. */
-export function liveLeaseWhere(userId: string, scope: LeaseScope, now: Date) {
-  return { userId, revokedAt: null, neverAdmittedAt: null, leaseExpiresAt: { gt: now }, ...scopeWhere(scope) };
+/** Lease scope, including original grants with pending native withdrawal when explicitly requested. */
+export function liveLeaseWhere(userId: string, scope: LeaseScope, now: Date): Prisma.RenewalLeaseWhereInput {
+  const live = { revokedAt: null, neverAdmittedAt: null, leaseExpiresAt: { gt: now } };
+  switch (scope.kind) {
+    case 'lease': return { userId, ...live, leaseCid: scope.leaseCid };
+    case 'sign-in': return { userId, ...live, sessionId: scope.sessionId, approvalRequestId: null };
+    case 'native-stop':
+      return { userId, nativeRenewal: { is: { ...nativeStopsPendingWhere(now), ...(scope.grantId && { grantId: scope.grantId }) } } };
+    case 'all':
+      return scope.includeNativeStops
+        ? { userId, OR: [live, { nativeRenewal: { is: nativeStopsPendingWhere(now) } }] }
+        : { userId, ...live };
+  }
 }
 
 /** The exact owner-revocation message for one lease; `issuedAt` bounds its life. */
@@ -130,43 +137,58 @@ async function lockOwner(tx: Transaction, userId: string, wait = true) {
  * or refused by the node) is never admitted again: the approval fails and nothing is approved. A sign-in lease has
  * no approval request (`approvalRequestId: null`); it is recorded before it is returned to the app.
  */
+type ReserveLeaseInput = {
+  approvalRequestId: string | null; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage;
+  native?: { requestId: string; revokeUntil: Date };
+};
+
 export async function reserveRenewalLease(
   db: Pick<PrismaClient, '$transaction'>,
-  input: { approvalRequestId: string | null; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
+  input: ReserveLeaseInput,
   deps: Pick<LeaseRevocationDeps, 'seal'> = defaultDeps,
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await lockOwner(tx, input.userId);
+    await reserveRenewalLeaseInTransaction(tx, input, deps);
+  });
+}
+
+/** Use only inside the approval transaction, after locking the owner before the native rows. */
+export async function reserveRenewalLeaseInTransaction(
+  tx: Transaction, input: ReserveLeaseInput, deps: Pick<LeaseRevocationDeps, 'seal'> = defaultDeps,
 ): Promise<void> {
   const { stage } = input;
   if (!stage.leaseCid || !stage.leaseAuthorization || typeof stage.delegation.siwe !== 'string') {
     throw new RenewalLeaseError('lease_unsigned', 'Renewal lease is not signed', 409);
   }
   const leaseCid = stage.leaseCid;
-  const sealed = await deps.seal(stage.leaseAuthorization);
-  await db.$transaction(async (tx) => {
-    await lockOwner(tx, input.userId);
-    const existing = await tx.renewalLease.findUnique({ where: { leaseCid } });
-    if (existing) {
-      if (existing.userId !== input.userId || existing.revokedAt || existing.neverAdmittedAt) {
-        throw new RenewalLeaseError('renewal_stopped', 'Renewal was stopped for this lease', 409);
-      }
-      return;
+  const existing = await tx.renewalLease.findUnique({ where: { leaseCid } });
+  if (existing) {
+    if (existing.userId !== input.userId || existing.revokedAt || existing.neverAdmittedAt) {
+      throw new RenewalLeaseError('renewal_stopped', 'Renewal was stopped for this lease', 409);
     }
-    await tx.renewalLease.create({ data: {
-      leaseCid,
-      userId: input.userId,
-      sessionId: input.sessionId,
-      approvalRequestId: input.approvalRequestId,
-      ownerDid: `did:pkh:eip155:${stage.chainId}:${stage.ownerAddress}`,
-      originalCid: stage.originalCid,
-      nodeOrigin: input.nodeOrigin,
-      nodeDid: stage.nodeIdentity.nodeDid,
-      renewerDid: stage.nodeIdentity.renewerDid,
-      leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds,
-      approvedAt: new Date(stage.approvedAt),
-      leaseExpiresAt: new Date(stage.leaseExpiresAt),
-      grantSiwe: stage.delegation.siwe as string,
-      leaseAuthorization: sealed,
-    } });
-  });
+    return;
+  }
+  const sealed = await deps.seal(stage.leaseAuthorization);
+  await tx.renewalLease.create({ data: {
+    leaseCid,
+    userId: input.userId,
+    sessionId: input.sessionId,
+    approvalRequestId: input.approvalRequestId,
+    ownerDid: `did:pkh:eip155:${stage.chainId}:${stage.ownerAddress}`,
+    originalCid: stage.originalCid,
+    nodeOrigin: input.nodeOrigin,
+    nodeDid: stage.nodeIdentity.nodeDid,
+    renewerDid: stage.nodeIdentity.renewerDid,
+    leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds,
+    approvedAt: new Date(stage.approvedAt),
+    leaseExpiresAt: new Date(stage.leaseExpiresAt),
+    grantSiwe: stage.delegation.siwe,
+    leaseAuthorization: sealed,
+  } });
+  if (input.native) {
+    await tx.nativeRenewalLease.create({ data: { leaseCid, requestId: input.native.requestId, revokeUntil: input.native.revokeUntil } });
+  }
 }
 
 /**
@@ -223,14 +245,18 @@ async function callNode(deps: Pick<LeaseRevocationDeps, 'fetch'>, nodeOrigin: st
   }
 }
 
-type LeaseRow = Awaited<ReturnType<LeaseRevocationDatabase['renewalLease']['findMany']>>[number];
+type LeaseRow = Prisma.RenewalLeaseGetPayload<{ include: { nativeRenewal: true } }>;
 
 /**
  * Settles one lease under the owner's lock. An unconfirmed admission is replayed first and the revocation sent
  * straight after it, so the lease can be live for at most that one round trip. True once the node settled it.
  */
-async function settle(tx: Transaction, lease: LeaseRow, revocation: { siwe: string; signature: string }, deps: Pick<LeaseRevocationDeps, 'fetch' | 'now' | 'open'>): Promise<boolean> {
+async function settle(tx: Transaction, lease: Omit<LeaseRow, 'nativeRenewal'> & Partial<Pick<LeaseRow, 'nativeRenewal'>>, revocation: { siwe: string; signature: string }, deps: Pick<LeaseRevocationDeps, 'fetch' | 'now' | 'open'>): Promise<boolean> {
   // `replayed`: the node answered this attempt's own admission of the stored lease.
+  if (lease.nativeRenewal && !lease.nativeRenewal.deliveredAt) {
+    await tx.renewalLease.update({ where: { leaseCid: lease.leaseCid }, data: { neverAdmittedAt: deps.now(), leaseAuthorization: null } });
+    return true;
+  }
   let replayed: NodeAnswer | null = null;
   if (!lease.admittedAt && lease.leaseAuthorization) {
     let signedLease: string | null = null;
@@ -247,7 +273,7 @@ async function settle(tx: Transaction, lease: LeaseRow, revocation: { siwe: stri
   // The node refused this attempt's admission and says itself that it holds no such lease: it can never renew.
   // Only for a lease no approval has confirmed, checked again in the write. A sign-in lease is not settled so while
   // its app may still be registering the grant and admitting it: it stays on, and the next stop sends it again.
-  const appMayAdmit = lease.approvalRequestId === null && deps.now().getTime() - lease.createdAt.getTime() < SIGN_IN_ADMISSION_WINDOW_MS;
+  const appMayAdmit = lease.approvalRequestId === null && deps.now().getTime() - (lease.nativeRenewal?.deliveredAt ?? lease.createdAt).getTime() < SIGN_IN_ADMISSION_WINDOW_MS;
   if (!lease.admittedAt && replayed === 'refused' && revoked.notPresent && !appMayAdmit) {
     const settled = await tx.renewalLease.updateMany({
       where: { leaseCid: lease.leaseCid, revokedAt: null, neverAdmittedAt: null, admittedAt: null },
@@ -260,7 +286,7 @@ async function settle(tx: Transaction, lease: LeaseRow, revocation: { siwe: stri
 
 /** Long enough for each lease's two node calls; the user lock is held throughout. */
 function settleTimeout(leases: number) {
-  return leases * 3 * NODE_CALL_TIMEOUT_MS + 5_000;
+  return leases * 4 * NODE_CALL_TIMEOUT_MS + 5_000;
 }
 
 /**
@@ -284,8 +310,9 @@ export async function revokeRenewalLeases(
   await db.$transaction(async (tx) => {
     await lockOwner(tx, userId, options.waitForLock);
     // Re-read under the lock: another attempt may have settled some meanwhile.
-    const leases = await tx.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, deps.now()), orderBy: { createdAt: 'asc' } });
+    const leases = await tx.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, deps.now()), include: { nativeRenewal: true }, orderBy: { createdAt: 'asc' } });
     for (const lease of leases) {
+      const fullNativeStop = lease.nativeRenewal?.stopRequested && (scope.kind === 'native-stop' || (scope.kind === 'all' && scope.includeNativeStops));
       const address = ownerAddress(lease.ownerDid);
       const key = keys.find((candidate) => candidate.address.toLowerCase() === address);
       if (!key || key.keyType !== 'MANAGED' || !key.sealedBlob) {
@@ -294,8 +321,29 @@ export async function revokeRenewalLeases(
       }
       let settled = false;
       try {
-        const siwe = leaseRevocationSiwe(lease, deps.now());
-        settled = await settle(tx, lease, { siwe, signature: await deps.signManaged(key, key.sealedBlob, siwe) }, deps);
+        const { sealedBlob } = key;
+        const sign = (message: string) => deps.signManaged(key, sealedBlob, message);
+        const now = deps.now();
+        let originalStopped = !fullNativeStop || Boolean(lease.nativeRenewal?.originalRevokedAt);
+        if (!originalStopped) {
+          const siwe = leaseRevocationSiwe({ ...lease, leaseCid: lease.originalCid }, now);
+          const result = await callNode(deps, lease.nodeOrigin, '/revoke', siweToDelegationHeaders({ siwe, signature: await sign(siwe) }) as Record<string, string>);
+          // Before delivery, hosting can still be registering this original. Keep a missing original queued until it has expired.
+          const originalEnd = new SiweMessage(lease.grantSiwe).expirationTime;
+          originalStopped = result.answer === 'ok' || (result.notPresent && Boolean(originalEnd) && Date.parse(originalEnd!) <= now.getTime());
+          if (originalStopped) {
+            await tx.nativeRenewalLease.update({ where: { leaseCid: lease.leaseCid }, data: { originalRevokedAt: now } });
+          }
+        }
+        if (lease.revokedAt || lease.neverAdmittedAt || lease.leaseExpiresAt <= now) settled = true;
+        else {
+          const siwe = leaseRevocationSiwe(lease, now);
+          settled = await settle(tx, lease, { siwe, signature: await sign(siwe) }, deps);
+        }
+        if (fullNativeStop && settled && originalStopped) {
+          await tx.nativeRenewalLease.update({ where: { leaseCid: lease.leaseCid }, data: { stopRequested: false } });
+        }
+        settled &&= originalStopped;
       } catch {
         settled = false;
       }

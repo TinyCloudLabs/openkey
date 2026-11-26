@@ -1,0 +1,24 @@
+# gitleaks config for the pre-release security check (.github/workflows/gitleaks.yml).
+# Default rules, plus allowlists for values that are public by construction. Each
+# allowlist matches the whole value, so a real key next to one of these still fails.
+# One-off reviewed findings live in .gitleaksignore by fingerprint, not here.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "did:key public identifiers (Ed25519 z6Mk, secp256k1 zQ3s): public keys, not secrets"
+regexTarget = "secret"
+regexes = ['''^z(6Mk|Q3s)[1-9A-HJ-NP-Za-km-z]{44,45}$''']
+
+[[allowlists]]
+description = "Test-only private keys: the 0x0123456789abcdef pattern key and Anvil/Hardhat dev account #0 (published in Foundry's docs)"
+regexTarget = "secret"
+regexes = [
+  '''^0x(0123456789abcdef){4}$''',
+  '''^0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80$''',
+]
+
+[[allowlists]]
+description = "Migration checksum registry rows ['<migration name>', '<sha256>']: public file checksums"
+regexTarget = "line"
+regexes = ['''^\s*\['\d{8,14}_[a-z0-9_]+', '[0-9a-f]{64}'\],?\s*$''']

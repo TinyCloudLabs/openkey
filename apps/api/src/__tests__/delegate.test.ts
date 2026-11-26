@@ -3,7 +3,6 @@ import { validatePermissions } from '../routes/delegate-session';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
-  signedSiweExpirationTime,
 } from '../routes/delegate-validation';
 
 const base = { service: 'kv', space: 'tinycloud:space:default', path: '', actions: ['tinycloud.kv/list'] };
@@ -83,24 +82,5 @@ describe('normalizeDelegateReason', () => {
   test('omits blank or non-string reasons', () => {
     expect(normalizeDelegateReason('   ')).toBeUndefined();
     expect(normalizeDelegateReason({ reason: 'nope' })).toBeUndefined();
-  });
-});
-
-describe('signedSiweExpirationTime', () => {
-  test('reads the SIWE Expiration Time', () => {
-    const expirationTime = '2026-07-01T00:00:00.000Z';
-    const siwe = [
-      'cli.tinycloud.xyz wants you to sign in',
-      '',
-      `Expiration Time: ${expirationTime}`,
-    ].join('\n');
-
-    expect(signedSiweExpirationTime(siwe)).toBe(expirationTime);
-  });
-
-  test('rejects missing or invalid expiry values', () => {
-    expect(signedSiweExpirationTime(undefined)).toBeUndefined();
-    expect(signedSiweExpirationTime('no expiry here')).toBeUndefined();
-    expect(signedSiweExpirationTime('Expiration Time: not-a-date')).toBeUndefined();
   });
 });

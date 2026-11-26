@@ -48,8 +48,10 @@ import {
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
 import { signInCodeStorage } from './services/email-code-storage';
+import { EMAIL_CODE_ALLOWED_ATTEMPTS, emailCodeAtomicVerify } from './services/email-code-atomic-verify';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
+import { EMAIL_OTP_ADDRESS_LIMIT_OFF } from './middleware/email-otp-rate-limit';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
@@ -278,26 +280,37 @@ function currentRequestResource(): unknown {
   return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
 }
 function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
-  const cappedLifetime = (seconds: number) => {
+  // An Apple reviewer's tokens end on the source deadline in whole seconds: exp = iat + lifetime <= floor(deadline).
+  // The provider samples an integral iat and reads `accessTokenExpiresIn` (or `idTokenExpiresIn`) in the same
+  // synchronous step, so the second this getter reads is iat's. It reads `refreshTokenExpiresIn` for that same iat only
+  // after `customTokenResponseFields` has awaited the native code exchange, when the clock may be seconds later. The
+  // access read keeps its second for the endpoint call and the refresh read subtracts that second. A second read
+  // after iat only shortens a lifetime, so exp never passes the deadline (the database adapter also caps every row).
+  const accessTokenSecond = new WeakMap<object, number>();
+  const cappedLifetime = (seconds: number, token: 'access' | 'id' | 'refresh') => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    // Native provider tokens use an integral iat sampled before this getter.
-    // Avoid subtracting the fractional second twice while keeping exp <= the
-    // source deadline (the database adapter also caps every row).
-    const remaining = reviewer.store === 'apple'
-      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
-      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    let remaining: number;
+    if (reviewer.store === 'apple') {
+      const call = endpointContext.getStore();
+      let second = Math.floor(Date.now() / 1000);
+      if (call && token === 'access') accessTokenSecond.set(call, second);
+      if (call && token === 'refresh') second = accessTokenSecond.get(call) ?? second;
+      remaining = Math.floor((reviewer.deadline ?? Date.now()) / 1000) - second;
+    } else {
+      remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    }
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
     enumerable: true,
-    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource())),
+    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource()), 'access'),
   });
   Object.defineProperty(plugin.options, 'idTokenExpiresIn', {
-    enumerable: true, get: () => cappedLifetime(3600),
+    enumerable: true, get: () => cappedLifetime(3600, 'id'),
   });
   Object.defineProperty(plugin.options, 'refreshTokenExpiresIn', {
-    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600),
+    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600, 'refresh'),
   });
   return plugin;
 }
@@ -332,6 +345,12 @@ export const auth = betterAuth({
     provider: 'postgresql',
     transaction: true,
   }),
+
+  // The email-code endpoints are limited per target email by middleware/email-otp-rate-limit.ts, ahead of this
+  // handler; the address-keyed limit is off for them because the address is caller-chosen or shared.
+  rateLimit: {
+    customRules: EMAIL_OTP_ADDRESS_LIMIT_OFF,
+  },
 
   // Passwords stay disabled; email OTP is the default authentication path.
   emailAndPassword: {
@@ -423,6 +442,7 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
+      allowedAttempts: EMAIL_CODE_ALLOWED_ATTEMPTS,
       // Codes are stored hashed, so a resend mails a new code and the earlier
       // one stops working; the sign-in page asks for the latest email.
       resendStrategy: 'rotate',
@@ -597,6 +617,9 @@ export const auth = betterAuth({
       },
     }))) as any,
     reviewerAuth(prisma, origin),
+    // Last: reviewer sign-in answers its own paths before a code is graded, and every other hook that
+    // can refuse one of the code endpoints runs first, so no code is spent on a request that is refused.
+    emailCodeAtomicVerify(prisma),
   ],
 
   // Provider entries are present only when every required secret is configured.

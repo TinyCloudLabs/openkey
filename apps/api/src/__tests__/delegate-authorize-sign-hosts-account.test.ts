@@ -171,7 +171,7 @@ function siweFor(space: string) {
   return prepareSession({
     address: account.address,
     chainId: 1,
-    domain: 'example.com',
+    domain: 'home.tinycloud.xyz',
     issuedAt: new Date(now).toISOString(),
     expirationTime: new Date(now + 3_600_000).toISOString(),
     spaceId: space,
@@ -196,7 +196,7 @@ async function signIn(siwe: string) {
     siwe,
     jwk,
     host: 'https://node.tinycloud.xyz',
-    requestOrigin: 'https://example.com',
+    requestOrigin: 'https://home.tinycloud.xyz',
   });
   expect(prepared.status).toBe(200);
   const previewed = await post('/authorize-sign-preview', {

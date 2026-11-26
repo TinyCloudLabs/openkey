@@ -2,6 +2,7 @@
 // and server-owned primary state. No API server is required.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import type { EthereumKey } from '../../src/lib/api';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, status: number, body: unknown) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -56,6 +57,7 @@ async function mock(page: Page, options: {
     }
     return json(route, 404, { error: `unmocked ${request.method()} ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return mutations;
 }
 

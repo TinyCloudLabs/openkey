@@ -74,13 +74,3 @@ export function normalizeDelegateReason(reason: unknown): string | undefined {
 
   return normalized.slice(0, 500);
 }
-
-/**
- * The Expiration Time of a SIWE message. Response expiry fields come only
- * from the signed bytes, never from caller-supplied metadata (TC-547).
- */
-export function signedSiweExpirationTime(siwe: unknown): string | undefined {
-  if (typeof siwe !== 'string') return undefined;
-  const expirationTime = siwe.match(/^Expiration Time:\s*(.+)$/im)?.[1]?.trim();
-  return expirationTime && !Number.isNaN(Date.parse(expirationTime)) ? expirationTime : undefined;
-}

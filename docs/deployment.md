@@ -243,6 +243,7 @@ env alongside it for rollback. Details: TC-1480
 | `SCOREBOARD_EXCLUDE_ADDRESSES` | Comma-separated EVM wallet addresses of team members (compared lowercase; invalid entries are ignored). Each is mapped through `ethereum_keys.address` to its account, so every key of that person is excluded: the `team_by_wallet` bucket of `/api/internal/metrics` `users`, checked first. Addresses are never returned or logged. |
 | `SCOREBOARD_DISPOSABLE_DOMAINS` | Comma-separated extra disposable-mail domains (a leading `@` or `*.` is accepted; subdomains match; entries that are not domains, major webmail domains, our own team domains and country suffixes such as `co.uk` are ignored, so a bad list can never mark them disposable). An entry from this variable or from the Worker's POST list only takes effect once it matches at least 5 accounts (the built-in list has no such floor), so a token holder cannot probe how many accounts sit at a domain, added to the built-in list (mailinator, guerrillamail family, sharklasers, mail.tm/mail.gw and our mail.tm domains fldubai.com and maxxspace.com, maildrop, 10minutemail, yopmail, temp-mail/tempmail, trashmail, getnada, Mailpit/MailHog/MailCatcher). Feeds the `disposable_mail_domain` bucket, together with the built-in list and the `disposableDomains` the internal Worker sends in a `POST` to `/api/internal/metrics`. Mail.tm rotates domains: add the new one here, no code deploy needed; applies after the API container is recreated with the new environment. |
 | `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Changes apply after the API container is recreated with the new environment. |
+| `OPENKEY_NETWORK_DECRYPT_CAP` | Off unless exactly `enabled`. When on, a whole network's `decrypt` outside a signed approval request (`/a/`) lasts 7 days at most, like a grant on secret keys: `/prepare`, the managed `POST /api/delegate` and `/authorize-sign-preview` bring a longer expiry back to 7 days, and signed bytes that ask for more (`/complete`, `/authorize-sign`, raw `/api/keys/:id/sign`, `/api/delegate/sign`) are refused with 400 `secret_lifetime_exceeded`. Passed through `docker-compose.prod.yml`. Set the web's `VITE_OPENKEY_NETWORK_DECRYPT_CAP` the same. |
 | `OPENKEY_RENEWAL_LEASES` | Hardcoded `enabled` in `docker-compose.prod.yml`, not sealed, so turning leases on or off never touches the sealed environment. To turn them off, a one-line PR sets `OPENKEY_RENEWAL_LEASES=` (empty) and `deploy-api.yml` redeploys the compose (no env file); to turn them on again, the same with `enabled`. Leases are off unless this is exactly `enabled`. While off, a request that asked for renewal is approved finite and a leased choice is refused with 400 `renewal_disabled`; leases already granted keep renewing on the node and can still be stopped in Settings. Setting it to `stop` also revokes the live leases OpenKey signed. The API checks about 30 seconds after boot and every five minutes thereafter. Each pass logs how many live leases require an external wallet's signature. Enable only after the web that shows the renewal choice is live. |
 | `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID` | Hardcoded in `docker-compose.prod.yml` (public values, not sealed): the production TinyCloud node's DID and its renewer DID, exactly as the node advertises them at `https://node.tinycloud.xyz/.well-known/tinycloud/node-keys` (`nodeDid`, `renewerDid`). Re-read them after a node upgrade; if the node's values change, update the compose before the next API deploy. Without both, or if they don't match the node, no production lease is made. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
@@ -652,6 +653,29 @@ dispatch `deploy-api.yml` after the merge: its migration step runs
 To require API-before-web with this main-only workflow, split the API/database
 and web changes into separate merges.
 
+#### Image digest, provenance and the published compose (TC-3837)
+
+The deploy writes the API image into `docker-compose.prod.yml` by the digest
+the push returned (`skgbafa/openkey-api@sha256:…`), never by tag, and
+`scripts/compose-image-digests.ts` stops the deploy, before migrations, if any
+service image is a tag or a variable. The measured `compose_hash` therefore
+names the exact image that was scanned. The push carries a GitHub build
+provenance attestation:
+
+```bash
+gh attestation verify oci://docker.io/skgbafa/openkey-api@sha256:<digest> --repo TinyCloudLabs/openkey
+```
+
+When a deploy run that reached the CVM completes, its own workflow,
+`publish-api-compose.yml`, takes the image from the run's `api-deploy-record`
+artifact and reads the CVM's attestation from Phala. It requires that the
+`compose-hash` event, Phala's `compose_hash` and sha256 of the measured
+app-compose agree and that the api service runs that image, then uploads that
+app-compose as `app-compose.<compose_hash>.json` to the release
+`openkey-api-<commit>`. `sha256sum` of the asset equals the `compose_hash` in
+the attestation. A failure fails the publish run, not the deploy run, so the
+Share sender smoke and the next deploy's smoke gate are unaffected.
+
 #### Release order when web and API ship together
 
 When one release changes both the web and the API, release them as a pair, in
@@ -728,7 +752,9 @@ serving.
    bun run db:migrate:prod
    ```
 
-3. Update `docker-compose.prod.yml` with the image tag
+3. Update `docker-compose.prod.yml` with the image digest the push printed
+   (`skgbafa/openkey-api@sha256:…`), not the tag, and check it with
+   `bun scripts/compose-image-digests.ts docker-compose.prod.yml`
 
 4. Deploy via Phala CLI:
    ```bash
@@ -764,12 +790,14 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 1. Connect your repository to Cloudflare Pages
 
 2. Configure build settings:
-   - Build command: `bun run build --filter @openkey/web`
+   - Build command: `bun run build --filter @openkey/web` (ends with `bun run audit:web`, the
+     artifact audit; a finding fails the build. See `docs/security/required-checks.md`.)
    - Build output: `apps/web/.svelte-kit/cloudflare`
    - Root directory: `/`
 
 3. Set environment variables:
    - `VITE_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
+   - For a production upload, build with `VITE_API_URL=https://api.openkey.so` and run `bun run audit:web:prod` before uploading.
    - `VITE_CONSOLE_ORIGIN=https://console.openkey.so`
    - Optional, for deployments outside production (staging MCP, extra
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
@@ -784,8 +812,32 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      client registered for it (`docs/resource-server-token-status.md`); none of
      these establishes an assistant's acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
+   - Optional: `VITE_OPENKEY_NETWORK_DECRYPT_CAP=enabled`, set together with
+     the API's `OPENKEY_NETWORK_DECRYPT_CAP`. The popup, frame and command-line
+     approval screens then stop a whole network's decrypt at 7 days, as the API
+     does. The API's flag is the one that holds the grant.
 
-4. Deploy
+4. Production Git auto-deploys are disabled for the `openkey` Pages project.
+   From a clean checkout at the release commit, set `CLOUDFLARE_API_TOKEN`
+   and `CLOUDFLARE_ACCOUNT_ID`, then use the direct-upload script:
+
+   ```bash
+   scripts/release/openkey-web-direct-upload.sh <commit-sha> preview
+   # QA-probe the preview deployment, then record its Cloudflare deployment ID.
+   scripts/release/openkey-web-direct-upload.sh <commit-sha> production --preview-verified <preview-deployment-id>
+   ```
+
+   The script requires the project's expected build command, passes only its
+   readable `VITE_*` variables into a clean build environment, runs
+   `bun install --frozen-lockfile` and the fixed web build, checks the API host
+   in the artifact, runs `bun run audit:web:prod`, and only then uploads.
+   Install, build and audit use a temporary home removed on exit; API requests
+   send the Cloudflare token through curl's stdin header rather than argv.
+   Preview checks `/auth/register` and `/auth/login` for HTTP 200. Production prints the
+   previous canonical deployment ID before upload; roll back with
+   `POST /accounts/<account-id>/pages/projects/openkey/deployments/<id>/rollback`.
+   If Pages Git builds are re-enabled, append `&& bun run audit:web:prod`
+   to the project's build command too.
 
 Attach both `openkey.so` and `console.openkey.so` custom domains to this Pages
 deployment. The console hostname only serves the `/console` route tree, while

@@ -44,6 +44,8 @@ import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-res
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { feedGrantStatement } from "./feed-grant.js";
+import { coversManySecrets, exactSecretKeyPath, secretKeyDisplayName, secretOfKvPath, secretScopeOfKeyPath } from "./secret-keys.js";
+import { KV_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -87,6 +89,10 @@ export interface StatementEntry {
    * action, so it is exempt from the one-line rule and may wrap.
    */
   showsRawText?: true;
+  /** A second sentence shown in smaller type under the row, where one line cannot hold the whole statement. */
+  detail?: string;
+  /** The name and exact key path behind a named secret read; `kvPath` is its value's path when its key is not requested. */
+  secret?: { name: string; keyPath: string; kvPath?: string; scope?: string };
 }
 
 /** Family/action-aware structural verb classification. */
@@ -385,12 +391,138 @@ export function grantReachesSecretDataOrDecryption(
   return false;
 }
 
+/**
+ * Is this the signer's own `default/share/` folder, or a prefix under it? Those are the shared-file keys the owner
+ * made, so the one-hour start (`grantIsBroadOnce`) and the "Renew sensitive access?" confirm leave them out. An exact
+ * key, another owner's folder, another network, a path that does not parse and a mismatched service are not it.
+ */
+export function grantIsOwnShareFolder(grant: CapabilityGrant): boolean {
+  if (grant.ownedBySelf !== true || grant.serviceMismatch === true) return false;
+  const view = canonicalEncryptionUrn(grant);
+  if (view.kind !== "urn") return false;
+  const parsed = view.parsed;
+  return parsed.kind === "prefix" && parsed.network === "default" && parsed.keyPath.startsWith("share/");
+}
+
+/**
+ * True for the one-hour approval tier: a grant that reaches secret data or
+ * decryption AND reaches all of it. The tier is:
+ * - encryption on a whole network URN, on a one-segment prefix (`apps/`,
+ *   `shared/`), or on a deeper prefix outside `apps/<appId>/`;
+ * - KV or secrets-service access to the whole vault (`""`, `vault`,
+ *   `vault/secrets`, `secrets`, with or without a trailing `/`);
+ * - any shape this cannot place: an encryption URN that does not parse, a
+ *   mismatched service, an unknown service on the secrets space, or a KV,
+ *   SQL or secrets-service ability outside the service's known verbs, even
+ *   on one named secret.
+ * One named secret, a secret sub-prefix, SQL on the secrets catalog, an exact
+ * encryption key, a prefix inside `apps/<appId>/` and the signer's own
+ * `default/share/` folder (and any prefix under it) return false, so the
+ * approval starts at the length the app asked for.
+ */
+export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
+  if (!grantReachesSecretDataOrDecryption(grant)) return false;
+  if (grant.serviceMismatch === true) return true;
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const view = canonicalEncryptionUrn(grant);
+    if (view.kind !== "urn") return true;
+    const parsed = view.parsed;
+    if (parsed.kind === "network") return true;
+    // An exact key stays one key, except `default/secrets` itself, shown as all secrets.
+    if (parsed.kind === "key") return coversManySecrets(parsed);
+    if (grantIsOwnShareFolder(grant)) return false;
+    // Only `apps/<appId>/…` provably stays inside one app's keys.
+    const segments = parsed.keyPath.slice(0, -1).split("/");
+    return segments.length < 2 || segments[0] !== "apps";
+  }
+  const known = SQL_SERVICES.has(grant.service)
+    ? SQL_DATABASE_VERBS
+    : KV_SERVICES.has(grant.service)
+      ? KV_VERBS
+      : SECRETS_SERVICES.has(grant.service)
+        ? SECRETS_KNOWN_VERBS
+        : null;
+  if (known === null) return true;
+  if (grant.actions.some((action) => !known.has(verbOf(action.ability)))) return true;
+  return !SQL_SERVICES.has(grant.service) && WHOLE_VAULT_PATHS.has(grant.path);
+}
+
+// KV paths that cover every secret: the whole space, the vault and the
+// secrets directory, with or without the trailing `/`.
+const WHOLE_VAULT_PATHS = new Set([
+  "",
+  "vault",
+  "vault/",
+  "vault/secrets",
+  "vault/secrets/",
+  "secrets",
+  "secrets/",
+]);
+
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
 const SQL_SERVICES = new Set(["tinycloud.sql", "sql"]);
 const CAPABILITY_SERVICES = new Set(["tinycloud.capabilities", "capabilities"]);
 const DELEGATION_SERVICES = new Set(["tinycloud.delegation", "delegation"]);
 const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
 const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
+
+/** What a one-hour tier grant reaches, for the caution under the length choice. */
+export type OnceReach = "network" | "secrets" | "wide";
+
+/**
+ * Where a one-hour tier grant (`grantIsBroadOnce`) reaches: `network` for decrypt on a whole encryption network (all
+ * encrypted data), `secrets` for a key or prefix that covers every secret, or the whole vault in KV or the secrets
+ * service, and `wide` for the rest of the tier (`apps/`, `shared/`, deeper prefixes outside `apps/<appId>/`, the whole
+ * KV space, and any shape this cannot place). Null for a grant outside the tier.
+ */
+export function grantOnceReach(grant: CapabilityGrant): OnceReach | null {
+  if (!grantIsBroadOnce(grant)) return null;
+  if (grant.serviceMismatch === true) return "wide";
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const view = canonicalEncryptionUrn(grant);
+    if (view.kind !== "urn") return "wide";
+    if (view.parsed.kind === "network") return "network";
+    return coversManySecrets(view.parsed) ? "secrets" : "wide";
+  }
+  const holdsVault = KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service);
+  return holdsVault && grant.path !== "" && WHOLE_VAULT_PATHS.has(grant.path) ? "secrets" : "wide";
+}
+
+/** The canonical secrets space of an account, exactly: `tinycloud:pkh:eip155:<chain>:<address>:secrets`. */
+const SIGNER_SECRETS_SPACE = /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:secrets$/;
+
+/**
+ * The part a grant plays in the request that reads every secret, or null for any other grant: `value` is a KV `get`
+ * on `vault/secrets` or `vault/secrets/` in the signer's secrets space, `key` is a decrypt on the `secrets/` prefix of the `default` network. Each
+ * has exactly that one action: a grant with a write, a wildcard or any other ability is not a read of every secret.
+ * The whole vault (`vault/`), a bare `secrets/` KV path and the scoped prefix are wider or narrower than that and are
+ * not either part. Both parts are in the signer's own space or network: another account's secrets are not "your" secrets.
+ */
+export function allSecretsReadPart(grant: CapabilityGrant): "value" | "key" | null {
+  if (grant.ownedBySelf !== true || grant.serviceMismatch === true || grant.actions.length !== 1) return null;
+  const ability = grant.actions[0]!.ability;
+  if (KV_SERVICES.has(grant.service)) {
+    const reads = KV_GET_ABILITIES.has(ability) && grant.appScopeNearMiss !== true && SIGNER_SECRETS_SPACE.test(grant.space);
+    return reads && (grant.path === "vault/secrets" || grant.path === "vault/secrets/") ? "value" : null;
+  }
+  if (ENCRYPTION_SERVICES.has(grant.service) && ability === "tinycloud.encryption/decrypt") {
+    const view = canonicalEncryptionUrn(grant);
+    return view.kind === "urn" && view.parsed.kind === "prefix" && view.parsed.network === "default" && view.parsed.keyPath === "secrets/"
+      ? "key"
+      : null;
+  }
+  return null;
+}
+
+/** A grant on a scoped secret (`vault/secrets/scoped/<scope>/NAME`, or a key or prefix under `secrets/scoped/`). */
+export function isScopedSecretGrant(grant: CapabilityGrant): boolean {
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const view = canonicalEncryptionUrn(grant);
+    return view.kind === "urn" && view.parsed.kind !== "network" && view.parsed.keyPath.toLowerCase().startsWith("secrets/scoped");
+  }
+  return (KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service)) && /^vault\/secrets\/scoped(\/|$)/.test(grant.path);
+}
+
 const RECOGNIZED_DELEGATION_ACTIONS = new Set([
   "tinycloud.delegation/list",
   "delegation/list",
@@ -1503,6 +1635,21 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return verb === "get" || verb === "read" || verb === "select";
     });
     const hasValueMutation = verbs.hasWrite || verbs.hasSchema;
+    // A delete is named in the sentence whenever the grant has one, next to an update when the grant also writes.
+    const mutationVerbs = abilityStrings.map(verbOf).filter((verb) => MUTATION_VERBS.has(verb));
+    const hasValueDelete = mutationVerbs.some((verb) => verb === "del" || verb === "delete");
+    if (hasValueDelete) {
+      const alsoUpdates = verbs.hasSchema || mutationVerbs.some((verb) => verb !== "del" && verb !== "delete");
+      const values = grant.ownedBySelf === false ? "another user's secret values" : "secret values";
+      const action = hasValueRead
+        ? alsoUpdates
+          ? "Read, update and delete"
+          : "Read and delete"
+        : alsoUpdates
+          ? "Update and delete"
+          : "Delete";
+      return { primaryText: `${action} ${values}`, service, resource };
+    }
     if (hasValueRead && hasValueMutation) {
       return {
         primaryText:
@@ -1952,9 +2099,164 @@ export interface SummaryStatement {
   /** A literal fallback row (an unmapped shape); listed after the mapped rows. */
   unmapped: boolean;
   codeSpans: boolean;
+  /** The row's second sentence, shown under it (`StatementEntry.detail`). */
+  detail?: string;
+  /** The named secret when the grants behind this row share one exact key path. */
+  secret?: StatementEntry["secret"];
 }
 
 const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0, attention: 1, sensitive: 2 };
+
+/**
+ * The secret's name when the grants are exactly a read of one named secret
+ * (`tinycloud.kv/get` on `vault/secrets/NAME`, or its scoped path, in the
+ * signer's own secrets space) and decrypt on that secret's own key
+ * (`default/secrets/<name>`) on the signer's own network; otherwise null.
+ * Decrypt on a whole network opens every secret, so it never reads as one.
+ */
+export function oneNamedSecret(grants: readonly CapabilityGrant[]): string | null {
+  if (grants.length !== 2) return null;
+  const read = grants.find((grant) => grant.family === "secret-read");
+  const decrypt = grants.find((grant) => grant.family === "encryption-decrypt");
+  if (!read || !decrypt) return null;
+  if (read.ownedBySelf !== true || decrypt.ownedBySelf !== true) return null;
+  if (read.serviceMismatch === true || read.appScopeNearMiss === true || decrypt.serviceMismatch === true) return null;
+  if (read.service !== "tinycloud.kv" || !isSecretsSpace(read.space)) return null;
+  if (read.actions.length !== 1 || read.actions[0]!.ability !== "tinycloud.kv/get") return null;
+  if (decrypt.actions.length !== 1 || decrypt.actions[0]!.ability !== "tinycloud.encryption/decrypt") return null;
+  const keyPath = ownSecretKeyPath(decrypt);
+  const secret = secretOfKvPath(read.path);
+  return keyPath !== null && secret !== null && secret.keyPath === keyPath ? secret.name : null;
+}
+
+/** The key of the row of a one-named-secret request; the page puts its note under this row. */
+export const NAMED_SECRET_DECRYPT_ROW = "decrypt-named-secret";
+
+/** The one summary row of a one-named-secret request (`oneNamedSecret`): its read and its key read as one. */
+function oneNamedSecretRows(name: string): SummaryStatement[] {
+  return [
+    { key: NAMED_SECRET_DECRYPT_ROW, primaryText: secretReadText(name), severity: "sensitive", unmapped: false, codeSpans: false },
+  ];
+}
+
+/** The words before the secret's name in a read row. */
+const SECRET_READ_LEAD = "Read the secret ";
+/** The words between the secret's name and its scope in the row of a scoped secret. */
+const SECRET_SCOPE_JOIN = " from ";
+
+function secretReadText(name: string, scope: string | null = null): string {
+  return secretReadParts(name, scope).map((part) => part.text).join("");
+}
+
+/**
+ * The row of a read of one secret as runs of text; `named` marks the runs the face sets as the secret's name (the
+ * name, and the scope of a scoped secret). The runs join to the row's `primaryText`.
+ */
+export function secretReadParts(name: string, scope: string | null): Array<{ text: string; named: boolean }> {
+  return [
+    { text: SECRET_READ_LEAD, named: false },
+    { text: name, named: true },
+    ...(scope === null ? [] : [{ text: SECRET_SCOPE_JOIN, named: false }, { text: scope, named: true }]),
+  ];
+}
+
+/** The secret behind a row: its name, key path and, for a scoped secret, its scope (derived from the key path). */
+function secretRef(name: string, keyPath: string, kvPath?: string): NonNullable<StatementEntry["secret"]> {
+  const scope = secretScopeOfKeyPath(keyPath);
+  return { name, keyPath, ...(scope !== null ? { scope } : {}), ...(kvPath !== undefined ? { kvPath } : {}) };
+}
+
+/** How a secret is listed by name: `SCOPE/NAME` for a scoped secret, `NAME` for a global one. */
+export function secretListLabel(secret: { name: string; scope?: string }): string {
+  return secret.scope === undefined ? secret.name : `${secret.scope}/${secret.name}`;
+}
+
+// The note is two sentences; the second goes under the row so the row stays one line on a phone.
+const SECRET_KEY_CREATE_DETAIL = "It can't read any of your secrets.";
+
+function namedKeyVerbOf(ability: string): NamedKeyVerb | undefined {
+  return Object.hasOwn(NAMED_KEY_VERB_BY_ABILITY, ability) ? NAMED_KEY_VERB_BY_ABILITY[ability] : undefined;
+}
+
+/** The key path of one secret's exact key, when this is an encryption grant on it in the signer's own account. */
+function ownSecretKeyPath(grant: CapabilityGrant): string | null {
+  if (grant.ownedBySelf !== true || grant.serviceMismatch === true) return null;
+  const view = canonicalEncryptionUrn(grant);
+  return view.kind === "urn" ? exactSecretKeyPath(view.resource) : null;
+}
+
+/** Does this grant decrypt one secret's own key in the signer's own account? */
+export function grantDecryptsOneSecret(grant: CapabilityGrant): boolean {
+  return ownSecretKeyPath(grant) !== null && grant.actions.some((action) => namedKeyVerbOf(action.ability) === "decrypt");
+}
+
+/** A KV grant in the signer's own secrets space, on one secret's path: that secret. */
+function ownSecretKvOf(grant: CapabilityGrant): { name: string; keyPath: string } | null {
+  if (!KV_SERVICES.has(grant.service) || grant.ownedBySelf !== true || grant.serviceMismatch === true ||
+    grant.appScopeNearMiss === true || !isSecretsSpace(grant.space)) return null;
+  return secretOfKvPath(grant.path);
+}
+
+/**
+ * Rows for a grant on one secret's own key, or on one secret's KV path (paired with decrypt on its key, or read where
+ * nothing in the request decrypts more than one secret's own key).
+ * The secret is named by the KV path the request pairs with its key (`vault/secrets/OPENAI_API_KEY`), otherwise by
+ * the key's own lowercase name. Null for every other grant, which keeps its ordinary rows.
+ */
+function secretKeyRows(
+  grant: CapabilityGrant,
+  names: ReadonlyMap<string, string>,
+  decryptKeys: ReadonlySet<string>,
+  readsAlone: boolean,
+): StatementEntry[] | null {
+  const keyPath = ownSecretKeyPath(grant);
+  const scope = keyPath === null ? null : secretScopeOfKeyPath(keyPath);
+  if (keyPath !== null) {
+    const name = names.get(keyPath) ?? secretKeyDisplayName(keyPath);
+    const verbs = grant.actions.map((action) => namedKeyVerbOf(action.ability));
+    if (verbs.length === 0 || verbs.some((verb) => verb !== "decrypt" && verb !== "create")) return null;
+    const resource = resourceOf(grant);
+    // A grant that also decrypts shows only the read: its key creation is listed under the exact grants, and the
+    // sentence that it can't read secrets would be untrue of it.
+    const decrypts = verbs.includes("decrypt");
+    return verbs.filter((verb) => verb === "decrypt" || !decrypts).map((verb) => verb === "decrypt"
+      ? { primaryText: secretReadText(name, scope), service: grant.service, resource, severity: "sensitive" as const, secret: secretRef(name, keyPath) }
+      : {
+          primaryText: `Create a key for the new secret ${name}.`,
+          detail: SECRET_KEY_CREATE_DETAIL,
+          service: grant.service,
+          resource,
+          severity: "attention" as const,
+        });
+  }
+  const secret = ownSecretKvOf(grant);
+  if (secret === null || !(decryptKeys.has(secret.keyPath) || readsAlone)) return null;
+  if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
+  return [{
+    primaryText: secretReadText(secret.name, secretScopeOfKeyPath(secret.keyPath)),
+    service: grant.service,
+    resource: resourceOf(grant),
+    severity: "sensitive",
+    secret: secretRef(secret.name, secret.keyPath, decryptKeys.has(secret.keyPath) ? undefined : grant.path),
+  }];
+}
+
+const KV_GET_ABILITIES = new Set(["tinycloud.kv/get", "kv/get"]);
+
+/** The row a read of secrets the review cannot place reads as. */
+const READ_SECRETS_ROW = "Read secrets";
+
+/**
+ * The secret when this grant is exactly a read (`get`) of one secret's unscoped KV path in a secrets space, with a
+ * key that names the space and the path; otherwise null. An app-scoped path names a scope the row would leave out.
+ */
+function exactSecretRead(grant: CapabilityGrant): { key: string; name: string } | null {
+  if (!KV_SERVICES.has(grant.service) || grant.serviceMismatch === true || !isSecretsSpace(grant.space)) return null;
+  if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
+  const secret = secretOfKvPath(grant.path);
+  if (secret === null || grant.path.split("/").length !== 3) return null;
+  return { key: `${grant.space}\0${grant.path}`, name: secret.name };
+}
 
 /**
  * The rows of the approval summary for the grants currently selected. Repeated
@@ -1963,22 +2265,48 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
  * so what the header says always matches the rows marked Sensitive.
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
-  const grouped = new Map<string, SummaryStatement>();
+  const secret = oneNamedSecret(grants);
+  if (secret !== null) return oneNamedSecretRows(secret);
+  const names = new Map<string, string>();
+  const decryptKeys = new Set<string>();
   for (const grant of grants) {
-    for (const statement of buildStatements(grant)) {
-      const existing = grouped.get(statement.primaryText);
+    const kv = ownSecretKvOf(grant);
+    if (kv !== null) names.set(kv.keyPath, kv.name);
+    if (grantDecryptsOneSecret(grant)) decryptKeys.add(ownSecretKeyPath(grant)!);
+  }
+  // A read of one secret names it when its own key is requested, or when nothing in the request decrypts more than
+  // one secret's own key: a wider decrypt (a prefix or the whole network) opens secrets the row would not name.
+  const readsAlone = !grants.some((grant) => grant.actions.some((action) => action.ability.endsWith("/decrypt")) && ownSecretKeyPath(grant) === null);
+  const rows = grants.map((grant) => ({ grant, statements: secretKeyRows(grant, names, decryptKeys, readsAlone) ?? buildStatements(grant) }));
+  // The plural row names its secret when every grant behind it reads that one secret in that one space.
+  const reads = rows
+    .filter((row) => row.statements.some((statement) => statement.primaryText === READ_SECRETS_ROW))
+    .map((row) => exactSecretRead(row.grant));
+  const [firstRead] = reads;
+  const namedRead = firstRead && reads.every((read) => read !== null && read.key === firstRead.key) ? firstRead.name : null;
+  const grouped = new Map<string, SummaryStatement>();
+  for (const { grant, statements } of rows) {
+    for (const statement of statements) {
+      const primaryText = statement.primaryText === READ_SECRETS_ROW && namedRead !== null ? secretReadText(namedRead) : statement.primaryText;
+      // A scoped secret's row groups by its full key path, so the same name in two scopes stays two rows; every
+      // other row groups by its sentence.
+      const groupKey = statement.secret?.scope !== undefined ? `${primaryText}\0${statement.secret.keyPath}` : primaryText;
+      const existing = grouped.get(groupKey);
       const rowSeverity = statement.severity ?? grant.severity;
       if (existing) {
+        if (existing.secret?.keyPath !== statement.secret?.keyPath) delete existing.secret;
         if (SUMMARY_SEVERITY_RANK[rowSeverity] > SUMMARY_SEVERITY_RANK[existing.severity]) {
           existing.severity = rowSeverity;
         }
       } else {
-        grouped.set(statement.primaryText, {
-          key: statement.primaryText,
-          primaryText: statement.primaryText,
+        grouped.set(groupKey, {
+          key: groupKey,
+          primaryText,
           severity: rowSeverity,
           unmapped: statement.literalEscaped === true,
           codeSpans: statement.codeSpans === true,
+          ...(statement.detail !== undefined ? { detail: statement.detail } : {}),
+          ...(statement.secret !== undefined ? { secret: statement.secret } : {}),
         });
       }
     }
