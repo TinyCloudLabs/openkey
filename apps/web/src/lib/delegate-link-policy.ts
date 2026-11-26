@@ -193,10 +193,18 @@ export function isVerifiedRequesterEntry(entry: VerifiedRequesterEntry): boolean
 export type OneVerifiedRequesterEntry = { did: string; policy: RequesterScopePolicy };
 
 /**
- * TinyCloud One's long-lived request-signing keys, each with the policy that bounds what the key may ask for.
- * Empty until a key and its policy are reviewed. No key is named without a policy: there is no key-only list.
+ * TinyCloud One's reviewed request-signing key and the scope it may ask for. A key alone grants no verified name.
  */
-export const TINYCLOUD_ONE_VERIFIED_REQUESTERS: readonly OneVerifiedRequesterEntry[] = [];
+export const TINYCLOUD_ONE_VERIFIED_REQUESTERS: readonly OneVerifiedRequesterEntry[] = [{
+  did: 'did:key:z6Mkm7hJCGM9CygEBbAsnY25PxmwR3Ujp5ryZUHLH2ir56tF',
+  policy: {
+    maxLifetimeSeconds: 3600,
+    rules: [
+      { kind: 'path', service: 'tinycloud.kv', spaces: ['secrets'], actions: ['tinycloud.kv/get'], pathPrefixes: ['vault/secrets/'], segmentPatterns: ['^[A-Z][A-Z0-9_]*$'] },
+      { kind: 'encryption-network', service: 'tinycloud.encryption', spaces: ['encryption'], actions: ['tinycloud.encryption/decrypt'], network: 'default', wholeNetwork: true, keyPrefixes: ['secrets/'], keyNamePattern: '^(?!scoped$)[a-z0-9][a-z0-9_-]*$' },
+    ],
+  },
+}];
 
 /** A well-formed One entry: an Ed25519 `did:key` and a valid policy. */
 export function isOneVerifiedRequesterEntry(entry: OneVerifiedRequesterEntry): boolean {

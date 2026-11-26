@@ -78,9 +78,8 @@ describe('verifiedApprovalRequester', () => {
     }
   });
 
-  test('the empty built-in lists name no signer', () => {
+  test('unlisted signers receive no built-in name', () => {
     expect(VERIFIED_REQUESTERS).toEqual([]);
-    expect(TINYCLOUD_ONE_VERIFIED_REQUESTERS).toEqual([]);
     expect(verifiedApprovalRequester(APP, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, inPolicy, inPolicy)).toBeNull();
     expect(verifiedApprovalRequester(ONE, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, inPolicy, inPolicy)).toBeNull();
   });
