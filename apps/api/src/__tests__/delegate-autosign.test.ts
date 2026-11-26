@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
-import { prepareSession } from '@tinycloud/node-sdk-wasm';
+import { generateHostSIWEMessage, prepareSession } from '@tinycloud/node-sdk-wasm';
 import {
   BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST,
   BOOTSTRAP_SESSION_REQUESTS,
@@ -1014,6 +1014,31 @@ describe('Auto-Sign owner-only Courier paths (TC-884)', () => {
 
 // TC-3844: Auto-Sign never silently signs a sign-in message with no Expiration Time; it goes to the approval screen.
 describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', () => {
+  const hostSiwe = () => generateHostSIWEMessage({
+    address,
+    chainId,
+    domain: 'cli.tinycloud.xyz',
+    issuedAt: new Date().toISOString(),
+    spaceId: bootstrapSpaceId(address, chainId, 'public'),
+    peerId: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+  });
+  const withExpiry = (message: string) => message.replace(
+    /^(Issued At: .+)$/m,
+    `$1\nExpiration Time: ${new Date(Date.now() + 60 * 60 * 1000).toISOString()}`,
+  );
+  async function postHostedOwnerMessage(message: string) {
+    const previous = Object.getOwnPropertyDescriptor(prisma, 'tinyCloudBootstrapState');
+    Object.defineProperty(prisma, 'tinyCloudBootstrapState', {
+      configurable: true,
+      value: { findUnique: mock(async () => ({ status: 'complete' })) },
+    });
+    try {
+      return await postBootstrapMessage(message);
+    } finally {
+      if (previous) Object.defineProperty(prisma, 'tinyCloudBootstrapState', previous);
+      else Reflect.deleteProperty(prisma, 'tinyCloudBootstrapState');
+    }
+  }
   const withoutExpiry = (message: string) => {
     const stripped = message.split('\n').filter((line) => !line.startsWith('Expiration Time: ')).join('\n');
     expect(stripped).not.toBe(message);
@@ -1039,13 +1064,14 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
   }
 
   test.each([
-    ['a bootstrap session SIWE', () => withoutExpiry(bootstrapSessionSiweWithResources('default', BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources))],
-  ])('%s with no Expiration Time is not auto-signed and goes to approval', async (_label, build) => {
+    ['a bootstrap session SIWE', () => withoutExpiry(bootstrapSessionSiweWithResources('default', BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources)), false],
+    ['a host SIWE for a hosted owner', () => hostSiwe(), true],
+  ] as const)('%s with no Expiration Time is not auto-signed and goes to approval', async (_label, build, hosted) => {
     const message = build();
     expect(message).not.toContain('Expiration Time: ');
     const log = captureLogLines();
     try {
-      const response = await postBootstrapMessage(message);
+      const response = await (hosted ? postHostedOwnerMessage : postBootstrapMessage)(message);
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({
         approved: false,
@@ -1061,13 +1087,14 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
   });
 
   test.each([
-    ['a bootstrap session SIWE', () => bootstrapSessionSiweWithResources('default', BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources)],
-  ])('%s with an Expiration Time is still auto-signed and logs siwe_signed with no payload', async (_label, build) => {
+    ['a bootstrap session SIWE', () => bootstrapSessionSiweWithResources('default', BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources), false],
+    ['a host SIWE for a hosted owner', () => withExpiry(hostSiwe()), true],
+  ] as const)('%s with an Expiration Time is auto-signed and logs siwe_signed with no payload', async (_label, build, hosted) => {
     const message = build();
     expect(message).toContain('Expiration Time: ');
     const log = captureLogLines();
     try {
-      const response = await postBootstrapMessage(message);
+      const response = await (hosted ? postHostedOwnerMessage : postBootstrapMessage)(message);
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         approved: true,
@@ -1093,6 +1120,23 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
     const line = JSON.stringify(events[0]);
     for (const secret of [address, address.toLowerCase(), user.id, keyRecord.id, message.match(/^Nonce: (.+)$/m)![1]!]) {
       expect(line).not.toContain(secret);
+    }
+  });
+
+  test.each([false, true])('an unauthorized host is refused with expiry present: %s', async (expiry) => {
+    const message = expiry ? withExpiry(hostSiwe()) : hostSiwe();
+    const log = captureLogLines();
+    try {
+      const response = await postBootstrapMessage(message);
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        approved: false,
+        code: 'host_signing_first_party_only',
+      });
+      expect(signedMessages).toEqual([]);
+      expect(log.lines.filter((line) => line.event === 'siwe_signed')).toEqual([]);
+    } finally {
+      log.restore();
     }
   });
 });
