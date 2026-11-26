@@ -93,7 +93,8 @@
     SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
   } from "@openkey/capability-review";
-  import { OWN_PAGE_APPROVAL } from "@openkey/sdk/approval-copy";
+  import { OWN_PAGE_APPROVAL, RECIPIENT_KEY } from "@openkey/sdk/approval-copy";
+  import { shortRecipientKey } from "$lib/recipient-key";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import { NETWORK_DECRYPT_CAP } from "$lib/network-decrypt-cap";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
@@ -211,7 +212,12 @@
      * Set only by a one-tap approval whose signer OpenKey can't name: the "Requested by" value, with a line under
      * it, while the request names no requester.
      */
-    unverifiedRequester?: { name: string; line: string } | null;
+    unverifiedRequester?: { name: string; line: string; reason?: string | null } | null;
+    /**
+     * The key an approval request's access goes to (its `did:key`), set only by the approval request page. It is
+     * shown under the requester line in short form, with the whole key on opening it.
+     */
+    recipientKey?: string | null;
     /**
      * The app a sign-in is for, set by a surface that took the name from OpenKey's own list of requesters and never
      * from the request (the CLI link page). A manifest name or origin host the request carries is read from the model.
@@ -260,6 +266,7 @@
     oneSecret = null,
     signInApp = null,
     unverifiedRequester = null,
+    recipientKey = null,
     onApprove,
     onCancel,
     onRetry,
@@ -995,7 +1002,16 @@
       </p>
       {#if requesterUnverified}
         <p class="requester-line">{unverifiedRequester!.line}</p>
+        {#if unverifiedRequester!.reason}
+          <p class="requester-line" data-testid="requester-refusal">{unverifiedRequester!.reason}</p>
+        {/if}
       {/if}
+    {/if}
+    {#if recipientKey}
+      <details class="recipient-key">
+        <summary class="requester-line">{RECIPIENT_KEY.label} <code class="mono recipient-key-short">{shortRecipientKey(recipientKey)}</code></summary>
+        <code class="mono recipient-key-full" data-testid="recipient-key-full">{recipientKey}</code>
+      </details>
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
@@ -1737,6 +1753,21 @@
   .requester-name {
     font-weight: 600;
     color: #0f172a;
+  }
+  .recipient-key summary {
+    cursor: pointer;
+  }
+  .recipient-key-short {
+    font-weight: 600;
+    color: #0f172a;
+  }
+  .recipient-key-full {
+    display: block;
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #475569;
+    overflow-wrap: anywhere;
   }
   .context {
     display: flex;

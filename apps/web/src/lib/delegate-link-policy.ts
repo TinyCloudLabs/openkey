@@ -1,5 +1,8 @@
 import { appDisplayName } from '@openkey/capability-review';
-import { checkRequesterScope, isRequesterScopePolicy, type RequesterScopePolicy, type RequesterScopeRequest } from './requester-scope-policy';
+import {
+  checkRequesterScope, isRequesterScopePolicy, leadingRefusal, requesterScopeRefusals,
+  type RequesterScopePolicy, type RequesterScopeRefusal, type RequesterScopeRequest,
+} from './requester-scope-policy';
 
 /**
  * TC-547: what an ordinary `/delegate` link (one without a device
@@ -223,4 +226,26 @@ export function verifiedApprovalRequester(
   const entry = verifiedRequesters.find((requester) => requester.did === issuer && isVerifiedRequesterEntry(requester));
   if (!entry || !checkRequesterScope(entry.policy, request).ok || !checkRequesterScope(entry.policy, signed).ok) return null;
   return { displayName: entry.displayName, returnTo: entry.returnTo };
+}
+
+/**
+ * Why a listed signer's link is shown as not verified: the verified name of its entry and the reason to report, the
+ * first by `leadingRefusal` among everything its request and its prepared message ask outside the entry's policy.
+ * Null when the signer is not listed (or its entry is malformed), when neither scope is known, or when both scopes
+ * are inside the policy. It names no requester: `verifiedApprovalRequester` alone decides that.
+ */
+export function requesterRefusal(
+  issuer: string,
+  oneRequesters: readonly OneVerifiedRequesterEntry[],
+  verifiedRequesters: readonly VerifiedRequesterEntry[],
+  request: RequesterScopeRequest | null,
+  signed: RequesterScopeRequest | null,
+): { app: string; reason: RequesterScopeRefusal } | null {
+  const one = oneRequesters.find((requester) => requester.did === issuer);
+  const entry = one ? null : verifiedRequesters.find((requester) => requester.did === issuer && isVerifiedRequesterEntry(requester));
+  if (one && !isOneVerifiedRequesterEntry(one)) return null;
+  const listed = one ? { app: TINYCLOUD_ONE_REQUESTER.displayName, policy: one.policy } : entry ? { app: entry.displayName, policy: entry.policy } : null;
+  if (!listed) return null;
+  const reason = leadingRefusal([request, signed].flatMap((scope) => (scope === null ? [] : requesterScopeRefusals(listed.policy, scope))));
+  return reason === null ? null : { app: listed.app, reason };
 }

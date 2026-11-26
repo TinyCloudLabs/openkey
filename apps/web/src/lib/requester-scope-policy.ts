@@ -45,6 +45,14 @@ export type RequesterScopeRefusal =
 
 export type RequesterScopeVerdict = { ok: true } | { ok: false; reason: RequesterScopeRefusal };
 
+/** The order the approval page reports a refusal in when several apply: the first listed that applies is shown. */
+const REFUSAL_REPORT_ORDER: readonly RequesterScopeRefusal[] = ['lifetime', 'service', 'action', 'path', 'space', 'renewal', 'context', 'malformed', 'no-permissions'];
+
+/** The refusal to report among several, by `REFUSAL_REPORT_ORDER`; null when there are none. */
+export function leadingRefusal(reasons: readonly RequesterScopeRefusal[]): RequesterScopeRefusal | null {
+  return REFUSAL_REPORT_ORDER.find((reason) => reasons.includes(reason)) ?? null;
+}
+
 /** The parts of a parsed approval request the policy reads. Unknown JSON is checked, not trusted. */
 export type RequesterScopeRequest = {
   permissions: unknown;
@@ -152,37 +160,53 @@ export function pathFits(rule: RequesterScopeRule, path: string): boolean {
   return rule.keyPrefixes.some((prefix) => resource.keyPath.startsWith(prefix) && key.test(resource.keyPath.slice(prefix.length)));
 }
 
-/** Whether a request stays inside a requester's policy, and the first reason when it does not. */
-export function checkRequesterScope(policy: RequesterScopePolicy, request: RequesterScopeRequest): RequesterScopeVerdict {
-  const refuse = (reason: RequesterScopeRefusal): RequesterScopeVerdict => ({ ok: false, reason });
-  if (!isRequesterScopePolicy(policy)) return refuse('malformed');
+/** Why a permission is outside a policy: the first reason it fails, or null when a rule admits it. */
+function permissionRefusal(policy: RequesterScopePolicy, permission: unknown): RequesterScopeRefusal | null {
+  if (!permission || typeof permission !== 'object') return 'malformed';
+  // Server JSON of unknown shape; each field is type-checked below before use.
+  const fields = permission as Record<string, unknown>;
+  const { service, path, actions } = fields;
+  if (typeof service !== 'string' || typeof path !== 'string' || !Array.isArray(actions) || actions.length === 0 ||
+    actions.some((action) => typeof action !== 'string')) {
+    return 'malformed';
+  }
+  const sameService = policy.rules.filter((rule) => rule.service === service);
+  if (sameService.length === 0) return 'service';
+  const allowedActions = sameService.filter((rule) => actions.every((action) => rule.actions.includes(action as string)));
+  if (allowedActions.length === 0) return 'action';
+  const space = fields.space;
+  const inSpace = allowedActions.filter((rule) => rule.spaces === undefined || (typeof space === 'string' && rule.spaces.includes(space)));
+  if (inSpace.length === 0) return 'space';
+  if (!inSpace.some((rule) => pathFits(rule, path))) return 'path';
+  return null;
+}
+
+/**
+ * Every reason a request is outside a policy, each once, in the order `checkRequesterScope` finds them: its reason is
+ * the first. A request that cannot be read at all returns `malformed` alone. Empty when the request is inside.
+ */
+export function requesterScopeRefusals(policy: RequesterScopePolicy, request: RequesterScopeRequest): RequesterScopeRefusal[] {
+  if (!isRequesterScopePolicy(policy)) return ['malformed'];
   const { permissions, grantLifetimeSeconds } = request;
   if (!Array.isArray(permissions) || typeof grantLifetimeSeconds !== 'number' || !Number.isSafeInteger(grantLifetimeSeconds) || grantLifetimeSeconds <= 0) {
-    return refuse('malformed');
+    return ['malformed'];
   }
-  if (request.renewal !== undefined) return refuse('renewal');
-  if (request.context !== undefined) return refuse('context');
-  if (permissions.length === 0) return refuse('no-permissions');
-  if (grantLifetimeSeconds > policy.maxLifetimeSeconds) return refuse('lifetime');
+  const found: RequesterScopeRefusal[] = [];
+  if (request.renewal !== undefined) found.push('renewal');
+  if (request.context !== undefined) found.push('context');
+  if (permissions.length === 0) found.push('no-permissions');
+  if (grantLifetimeSeconds > policy.maxLifetimeSeconds) found.push('lifetime');
   for (const permission of permissions) {
-    if (!permission || typeof permission !== 'object') return refuse('malformed');
-    // Server JSON of unknown shape; each field is type-checked below before use.
-    const fields = permission as Record<string, unknown>;
-    const { service, path, actions } = fields;
-    if (typeof service !== 'string' || typeof path !== 'string' || !Array.isArray(actions) || actions.length === 0 ||
-      actions.some((action) => typeof action !== 'string')) {
-      return refuse('malformed');
-    }
-    const sameService = policy.rules.filter((rule) => rule.service === service);
-    if (sameService.length === 0) return refuse('service');
-    const allowedActions = sameService.filter((rule) => actions.every((action) => rule.actions.includes(action as string)));
-    if (allowedActions.length === 0) return refuse('action');
-    const space = fields.space;
-    const inSpace = allowedActions.filter((rule) => rule.spaces === undefined || (typeof space === 'string' && rule.spaces.includes(space)));
-    if (inSpace.length === 0) return refuse('space');
-    if (!inSpace.some((rule) => pathFits(rule, path))) return refuse('path');
+    const reason = permissionRefusal(policy, permission);
+    if (reason !== null && !found.includes(reason)) found.push(reason);
   }
-  return { ok: true };
+  return found;
+}
+
+/** Whether a request stays inside a requester's policy, and the first reason when it does not. */
+export function checkRequesterScope(policy: RequesterScopePolicy, request: RequesterScopeRequest): RequesterScopeVerdict {
+  const [reason] = requesterScopeRefusals(policy, request);
+  return reason === undefined ? { ok: true } : { ok: false, reason };
 }
 
 /** A grant of the prepared (signed) message, as the review model holds it: the fields the policy needs. */
