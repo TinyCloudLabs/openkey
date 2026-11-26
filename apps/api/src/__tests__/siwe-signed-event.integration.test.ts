@@ -60,15 +60,18 @@ if (!process.env.TC_SIWE_SIGNED_EVENT_CHILD) {
 
     const now = Date.now();
     const NONCE = 'zq81noncevalue27';
+    const resource = `tinycloud:pkh:eip155:1:${address}:default/kv/data`;
     const recap = `urn:recap:${Buffer.from(JSON.stringify({
-      att: { [`tinycloud:pkh:eip155:1:${address}:default/kv/data`]: { 'tinycloud.kv/get': [{}] } },
+      att: { [resource]: { 'tinycloud.kv/get': [{}] } },
       prf: [],
     })).toString('base64url')}`;
+    // The statement a ReCap SIWE carries; the recap parser refuses a ReCap whose statement does not list it.
+    const recapStatement = `I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.kv': 'get' for '${resource}'.`;
     const siwe = ({ expiry, withRecap }: { expiry: boolean; withRecap: boolean }) => [
       'openkey.example wants you to sign in with your Ethereum account:',
       address,
       '',
-      'Sign in to OpenKey.',
+      withRecap ? recapStatement : 'Sign in to OpenKey.',
       '',
       `URI: ${OPENKEY}`,
       'Version: 1',

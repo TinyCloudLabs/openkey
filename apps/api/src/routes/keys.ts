@@ -1,5 +1,6 @@
 // Key management routes
 import { Hono } from 'hono';
+import { REGISTRY_RECORD_SIGN_REFUSED, registryRecordSignRefusal, registryTypedDataSignRefusal } from '@openkey/capability-review';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
@@ -11,6 +12,8 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { hostSigningRefusalBody, refusesThirdPartySpaceHost } from '../services/space-host-signing';
+import { originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -23,6 +26,7 @@ import {
   exactShareKeyRefusalForMessage,
   messageHasElevatedPermissions,
 } from '../services/app-key-refusal';
+import { messageExceedsSecretLifetime, secretLifetimeBody } from '../services/secret-lifetime';
 import { ELEVATED_NOT_DECIDED_CODE, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import {
@@ -306,6 +310,18 @@ type SignBody = {
   passkeyAssertion?: unknown;
 };
 
+// Hardening: registry record signing. Refused for any origin but TinyCloud One / Home, before a passkey is offered or a key is unsealed.
+function registryRecordRefusalResponse(body: SignBody) {
+  if (!registryRecordSignRefusal(body.message, body.requestOrigin)) return null;
+  return { error: REGISTRY_RECORD_SIGN_REFUSED.apiMessage, code: REGISTRY_RECORD_SIGN_REFUSED.code };
+}
+
+// Hardening: typed-data signing. The registry's node-location struct gets the same refusal as a registry record.
+function registryTypedDataRefusalResponse(body: { domain?: unknown; types?: unknown; primaryType?: unknown; requestOrigin?: unknown }) {
+  if (!registryTypedDataSignRefusal(body, body.requestOrigin)) return null;
+  return { error: REGISTRY_RECORD_SIGN_REFUSED.apiMessage, code: REGISTRY_RECORD_SIGN_REFUSED.code };
+}
+
 /** TC-3442: a passkey on a message signature confirms this key, format, message and requesting site. */
 function signPasskeyBinding(keyId: string, body: SignBody): ApprovalBinding {
   return {
@@ -344,6 +360,8 @@ keysRouter.post('/:keyId/sign/passkey', async (c) => {
   const keyId = c.req.param('keyId');
   const body = await c.req.json<SignBody>();
   if (typeof body.message !== 'string') return c.json({ error: 'message must be a string' }, 400);
+  const registryRefusal = registryRecordRefusalResponse(body);
+  if (registryRefusal) return c.json(registryRefusal, 403);
   const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true, address: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
   if (key.keyType === 'EXTERNAL') return c.json({ required: false });
@@ -358,7 +376,11 @@ keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
   if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
-  const checked = checkedTypedData(await c.req.json());
+  const typedBody = await c.req.json<{ domain?: unknown; types?: unknown; primaryType?: unknown; message?: unknown; requestOrigin?: unknown }>();
+  if (typedBody === null || typeof typedBody !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
+  const registryRefusal = registryTypedDataRefusalResponse(typedBody);
+  if (registryRefusal) return c.json(registryRefusal, 403);
+  const checked = checkedTypedData(typedBody);
   if (!checked.ok) return c.json({ error: checked.error }, 400);
   const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
@@ -391,12 +413,19 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (body.format === 'raw' && !/^0x(?:[0-9a-fA-F]{2})*$/.test(body.message)) {
     return c.json({ error: 'raw message must be even-length 0x hex' }, 400);
   }
+  const registryRefusal = registryRecordRefusalResponse(body);
+  if (registryRefusal) return c.json(registryRefusal, 403);
   const invalidSiwe = invalidSiweMessage(body.message);
   if (invalidSiwe) return c.json(invalidSiwe, 400);
   const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
+  // The asker is the widget's sender-checked `requestOrigin`, and only when the SIWE named exactly that origin. The raw
+  // body field on its own, the Origin header (always OpenKey's own here) and the SIWE domain are not the authority.
+  const authority = siweCheck.siwe && siweCheck.ok
+    ? originProvisionAuthority(typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined)
+    : UNATTRIBUTED_PROVISION_AUTHORITY;
   const appKeyRefusal = appKeyRefusalForMessage(body.message);
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
@@ -406,6 +435,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const shareRefusal = exactShareKeyRefusalForMessage(body.message);
   if (shareRefusal) {
     return c.json(appKeyRefusalBody(shareRefusal, 'browser'), appKeyRefusalStatus(shareRefusal));
+  }
+  // These bytes cannot be shortened, so more than 7 days of `decrypt` or `key.create` on secret keys (or, with
+  // `OPENKEY_NETWORK_DECRYPT_CAP=enabled`, of a whole network's `decrypt`) is refused. Checked before unseal.
+  const lifetimeReach = messageExceedsSecretLifetime(body.message, Date.now());
+  if (lifetimeReach) {
+    return c.json(secretLifetimeBody(lifetimeReach), 400);
   }
   // TC-2927: `decrypt`, `key.create`, `key.block` or `key.unblock` on the encryption network, or on keys outside the
   // site's own `apps/`, is signed only after the owner decided on it on the warning screen. These exact bytes cannot be
@@ -425,6 +460,14 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   if (key.keyType === 'EXTERNAL') {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
+  }
+
+  // A signature on a space host message is the ability to create that space on the node, whichever site holds the
+  // signed bytes. TinyCloud's own apps are signed for. Any other site is signed for only to host the owner's own
+  // spaces, `default` included, for an owner whose primary space is hosted (`refusesThirdPartySpaceHost`); every other message,
+  // including a sign-in that names a space, is signed as before. Checked before the passkey gate and before unseal.
+  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [authority] })) {
+    return c.json(await hostSigningRefusalBody(prisma, key), 403);
   }
 
   // TC-3442: the account's passkey setting, before the key is unsealed. A passkey sign-in the web sign page was opened
@@ -453,7 +496,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
   const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
-    ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
+    ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format, authority }),
     waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {
@@ -489,7 +532,12 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     message: any;
     /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign-typed-data/passkey`. */
     passkeyAssertion?: unknown;
+    /** Verified origin of the requesting site, as for `/sign`. */
+    requestOrigin?: string;
   }>();
+  if (body === null || typeof body !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
+  const registryRefusal = registryTypedDataRefusalResponse(body);
+  if (registryRefusal) return c.json(registryRefusal, 403);
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },

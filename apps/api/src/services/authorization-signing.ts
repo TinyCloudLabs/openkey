@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
+import type { DelegateLinkDelivery } from "./delegate-link-delivery";
 import { siweExpirationTime } from "@openkey/capability-review";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
@@ -56,8 +57,11 @@ export interface VerifiedManifestFields {
   };
 }
 
-/** The renewal choice bound into an approval-request context: finite, or leased for this many seconds. */
-export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
+/**
+ * The renewal choice bound into an approval-request context: finite, or leased for this many seconds. `sensitiveConfirmed`
+ * records that the owner confirmed renewing sensitive access (TC-3821); it is sealed here, so approving cannot add it.
+ */
+export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number; sensitiveConfirmed?: true };
 
 /** The renewal an app asked for at a widget sign-in: its longest lease. Bound only while leases are on. */
 export interface SignInRenewalRequest {
@@ -90,6 +94,7 @@ export interface AuthorizationContextIssueInput {
   handoffTicketHash?: string;
   /** Immutable approval request selected by the consent preview. */
   approvalRequestId?: string;
+  deviceTransactionId?: string;
   /**
    * Server-decided trust for the presentation envelope. Bound at prepare
    * time so the widget cannot upgrade it in a later step. Display-only:
@@ -112,6 +117,17 @@ export interface AuthorizationContextIssueInput {
   verifiedManifest?: VerifiedManifestFields;
   /** Normalised requesting-app origin, for the per-sign-in count record only. */
   appOrigin?: string;
+  /**
+   * The requesting site's origin as the widget verified it, set only when the SIWE named exactly that origin at
+   * prepare time. It decides whether OpenKey may set up the account on the node (`mayProvision`); absent
+   * means the request was not attributed.
+   */
+  requestOrigin?: string;
+  /**
+   * How a legacy /delegate link returns its delegation, as the server classified it at prepare time (never read
+   * from the approval). It decides whether the link counts as `delegate-link-local`; absent means it does not.
+   */
+  linkDelivery?: DelegateLinkDelivery;
   /**
    * `apps/` encryption key grants admitted for the original SIWE at prepare
    * time: the resources as written and the abilities admitted on each.
@@ -147,12 +163,15 @@ interface StoredContext {
   originalSiwe: string;
   handoffTicketHash?: string;
   approvalRequestId?: string;
+  deviceTransactionId?: string;
   metadataTrust: {
     status: "verified" | "origin-bound" | "unsigned";
     reason: string;
   };
   verifiedManifest?: VerifiedManifestFields;
   appOrigin?: string;
+  requestOrigin?: string;
+  linkDelivery?: DelegateLinkDelivery;
   admittedAppKeys?: AdmittedAppKey[];
   expiryChangeable?: boolean;
   renewal?: BoundRenewalChoice;
@@ -403,9 +422,12 @@ export function issueAuthorizationContext(
     originalSiwe: input.originalSiwe ?? "",
     handoffTicketHash: input.handoffTicketHash,
     approvalRequestId: input.approvalRequestId,
+    deviceTransactionId: input.deviceTransactionId,
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
+    requestOrigin: input.requestOrigin,
+    linkDelivery: input.linkDelivery,
     admittedAppKeys: input.admittedAppKeys,
     expiryChangeable: input.expiryChangeable,
     renewal: input.renewal,
@@ -858,11 +880,16 @@ export interface PeekSuccess {
     originalSiwe: string;
     handoffTicketHash?: string;
     approvalRequestId?: string;
+    deviceTransactionId?: string;
     jwk: unknown;
     expirationTime: string;
     allowedActionIds: string[];
     initialSelectionActionIds: string[];
     appOrigin?: string;
+    /** The requesting site's origin, checked against the SIWE at prepare time; absent when the request was not attributed. */
+    requestOrigin?: string;
+    /** How a legacy /delegate link returns its delegation, as the server classified it at prepare time. */
+    linkDelivery?: DelegateLinkDelivery;
     admittedAppKeys?: AdmittedAppKey[];
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
@@ -912,11 +939,14 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       originalSiwe: stored.originalSiwe,
       handoffTicketHash: stored.handoffTicketHash,
       approvalRequestId: stored.approvalRequestId,
+      deviceTransactionId: stored.deviceTransactionId,
       jwk: stored.jwk,
       expirationTime: stored.expirationTime,
       allowedActionIds: [...stored.allowedActionIds],
       initialSelectionActionIds: [...stored.initialSelectionActionIds],
       appOrigin: stored.appOrigin,
+      requestOrigin: stored.requestOrigin,
+      linkDelivery: stored.linkDelivery,
       admittedAppKeys: stored.admittedAppKeys,
       expiryChangeable: stored.expiryChangeable,
       renewal: stored.renewal,
@@ -954,6 +984,8 @@ export function _resetAuthorizationContextStoreForTests(): void {
 const PREVIEW_APPROVAL_TTL_MS = 5 * 60 * 1000;
 
 interface StoredPreviewApproval {
+  /** The owner supplied an expiry for a sign-in request in the one-hour tier. */
+  broadOnceExpiryPick?: boolean;
   token: string;
   createdAt: number;
   expiresAt: number;
@@ -978,6 +1010,8 @@ function prunePreviewApprovals(now: number) {
 }
 
 export interface PreviewApprovalIssueInput {
+  /** The owner supplied an expiry for a sign-in request in the one-hour tier. */
+  broadOnceExpiryPick?: boolean;
   authorizationContextToken: string;
   userId: string;
   keyAddress: string;
@@ -1012,6 +1046,7 @@ export function issuePreviewApproval(
     selectedActionIds: [...input.selectedActionIds].sort(),
     signedMessageDigest: digest,
     signedMessage: input.signedMessage,
+    broadOnceExpiryPick: input.broadOnceExpiryPick,
     elevatedAllowed: [...new Set(input.elevatedAllowed ?? [])].sort(),
     renewal: input.renewal,
   };
@@ -1062,6 +1097,8 @@ export interface PreviewApprovalCheckInput {
 }
 
 export interface PreviewApprovalCheckSuccess {
+  /** The owner supplied an expiry for a sign-in request in the one-hour tier. */
+  broadOnceExpiryPick?: boolean;
   ok: true;
   signedMessage: string;
   selectedActionIds: Set<string>;
@@ -1167,6 +1204,7 @@ export function checkPreviewApproval(
     keyAddress: stored.keyAddress,
     elevatedAllowed: new Set(stored.elevatedAllowed),
     renewal: stored.renewal,
+    ...(stored.broadOnceExpiryPick ? { broadOnceExpiryPick: true } : {}),
     claim: { token: input.token, record: stored },
   };
 }

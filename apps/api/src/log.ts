@@ -57,7 +57,7 @@ const EVENTS = {
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true, delegate_session_revoke_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
-  delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
+  delegate_origin_bind_failed: true, delegate_own_page_authority_unconfirmed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
   approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true, signin_renewal_failed: true,
   signin_renewal_lease_signed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
@@ -146,6 +146,14 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+export function logManifestOriginBindFailed(reason: string): void {
+  // A placeholder error may carry a manifest-supplied field name.
+  const detail = reason.startsWith('{owner} placeholder is not allowed in ')
+    ? '{owner} placeholder is not allowed in this field'
+    : reason;
+  emit('warn', 'delegate_origin_bind_failed', { reason: detail });
 }
 
 /** TC-3554: the one-time re-seal at boot. Counts only; never ids, addresses, paths or keys. */

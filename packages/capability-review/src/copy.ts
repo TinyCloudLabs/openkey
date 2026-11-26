@@ -100,7 +100,7 @@ export const FEED_NOTIFY_STATEMENT = "Get notified of changes in your TinyCloud 
 /**
  * Consent sentence of the `tinycloud.capabilities/read` grant: the requester
  * can inspect which permissions the signer has already granted. Title stays
- * "Permission check — <space>".
+ * "Permission check: <space>".
  */
 export const CAPABILITIES_READ_STATEMENT =
   "See which permissions are already granted";
@@ -297,6 +297,23 @@ export function appKeyStatementText(
 /** Shown while a request with app keys is being edited: the app keys are one unit. */
 export const APP_KEY_GROUP_NOTE = "App keys are approved together: keep all or none.";
 
+function renewalOnlyBlocked(reason: string, app: string): string {
+  return `${reason}, so ${app} doesn't get these.`;
+}
+
+export const RENEWAL_ONLY_COPY = {
+  heading: "Only with renewal",
+  dependsOnRenewal: (app: string) => `${app} gets these only if renewal is on.`,
+  unavailable: (app: string) => renewalOnlyBlocked("Renewal isn't available for this sign-in", app),
+  turnedOff: (app: string) => renewalOnlyBlocked("Renewal is off", app),
+  appFallback: "This app",
+  previewRequired: (app: string) => [
+    "OpenKey can't show what this sign-in allows,",
+    "so it can't be approved.",
+    `${app} needs an update before it can ask for this.`,
+  ].join(" "),
+};
+
 /** The line above the rows of a request with app keys. */
 export function appRequestingLine(name: string | null): string {
   return `${name ?? "This app"} is requesting:`;
@@ -326,6 +343,14 @@ export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "tinycloud-siwe-recap": "Authorize capabilities",
   "malformed-recap": "Refusing to sign: malformed capability payload",
 };
+
+/**
+ * The heading of the review. A tinycloud sign-in names the app it is for; with no app name to say, it keeps the
+ * protocol's own heading.
+ */
+export function protocolHeadline(protocol: RequestProtocol, appName: string | null): string {
+  return protocol === "tinycloud-siwe-recap" && appName ? `Sign in to ${appName}` : PROTOCOL_HEADLINE[protocol];
+}
 
 export const PROTOCOL_HINT: Record<RequestProtocol, string> = {
   "legacy-message": "You will sign these exact bytes.",

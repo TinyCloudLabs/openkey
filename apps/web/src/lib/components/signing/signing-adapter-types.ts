@@ -28,18 +28,29 @@ export interface RenewalChoice {
   leaseMs: number | null;
   /** The longest lease the requester signed (never more than a year). */
   maxLeaseMs: number;
+  /** The owner unticked the renewal checkbox during this review. */
+  turnedOff?: boolean;
+  deviceSignIn?: true;
   /**
    * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the
    * same step (null: back to what the app asked for), so the preview is prepared once with both.
+   * `sensitiveConfirmed` is true only from the "Renew sensitive access?" confirm (TC-3821); the server refuses a lease
+   * on a grant reaching secrets without it. Unticking clears it; a later lease change keeps it.
    */
-  onChange: (leaseMs: number | null, windowMs?: number | null) => void;
+  onChange: (leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) => void;
 }
 
 /** Starting lifetime and copy for a signed approval request. */
 export interface ShortenOnlyExpiry {
   startMs: number;
-  onceNote: string;
+  /**
+   * What the app asked for before the 7-day limit on secrets and decrypt (`startMs` is that ask, cut to the limit).
+   * The one-time choice reads "(the longest allowed)" only where this is more than `startMs`.
+   */
+  askedMs: number;
   limitNote: (ms: number) => string;
+  /** Under the access line of a request for a secret's own key: its start and the most it can be. */
+  lengthNote: (startMs: number, maxMs: number) => string;
 }
 
 /** Transport injected by the CLI (`/delegate`) route. */
@@ -180,6 +191,8 @@ export interface WidgetSigningTransport {
     chosenMs: number | null;
     /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
     onceDefault?: boolean;
+    /** The server limits an owner's pick on a one-time approval to 7 days here (the popup and frame preview), so the one-time choice offers no more. */
+    oncePickCapped?: boolean;
     onChange: (ms: number | null) => void;
   };
   /**
@@ -187,6 +200,11 @@ export interface WidgetSigningTransport {
    * `onChange` must make the next preview carry the choice (and the window, when given).
    */
   renewal?: RenewalChoice;
+  /**
+   * Set while the app's sign-in asked for renewal and the prepare answer has not arrived: the access line reads
+   * "Checking renewal…" instead of a length. Clears when the answer lands (offer or not) or the prepare fails.
+   */
+  renewalPending?: boolean;
 
   /**
    * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the

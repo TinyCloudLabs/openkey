@@ -62,7 +62,8 @@ it detects drift. `db:push` remains a local-development command only.
 ### API (Phala Cloud / dstack TEE)
 - Docker image: `skgbafa/openkey-api`
 - CI: `.github/workflows/deploy-api.yml` triggers on push to `main` only when the API image or deploy can change (paths: `apps/api/**`, `packages/{db,tee,types}/**`, `Dockerfile`, `.dockerignore`, root `package.json`/`bun.lock`/`bunfig.toml`/`turbo.json`/`tsconfig.json`/`prisma.config.ts`, the production migration scripts, `docker-compose.prod.yml`, and the workflow itself); run it by hand with `workflow_dispatch`. Keep the list in sync with the `Dockerfile`.
-- Image tagged with git SHA and `latest`
+- Image tagged with git SHA and `latest`, but the compose sent to Phala names it only by digest (`skgbafa/openkey-api@sha256:…`); `scripts/compose-image-digests.ts` fails a deploy whose compose has any tag-only or `${VAR}` image, and the push carries a GitHub build provenance attestation (TC-3837)
+- After each deploy, `.github/workflows/publish-api-compose.yml` publishes the app-compose the CVM measured as `app-compose.<compose_hash>.json` on the release `openkey-api-<commit>` (TC-3837)
 - Deployed to Phala Cloud CVM named `openkey-api`
 - Manual deploy: `bun run phala:env` (uses `.env.prod`)
 
@@ -99,7 +100,7 @@ const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 
 
 `.github/workflows/api-tests.yml` runs `bun test apps/api/src/__tests__` in one process on every PR and push to `main` (after `bun run db:generate` and building `@openkey/db` and `@openkey/tee`). bun's `mock.module()` is process-wide and `mock.restore()` does not undo it, so never call it directly in an API test: use `mockModules()` or `replaceModules()` from `apps/api/src/__tests__/mock-module.ts`, and import a route under test with a file-specific query string (`'../routes/keys?my-test' as string`) (TC-928).
 
-The same workflow's `renewal-lease-postgres` job runs `apps/api/src/__tests__/renewal-lease-stop.integration.test.ts` with `OPENKEY_TEST_POSTGRES_URL` pointing at a throwaway Postgres service, so its lock and race cases (which PGlite's single connection cannot show) run in CI. Locally, set `OPENKEY_TEST_POSTGRES_URL` to a server where the test may create and drop a database (TC-2946).
+The same workflow's `renewal-lease-postgres` job runs `apps/api/src/__tests__/renewal-lease-stop.integration.test.ts` and `apps/api/src/__tests__/email-otp-verify-race.integration.test.ts` with `OPENKEY_TEST_POSTGRES_URL` pointing at a throwaway Postgres service, so their lock and race cases (which PGlite's single connection cannot show) run in CI. Locally, set `OPENKEY_TEST_POSTGRES_URL` to a server where the test may create and drop a database (TC-2946). Both files run on PGlite in the main job as well; each spawns itself in a child process per engine, because they load `@openkey/db` and Better Auth for real.
 
 The order of files in that run differs between machines, so state one file leaves behind can break whichever file runs after it (TC-2969). `bunfig.toml` preloads `apps/api/src/__tests__/end-background-work.ts`, which after every test ends the TinyCloud setup that test left running in the background (a late result, or a retry 5, 15 or 45 seconds on), so none of it can log, call the background observer or start a retry during a later test. Assert on background work inside the test that started it. Process-wide counters, such as the origin refusal counts in `log.ts`, hold every earlier file's entries: a test that asserts on all of them gives the code under test its own instance, loaded under a file-specific query (`'../log?my-test' as string`).
 

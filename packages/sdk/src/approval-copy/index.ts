@@ -10,11 +10,15 @@ export {
   DONE,
   FRAME,
   LOADER,
+  ONE_SECRET,
+  OWN_PAGE_APPROVAL,
   POPUP_WINDOW,
+  RECIPIENT_KEY,
   REVOKE_REVIEW,
   SIGN_IN,
   STOP_PARTS,
   TAB_KEPT_OPEN,
+  UNVERIFIED_REQUESTER,
   codeDestinationWord,
 } from './strings';
 export type { CodeDestination } from './strings';

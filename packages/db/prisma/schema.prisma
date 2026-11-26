@@ -54,6 +54,7 @@ model User {
   preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
   termsAcceptances               TermsAcceptance[]
+  accountSetupRequests           AccountSetupRequest[]
 
   @@map("user")
 }
@@ -207,11 +208,28 @@ model RenewalLease {
   // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
   leaseAuthorization   String?
 
+  nativeRenewal NativeRenewalLease?
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([sessionId])
   @@map("renewal_lease")
+}
+
+// The native lifecycle binding survives its short-lived request and OAuth token rows.
+model NativeRenewalLease {
+  leaseCid          String    @id
+  requestId         String
+  grantId           String?   @unique
+  deliveredAt       DateTime?
+  revokeUntil       DateTime
+  stopRequested     Boolean   @default(false)
+  originalRevokedAt DateTime?
+
+  lease RenewalLease @relation(fields: [leaseCid], references: [leaseCid], onDelete: Cascade)
+
+  @@index([requestId])
+  @@map("native_renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
@@ -255,6 +273,7 @@ model Session {
   reviewerEpoch Int?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountSetupRequests AccountSetupRequest[]
 
   @@map("session")
 }
@@ -398,6 +417,7 @@ model EthereumKey {
 
   user                    User?                     @relation(fields: [userId], references: [id], onDelete: SetNull)
   tinyCloudBootstrapState TinyCloudBootstrapState[]
+  accountSetupRequests    AccountSetupRequest[]
 
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
   @@map("ethereum_keys")
@@ -465,6 +485,50 @@ model NostrSigningDecision {
   @@map("nostr_signing_decision")
 }
 
+// One account setup the owner asks for on OpenKey's own page (/widget/account-setup): OpenKey hosts the account's
+// spaces on TinyCloud hosting and publishes the location record it built here. Single use: bound to the user, the
+// session, the key and the exact record text, five minutes to approve, and replaced by a newer one for the same key.
+model AccountSetupRequest {
+  id            String    @id
+  userId        String
+  sessionId     String
+  keyId         String
+  // Always 1: the record's owner subject is on chain 1 whatever chain an app signs in on. A CHECK keeps it so.
+  chainId       Int
+  // The requesting app's origin as OpenKey's page read it from its message channel. Shown to the owner; never trusted.
+  requestOrigin String?
+  // Where the account's data lives: 'tinycloud' (TinyCloud hosting). A CHECK keeps it to that value.
+  placement     String
+  nodeUrl       String
+  nodeDid       String
+  // The exact canonical location record text OpenKey signs, built by the server at prepare. Its updated_at is createdAt.
+  payload       String
+  payloadDigest String
+  expiresAt     DateTime
+  // Set when an approval is admitted, before the passkey answer is spent; counts for a short lease.
+  approvingAt   DateTime?
+  consumedAt    DateTime?
+  // Set when a newer request for the same key replaces this one before it was approved.
+  supersededAt  DateTime?
+  // Set when one call takes the record publication; counts for a short lease.
+  publishingAt  DateTime?
+  // 'pending' from approval until the record is published, then 'published', 'present' (the registry has a record
+  // for this owner) or 'failed'.
+  outcome       String?
+  failureCode   String?
+  createdAt     DateTime
+
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  key     EthereumKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, keyId])
+  @@index([sessionId])
+  @@index([keyId])
+  @@index([expiresAt])
+  @@map("account_setup_request")
+}
+
 model TinyCloudBootstrapState {
   id               String    @id @default(cuid())
   userId           String
@@ -481,6 +545,8 @@ model TinyCloudBootstrapState {
   failureCode      String?
   failureReason    String?
   sweepAttempts    Int       @default(0)
+  // Who asked for this setup (apps/api provision-authority.ts). NULL on rows made before this column: not first-party.
+  authority        String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -725,6 +791,8 @@ model TinyCloudNativeRequest {
   sessionJwk              Json
   sessionJkt              String
   requestedPermissions    Json
+  renewalAsk              Json?
+  renewalLeaseCid         String?
   ttlSeconds              Int
   // PAR siwe_nonce, or the server nonce written by the first prepare. Fixed
   // once set (trigger), and reused by every revision and the approval.
@@ -780,6 +848,7 @@ model TinyCloudNativePreparation {
   sessionSiwe  String
   hostPlan     Json?
   permissions  Json
+  renewalChoice Json?
   digest       String
   createdAt    DateTime @default(now())
 
@@ -808,6 +877,7 @@ model TinyCloudNativeGrant {
   approvedPermissions      Json
   ttlSeconds               Int
   tinycloudHost            String
+  renewalLeaseCid          String?
   refreshTokenHash         String?  @unique
   previousRefreshTokenHash String?
   rotatedAt                DateTime?

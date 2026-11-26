@@ -57,7 +57,7 @@ jobs:
           bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
-        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/step-up-ceiling-parity.test.ts
+        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/oauth-client-website.test.ts scripts/step-up-ceiling-parity.test.ts scripts/compose-image-digests.test.ts scripts/measured-app-compose.test.ts
 
       # TC-3569: OpenKey's step-up ceilings against the ones TinyCloud One's framed apps ask for, entry for entry.
       # Reads One's file at the commit pinned in scripts/step-up-ceilings/one.pin.json from the public tinychat
@@ -110,10 +110,17 @@ jobs:
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       # Each run creates and drops its own database on this throwaway server.
       - name: Renewal lease tests (PGlite and Postgres)
         env:
           OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: bun test apps/api/src/__tests__/renewal-lease-stop.integration.test.ts
+
+      # One email code must sign in exactly once and every wrong guess must cost an attempt when the
+      # verifications arrive together on separate connections, which PGlite cannot show.
+      - name: Email code verification race (PGlite and Postgres)
+        env:
+          OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: bun test apps/api/src/__tests__/email-otp-verify-race.integration.test.ts

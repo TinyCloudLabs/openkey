@@ -7,7 +7,7 @@ const address = '0x1111111111111111111111111111111111111111';
 const space = `tinycloud:pkh:eip155:1:${address}:secrets`;
 const abilities = ['tinycloud.kv/get', 'tinycloud.kv/set', 'tinycloud.kv/delete', 'tinycloud.kv/sync', 'tinycloud.kv/list', 'tinycloud.kv/watch'];
 const permissions = abilities.map((ability, index) => ({ service: 'tinycloud.kv', space, path: `vault/secrets/permission-${index}`, actions: [ability] }));
-const siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', 'URI: did:key:z6Mk', 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Resources:', `- ${makeRecapResource(Object.fromEntries(permissions.map((permission, index) => [`${space}/kv/${permission.path}`, { [abilities[index]]: [{}] }])))}`].join('\n');
+const siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', '', 'URI: did:key:z6Mk', 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Resources:', `- ${makeRecapResource(Object.fromEntries(permissions.map((permission, index) => [`${space}/kv/${permission.path}`, { [abilities[index]]: [{}] }])))}`].join('\n');
 const permissionRows = permissions.map((permission, index) => {
   const key = `tinycloud.kv\0${space}\0${permission.path}`;
   return { key, service: 'kv', path: permission.path, label: 'kv', resourcePath: `kv/${permission.path}`, actions: [{ key: `${key}\0${abilities[index]}`, action: abilities[index].split('/')[1], ability: abilities[index], required: false }] };

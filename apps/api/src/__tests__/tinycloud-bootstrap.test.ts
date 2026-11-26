@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
+import { originProvisionAuthority } from '../services/provision-authority';
 
 const address = '0x31d40B62C395B9418C4198363619B11c65cD406F';
 const chainId = 1;
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const key = { id: 'key_1', address, keyType: 'MANAGED' };
 const userId = 'user_1';
+// A first-party app: only first-party authority sets an account up on the node.
+const authority = originProvisionAuthority('https://tinycloud.chat');
 const tinycloudHost = 'https://tee.node.tinycloud.xyz';
 const defaultTinycloudHost = 'https://node.tinycloud.xyz';
 const originalNodeEnv = process.env.NODE_ENV;
@@ -139,6 +142,7 @@ function ensureInput(message = approvedTinyCloudSiwe(), format: 'raw' | 'persona
     privateKey,
     message,
     format,
+    authority,
   };
 }
 
@@ -299,7 +303,7 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
   });
 
   test('shared onboarding core completes once and serves the next delegation from cache', async () => {
-    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId, authority };
     expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
     expect(executor).toHaveBeenCalledTimes(1);
     expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
@@ -381,7 +385,7 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     executor.mockImplementationOnce(async () => {
       throw new Error('node unreachable');
     });
-    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId, authority };
     await ensureTinyCloudBootstrap(input);
     expect(state).toMatchObject({ status: 'failed', failureReason: 'node unreachable' });
 
@@ -420,7 +424,7 @@ describe('TC-945 background bootstrap lock and cache', () => {
     let observed!: (outcome: TinyCloudBootstrapOutcome) => void;
     const background = new Promise<TinyCloudBootstrapOutcome>((resolve) => { observed = resolve; });
     setTinyCloudBootstrapBackgroundObserverForTests(observed);
-    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId, authority };
     try {
       const first = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { budgetMs: 50 });
       const second = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { budgetMs: 1000 });
@@ -453,7 +457,7 @@ describe('TC-945 background bootstrap lock and cache', () => {
     setTinyCloudBootstrapBackgroundObserverForTests(observed);
     const unhandled = mock(() => {});
     process.on('unhandledRejection', unhandled);
-    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId, authority };
     try {
       expect(await awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), {
         budgetMs: 50,

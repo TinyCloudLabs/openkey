@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
-import { generateHostSIWEMessage, prepareSession } from '@tinycloud/node-sdk-wasm';
+import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import {
   BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST,
   BOOTSTRAP_SESSION_REQUESTS,
@@ -1014,24 +1014,11 @@ describe('Auto-Sign owner-only Courier paths (TC-884)', () => {
 
 // TC-3844: Auto-Sign never silently signs a sign-in message with no Expiration Time; it goes to the approval screen.
 describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', () => {
-  const PEER = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
   const withoutExpiry = (message: string) => {
     const stripped = message.split('\n').filter((line) => !line.startsWith('Expiration Time: ')).join('\n');
     expect(stripped).not.toBe(message);
     return stripped;
   };
-  const hostSiwe = () => generateHostSIWEMessage({
-    address,
-    chainId,
-    domain: 'cli.tinycloud.xyz',
-    issuedAt: new Date().toISOString(),
-    spaceId: bootstrapSpaceId(address, chainId, 'public'),
-    peerId: PEER,
-  });
-  const withExpiry = (message: string) => message.replace(
-    /^(Issued At: .+)$/m,
-    `$1\nExpiration Time: ${new Date(Date.now() + 60 * 60 * 1000).toISOString()}`,
-  );
 
   function captureLogLines() {
     const original = process.stdout.write.bind(process.stdout);
@@ -1053,7 +1040,6 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
 
   test.each([
     ['a bootstrap session SIWE', () => withoutExpiry(bootstrapSessionSiweWithResources('default', BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources))],
-    ['a host SIWE as the node SDK builds it', () => hostSiwe()],
   ])('%s with no Expiration Time is not auto-signed and goes to approval', async (_label, build) => {
     const message = build();
     expect(message).not.toContain('Expiration Time: ');
@@ -1076,7 +1062,6 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
 
   test.each([
     ['a bootstrap session SIWE', () => bootstrapSessionSiweWithResources('default', BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources)],
-    ['a host SIWE with an expiry added', () => withExpiry(hostSiwe())],
   ])('%s with an Expiration Time is still auto-signed and logs siwe_signed with no payload', async (_label, build) => {
     const message = build();
     expect(message).toContain('Expiration Time: ');

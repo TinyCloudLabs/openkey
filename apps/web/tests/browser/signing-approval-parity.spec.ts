@@ -356,7 +356,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
 
       const dialog = page.locator('[data-parity-harness] [role="dialog"]');
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText('Authorize capabilities');
+      await expect(dialog).toContainText('Sign in to explorer.tinycloud.xyz');
       await expect(dialog).toContainText('Manage your TinyCloud account');
       // The SQL write grant states its row-level reach (TC-2453); the sentence itself is not pinned here.
       await expect(dialog).toContainText(/\brows?\b/);

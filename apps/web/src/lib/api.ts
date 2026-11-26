@@ -8,6 +8,7 @@ import type { RenewalLease } from './renewal-leases';
 import type {
   ApprovalPasskeyAssertion, ApprovalPasskeyNeed, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting,
 } from './approval-passkey';
+import type { AccountSetupPrepared, AccountSetupState, AccountSetupStepUp } from './account-setup';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -51,6 +52,8 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
       code: detail?.code ?? (typeof error?.code === 'string' ? error.code : undefined),
       status: res.status,
       policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
+      reason: typeof error?.reason === 'string' ? error.reason : undefined,
+      ...(error?.accountSetup === 'required' ? { accountSetup: 'required' as const } : {}),
     });
     throw failure;
   }
@@ -242,6 +245,34 @@ export const api = {
     },
   },
 
+  // OpenKey's own account setup page (/widget/account-setup). Cookie session only: the API refuses a bearer token.
+  accountSetup: {
+    async prepare(keyId: string, requestOrigin: string | null): Promise<AccountSetupPrepared> {
+      return fetchAPI('/api/account-setup/prepare', {
+        method: 'POST',
+        body: JSON.stringify({ keyId, placement: 'tinycloud', ...(requestOrigin ? { requestOrigin } : {}) }),
+      }, true);
+    },
+
+    async stepUp(id: string): Promise<AccountSetupStepUp> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/passkey`, { method: 'POST', body: '{}' }, true);
+    },
+
+    async sendEmailCode(id: string): Promise<{ sent: boolean; email: string }> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/email-code`, { method: 'POST', body: '{}' }, true);
+    },
+
+    async approve(
+      id: string, proof: { passkeyAssertion: ApprovalPasskeyAssertion } | { emailCode: string },
+    ): Promise<AccountSetupState> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify(proof) }, true);
+    },
+
+    async finish(id: string): Promise<AccountSetupState> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/finish`, { method: 'POST', body: '{}' }, true);
+    },
+  },
+
   // Key management
   async listKeys(options?: { includeArchived?: boolean }): Promise<{ keys: EthereumKey[] }> {
     const query = options?.includeArchived ? '?archived=true' : '';
@@ -319,10 +350,11 @@ export const api = {
     keyId: string,
     data: { domain: any; types: any; primaryType: string; message: any },
     passkeyAssertion?: ApprovalPasskeyAssertion,
+    requestOrigin?: string,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
       method: 'POST',
-      body: JSON.stringify({ ...data, passkeyAssertion }),
+      body: JSON.stringify({ ...data, passkeyAssertion, requestOrigin }),
     });
   },
 
@@ -330,10 +362,11 @@ export const api = {
   async signTypedDataPasskey(
     keyId: string,
     data: { domain: any; types: any; primaryType: string; message: any },
+    requestOrigin?: string,
   ): Promise<ApprovalPasskeyNeed> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data/passkey`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, requestOrigin }),
     });
   },
 

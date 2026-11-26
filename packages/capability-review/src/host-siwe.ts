@@ -78,8 +78,8 @@ function readPeerDid(message: string): string | null {
 /**
  * The spaces a request asks the signer to host, and the node key named by the
  * `URI:` line. Read from `model.rawMessage`, the bytes that are signed. Null
- * when no selected grant holds `tinycloud.space/host` on one of the signer's
- * own spaces.
+ * when no selected grant holds `tinycloud.space/host`. Every host grant counts,
+ * whoever owns the space: the signature hosts that space on the named node.
  */
 export function readSpaceHostFacts(
   model: CapabilityReviewModel,
@@ -88,7 +88,7 @@ export function readSpaceHostFacts(
   if (model.protocol !== "tinycloud-siwe-recap") return null;
   const spaces = new Map<string, HostedSpace>();
   for (const grant of model.permissions) {
-    if (!SPACE_SERVICES.has(grant.service) || grant.ownedBySelf === false) continue;
+    if (!SPACE_SERVICES.has(grant.service)) continue;
     const hosts = grant.actions.some(
       (action) =>
         action.ability === SPACE_HOST_ABILITY &&

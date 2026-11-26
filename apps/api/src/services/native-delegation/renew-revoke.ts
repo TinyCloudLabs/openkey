@@ -20,6 +20,7 @@ import { enabledNativeDelegation, type NativeStepUpCeilings } from './policy';
 import { storedToken } from './provider-tokens';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER, nativeStepUpEnabled } from './public-protocol';
 import { credentialHash, SESSION_PROOF_MAX_SKEW_SECONDS, sessionProofJtiHash, verifySessionProofClaims } from './session-proof';
+import { revokeRenewalLeases } from '../renewal-lease-revocation';
 import { hasAcceptedTerms, termsRequired } from '../terms';
 import { logError, withScheduledLogContext } from '../../log';
 
@@ -33,7 +34,7 @@ const sessionProofJtiSweepStarts = new WeakMap<PrismaClient, Promise<void>>();
 
 type Operation = 'renew' | 'revoke';
 type Failure = { error: string; status: 400 | 401 | 409 | 429; retryAfter?: number };
-type Result = { failure: Failure } | { body: Record<string, unknown> } | { needsUnseal: true };
+type Result = { failure: Failure } | { body: Record<string, unknown>; stopGrantId?: string } | { needsUnseal: true };
 
 class KeyUnsealTimeout extends Error {}
 class NeedsUnsealRetry extends Error {}
@@ -239,7 +240,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
 
     // A previous token needs no signing only while it will conflict. Recovery
     // after the window is a normal renewal and can pre-unseal the signing key.
-    const likelyFastRefusal = preflightFailure !== null || candidate.status !== 'ACTIVE' ||
+    const likelyFastRefusal = preflightFailure !== null || candidate.status !== 'ACTIVE' || Boolean(candidate.renewalLeaseCid) ||
       (candidate.previousRefreshTokenHash === hash && candidate.rotatedAt !== null && Date.now() - candidate.rotatedAt.getTime() <= CONFLICT_WINDOW_MS) ||
       (candidate.lastRenewedAt !== null && Date.now() < candidate.lastRenewedAt.getTime() + Math.min(60, candidate.ttlSeconds / 4) * 1000);
     let preKey = operation === 'renew' && !likelyFastRefusal
@@ -308,8 +309,9 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
             }
             if (grant.status !== 'REVOKED') await tx.tinyCloudNativeGrant.update({ where: { id: grant.id }, data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'client_signout' } });
             await deleteGrantTokens(tx, grant);
-            return { body: {} };
+            return { body: {}, ...(grant.renewalLeaseCid && { stopGrantId: grant.id }) };
           }
+          if (grant.renewalLeaseCid) return fail('consent_required', 400);
           if (!consents.some((consent) => consent.id === grant.consentId && consent.scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) ||
             generations[0]?.generation !== grant.consentGeneration) return fail('consent_required', 400);
           if (grant.status !== 'ACTIVE') return fail('invalid_grant', 400);
@@ -450,6 +452,12 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       // second transaction. It revalidates every policy and token condition.
       result = await transact();
       if ('needsUnseal' in result) return respond(fail('consent_required', 400));
+    }
+    if ('body' in result && result.stopGrantId) {
+      const stop = await revokeRenewalLeases(db, candidate.userId, { kind: 'native-stop', grantId: result.stopGrantId }).catch(() => null);
+      if (!stop || stop.notStopped.length) {
+        return Response.json({ error: 'temporarily_unavailable' }, { status: 503, headers: { 'Retry-After': '2', 'Cache-Control': 'no-store' } });
+      }
     }
     return respond(result);
   } catch (error) {

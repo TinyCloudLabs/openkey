@@ -20,6 +20,7 @@ import { createReviewerAdminRouter } from './routes/reviewer-admin';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
+import { accountSetupRouter } from './routes/account-setup';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
 import { allowBeforeTerms, allowBeforeTermsWhen, allowBrowserBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
@@ -385,6 +386,8 @@ app.route('/api/keys/nostr', nostrKeysRouter);
 // that has not accepted them.
 app.route('/api/account/terms', createAccountTermsRouter(authPrisma));
 app.route('/api/account', accountRouter);
+// OpenKey's own account setup page: cookie session from an OpenKey origin only.
+app.route('/api/account-setup', accountSetupRouter);
 
 // Passkey proxy routes (for iframe embed mode)
 app.route('/api/passkey', passkeyProxyRouter);
@@ -494,7 +497,7 @@ const port = parseInt(process.env.API_PORT || '3001');
 
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
-// With OPENKEY_RENEWAL_LEASES=stop, revokes every live renewal lease (TC-3088). Does nothing for any other value.
+// Retries native lease withdrawal. OPENKEY_RENEWAL_LEASES=stop also revokes every live lease (TC-3088).
 if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
 // Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
 // Not behind the step-up switch: a record already written must still be revoked with the switch off.
