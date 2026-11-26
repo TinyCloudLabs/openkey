@@ -525,6 +525,9 @@ test('prepare HTTP Date admits the reviewed default after a delayed clock rollov
     return { res, body: await res.json() as Record<string, any> };
   };
   try {
+    const originPort = origin.port;
+    const proxyPort = proxy.port;
+    if (originPort === undefined || proxyPort === undefined) throw new Error('HTTP fixture failed to bind a port');
     fetchAppKeysFile.mockImplementationOnce(async () => {
       // This integration test needs the real native HTTP clock, not fake timers:
       // delay the listing, then cross a bounded wall-clock second boundary.
@@ -533,11 +536,11 @@ test('prepare HTTP Date admits the reviewed default after a delayed clock rollov
       offsetMs = 2_000;
       return fileResult;
     });
-    const direct = await prepareHttp(origin.port);
+    const direct = await prepareHttp(originPort);
     expect(direct.res.status).toBe(200);
     expect(wireAdmitsDefault(direct.res, direct.body)).toBe(true);
 
-    const forwarded = await prepareHttp(proxy.port);
+    const forwarded = await prepareHttp(proxyPort);
     expect(forwarded.res.status).toBe(200);
     expect(wireAdmitsDefault(forwarded.res, forwarded.body)).toBe(true);
     expect(forwarded.res.headers.get('date')).toBe(upstreamDate);
@@ -550,12 +553,12 @@ test('prepare HTTP Date admits the reviewed default after a delayed clock rollov
       offsetMs = -3_000;
       return result;
     };
-    const rollback = await prepareHttp(proxy.port);
+    const rollback = await prepareHttp(proxyPort);
     expect(rollback.res.status).toBe(200);
     expect(wireAdmitsDefault(rollback.res, rollback.body)).toBe(false);
 
     fileResult = { ok: false, kind: 'missing', reason: 'fetch returned status 404' };
-    const failed = await prepareHttp(proxy.port);
+    const failed = await prepareHttp(proxyPort);
     expect(failed.res.status).toBe(403);
     expect(failed.body.code).toBe('app_keys_file_missing');
     expect(failed.body.appKey).toBeUndefined();

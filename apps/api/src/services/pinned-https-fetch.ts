@@ -56,7 +56,7 @@ export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number, cal
   });
   const abortActive = () => {
     activeSocket?.destroy(signal.reason);
-    void client.destroy(signal.reason instanceof Error ? signal.reason : undefined);
+    void client.destroy(signal.reason instanceof Error ? signal.reason : null);
   };
   signal.addEventListener('abort', abortActive, { once: true });
   if (signal.aborted) abortActive();
