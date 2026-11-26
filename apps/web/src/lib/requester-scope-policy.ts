@@ -142,13 +142,23 @@ export function isRequesterScopePolicy(policy: RequesterScopePolicy | null | und
   });
 }
 
+/**
+ * The most characters a path may carry after its prefix, so no more than this many reach a segment pattern. A miss
+ * costs time in proportion to a power of the length it is matched against, and the key paths this policy
+ * also reads stop at the same 255.
+ */
+const MAX_PATH_LENGTH = 255;
+
 export function pathFits(rule: RequesterScopeRule, path: string): boolean {
   if (rule.kind === 'path') {
-    // The whole path is plain characters first, so nothing below sees a query, fragment, escape or dot segment.
-    if (!PATH.test(path)) return false;
     return rule.pathPrefixes.some((prefix) => {
       if (!path.startsWith(prefix)) return false;
-      const segments = path.slice(prefix.length).split('/');
+      const rest = path.slice(prefix.length);
+      // Length before any pattern runs: a longer rest is refused without being matched.
+      if (rest.length > MAX_PATH_LENGTH) return false;
+      // The whole path is plain characters, so nothing below sees a query, fragment, escape or dot segment.
+      if (!PATH.test(path)) return false;
+      const segments = rest.split('/');
       return segments.length === rule.segmentPatterns.length && segments.every((segment, index) => new RegExp(rule.segmentPatterns[index]!).test(segment));
     });
   }
