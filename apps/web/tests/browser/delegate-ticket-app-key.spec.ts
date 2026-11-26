@@ -186,9 +186,11 @@ test.describe('a command-line tool asks for one exact app key', () => {
       const calls = await open(page, { external: true });
       await page.getByRole('button', { name: 'Preview signing message' }).click();
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
-      await expect.poll(() => page.evaluate(() =>
-        (window as Window & { testWallet: { open: boolean } }).testWallet.open,
-      )).toBe(true);
+      await expect.poll(() => page.evaluate(() => {
+        // addInitScript installs this wallet before the page loads.
+        const testWindow = window as unknown as Window & { testWallet: { open: boolean } };
+        return testWindow.testWallet.open;
+      })).toBe(true);
 
       if (outcome === 'the handoff expires') {
         await page.clock.fastForward(300_001);
@@ -205,12 +207,14 @@ test.describe('a command-line tool asks for one exact app key', () => {
         await expect(page).toHaveURL(/\/auth\/login(?:\?|$)/);
         await expect(page.getByTestId('ticket-app-key-row')).toHaveCount(0);
         // The pending wallet promise stays in this document across SvelteKit navigation.
-        await expect.poll(() => page.evaluate(() =>
-          (window as Window & { testWallet: { open: boolean } }).testWallet.open,
-        )).toBe(true);
+        await expect.poll(() => page.evaluate(() => {
+          const testWindow = window as unknown as Window & { testWallet: { open: boolean } };
+          return testWindow.testWallet.open;
+        })).toBe(true);
       }
       const walletSigns = await page.evaluate(async () => {
-        const wallet = (window as Window & { testWallet: { resolveAccount: () => void; signCalls: number } }).testWallet;
+        const testWindow = window as unknown as Window & { testWallet: { resolveAccount: () => void; signCalls: number } };
+        const wallet = testWindow.testWallet;
         wallet.resolveAccount();
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         return wallet.signCalls;
