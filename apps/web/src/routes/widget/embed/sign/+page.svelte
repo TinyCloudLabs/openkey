@@ -108,8 +108,6 @@
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
   let legacyOrigin = $state<string | null>(null);
-  let layoutReady = $state(false);
-  let layoutError = $state('');
   let layoutGate: IframeLayoutGate | null = null;
   // v1 has no layout-ready handshake with the host: Approve waits until this frame's own size has been quiet (TC-2320).
   let frameSettled = $state(false);
@@ -330,11 +328,10 @@
               (height, layoutId) => transport?.emitResize(height, layoutId),
               (ready, layoutId) => {
                 transport?.emitLayoutSignal(ready, layoutId);
-                layoutReady = ready;
               },
               () => {
                 pendingLayoutAck = null;
-                layoutError = 'Review layout could not be confirmed. Cancel and try again.';
+                console.warn('[embed sign widget] review layout not confirmed by the host within 5s; Approve is not blocked');
               },
             );
           }
@@ -1252,7 +1249,7 @@
       error = siweRefusal.message;
       return;
     }
-    if (v2 && !layoutGate?.canApprove()) return;
+    if (v2 && !layoutGate?.canApprove()) console.warn('[embed sign widget] approving while the review layout is not confirmed');
     if (!currentKeyBelongsToSession()) return;
     // Fail-closed: refuse to sign a malformed ReCap regardless of path.
     // Silently signing exact bytes for a decoded-to-nothing ReCap would
@@ -1429,7 +1426,6 @@
         coverRefetch = null;
         return;
       }
-      if (v2 && !layoutReady) return;
     }
     coverRefetch = null;
     if (landed) untrack(() => { void approveAndSign(); });
@@ -1667,7 +1663,7 @@
         flowId={webFlowId}
       />
     {:else if !isAuthenticated}
-      <TermsGate surface="embed" layoutReady={v2 ? layoutReady : true} onsignedout={termsSignedOut} />
+      <TermsGate surface="embed" layoutReady={true} onsignedout={termsSignedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
@@ -1716,13 +1712,13 @@
       <IframeSigningAdapter
         model={reviewModel}
         initialSelection={reviewSelection}
-        layoutBlocked={v2 ? !layoutReady : !frameSettled}
+        layoutBlocked={v2 ? false : !frameSettled}
         transport={{
           approving: signing,
           approveVisibility: coverOffered ? approveVisibility : undefined,
           passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,
-          error: error || layoutError || offerFailure,
+          error: error || offerFailure,
           approveBlockedReason: refusalMessage ?? (renewalOnlyNeedsPreview
             ? RENEWAL_ONLY_COPY.previewRequired(originAuthority(origin) ?? RENEWAL_ONLY_COPY.appFallback)
             : null),
