@@ -4524,7 +4524,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // TC-3442: whether Approve needs the passkey, with the challenge for exactly these bytes. Re-issued with every
   // preview, so a changed selection or expiry gets its own. None when this web sign flow's own passkey sign-in covers it.
   const boundKey = await prisma.ethereumKey.findFirst({
-    where: { id: bound.keyId, userId: user.id, archivedAt: null },
+    where: { id: bound.keyId, custody: 'PERSONAL', userId: user.id, archivedAt: null },
     select: { keyType: true },
   });
   const passkey = !boundKey || boundKey.keyType === 'EXTERNAL'

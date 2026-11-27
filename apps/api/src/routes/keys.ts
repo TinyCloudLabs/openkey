@@ -365,7 +365,7 @@ keysRouter.post('/:keyId/sign/passkey', async (c) => {
   if (typeof body.message !== 'string') return c.json({ error: 'message must be a string' }, 400);
   const registryRefusal = registryRecordRefusalResponse(body);
   if (registryRefusal) return c.json(registryRefusal, 403);
-  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true, address: true } });
+  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, custody: 'PERSONAL', userId: user.id, archivedAt: null }, select: { keyType: true, address: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
   if (key.keyType === 'EXTERNAL') return c.json({ required: false });
   return c.json(await approvalPasskeyOfferInFlow(
@@ -385,7 +385,7 @@ keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
   if (registryRefusal) return c.json(registryRefusal, 403);
   const checked = checkedTypedData(typedBody);
   if (!checked.ok) return c.json({ error: checked.error }, 400);
-  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true } });
+  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, custody: 'PERSONAL', userId: user.id, archivedAt: null }, select: { keyType: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
   if (key.keyType === 'EXTERNAL') return c.json({ required: false });
   return c.json(await approvalPasskeyOffer(
