@@ -9,7 +9,7 @@
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   let complete = $state(false);
   let request = $state<SignOutWidgetRequest | null>(null);
-  // Whether the account has renewing permissions: only then does the confirm say signing out leaves them on.
+  // Whether other apps' sign-ins or approved permissions keep renewing after this sign-out: only then does the confirm say so.
   let renewing = $state(false);
 
   $effect(() => {
@@ -22,7 +22,7 @@
   function onMessage(event: MessageEvent) {
     if (complete || request) return;
     request = readSignOutWidgetRequest(event, origin, window.opener);
-    if (request) api.listRenewalLeases().then(({ leases }) => { renewing = leases.length > 0; }, () => {});
+    if (request) api.listRenewalLeases().then(({ leases }) => { renewing = leases.some((lease) => !lease.endsOnSignOut); }, () => {});
   }
 
   async function confirm() {
@@ -68,7 +68,7 @@
     <div class="space-y-4">
       <p class="text-sm text-surface-700">Sign out of OpenKey on this device?</p>
       {#if renewing}
-        <p class="mx-auto max-w-xs text-xs text-surface-500" data-testid="sign-out-renewal-note">{renewalLeaseCopy.signOutKeepsRenewing} {renewalLeaseCopy.stopRenewalsInSettings}</p>
+        <p class="mx-auto max-w-xs text-xs text-surface-500" data-testid="sign-out-renewal-note">{renewalLeaseCopy.signOutEndsThisApp} {renewalLeaseCopy.signOutKeepsOthersRenewing} {renewalLeaseCopy.stopRenewalsInSettings}</p>
       {/if}
       <div class="flex justify-center gap-3">
         <button class="rounded-lg bg-surface-900 px-4 py-2 text-sm text-white" onclick={confirm}>Sign out</button>

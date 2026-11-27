@@ -14,6 +14,8 @@ export interface RenewalLease {
   reason: string | null;
   /** The approved grant's SIWE message, as signed: its permissions are shown as the approval screen showed them. */
   grantSiwe: string;
+  /** A sign-in lease recorded under the session being signed out: signing out stops it. */
+  endsOnSignOut: boolean;
 }
 
 export const renewalLeaseCopy = {
@@ -37,12 +39,14 @@ export const renewalLeaseCopy = {
   walletDeclined: "You didn't sign, so renewal is still on.",
   failed: "Couldn't stop renewal, so it's still on. Try again.",
   loadFailed: "Couldn't load your renewing permissions. Reload to try again.",
-  /** By a sign-out button, shown only while the account has renewing permissions. */
-  signOutKeepsRenewing: 'Signing out doesn’t stop apps renewing the access you approved.',
+  /** By a sign-out button on the dashboard, shown only while apps other than this sign-in keep renewing. */
+  signOutKeepsRenewing: 'Apps you allowed to stay signed in keep renewing after you sign out.',
   /** The dashboard's link to Renewing permissions in Settings. */
   stopRenewalsLink: 'Stop renewals',
-  /** Inside apps, where Settings is a step away. */
-  stopRenewalsInSettings: 'You can stop renewals in OpenKey Settings.',
+  /** Inside apps, where OpenKey settings is a step away: what signing out ends, then what it leaves on. */
+  signOutEndsThisApp: 'Signing out ends this app’s sign-in and its renewal.',
+  signOutKeepsOthersRenewing: 'Other apps you allowed to stay signed in keep renewing.',
+  stopRenewalsInSettings: 'To stop them, choose Stop renewal under Renewing permissions in OpenKey settings.',
 } as const;
 
 /**
