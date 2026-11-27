@@ -168,7 +168,7 @@ can set it, and the request can never exceed it.
 | `tinycloudHost` | Must be in `TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS` (`tinycloud-bootstrap.ts`). This is the only node the delegation is activated on and the only host a hosting signature can name. Requests cannot supply a host. |
 | `kv.paths` | Paths under `<appId>/`, using the device-flow path grammar (`[A-Za-z0-9._~@+=,:-]` segments; no `.` or `..` segments; `secrets` and `vault` roots refused). A trailing `/` makes it a prefix grant. |
 | `kv.actions` | A subset of `get`, `put`, `list`, `del`, `metadata`, meaning `tinycloud.kv/<action>`. |
-| `kv.root` | Optional, only `true`. Also admits the whole applications-space KV (path `""`) with `kv.actions`. TinyCloud Home's web sign-in grants it, so its native client does too (TC-2720). |
+| `kv.root` | Optional, only `true`. Also admits the whole applications-space KV (path `""`) with `kv.actions`. TinyCloud One's web sign-in grants it, so its native client does too (TC-2720). |
 | `sql` | `null`, or an object. Validates under the same rules as `kv`: databases confined to `<appId>/`. SQL delegates to the TinyCloud node exactly like KV — isolating databases by full path is the node's job. |
 | `sql.databases` | Exact database identities `<appId>/<name>`, with exactly one segment after the `appId` and no trailing `/`. |
 | `sql.prefixes` | Optional. Database prefixes `<appId>/<name>/` (one segment, trailing `/`): a request path equal to or under one is admitted. |
@@ -180,8 +180,8 @@ can set it, and the request can never exceed it.
 | `siweDomain` | Optional, default `openkey.so`. The SIWE `domain`. |
 
 The example above is the original Exo ceiling. Since TC-2720 the TinyCloud
-Home client (`ok_e1d13d0b220379f37a553aa0391d28a4`) has the applications-space
-entries of Home's served manifest, matching its web sign-in: KV `threads/`,
+One client (`ok_e1d13d0b220379f37a553aa0391d28a4`) has the applications-space
+entries of TinyCloud One's served manifest, matching its web sign-in: KV `threads/`,
 `connectors/`, `exo/v1/requests/`, `exo/v1/jobs/` and the whole-space KV
 (`kv.root`); SQL `threads`, `canvas`, `connectors`, `home_feed`, `details`,
 `summaries`, `transcripts`, the `feed/` prefix and the catalog databases

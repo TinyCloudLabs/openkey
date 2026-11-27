@@ -7,7 +7,7 @@ import type { RequestHandler } from './$types';
  * `com.apple.developer.associated-domains = webcredentials:openkey.so` use
  * passkeys whose relying party is openkey.so, and match an HTTPS
  * ASWebAuthenticationSession callback on this host. The entry is
- * `<Team ID>.<bundle ID>` for TinyCloud Home under the TinyCloud, Inc. team.
+ * `<Team ID>.<bundle ID>` for TinyCloud One under the TinyCloud, Inc. team.
  * It grants nothing until the app ships that entitlement.
  *
  * Apple's CDN fetches this path over HTTPS without following redirects and
