@@ -93,3 +93,7 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 - Added initial agent development notes covering project context, related repositories, build and
   testing expectations, debugging guidance, and additional repo-specific operating context. Tracked
   in TC-1389.
+
+## 2026-11-27 — accurate compatibility classification
+
+Permit major changesets for breaking stable API changes while retaining authorization for actual version bumps and releases. Remove the instruction to label breaking changes as minor.
