@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -235,10 +235,97 @@ function requirePostgresUrl() {
   }
 }
 
+// Every migration child process connects with these session settings, set through the connection URL
+// in code (no role or database setting is involved):
+//  - lock_timeout: a statement that has to wait for a lock held by a live session fails with SQLSTATE
+//    55P03 after this long instead of queuing behind it (and blocking every query that queues behind the
+//    migration). It bounds only the WAIT for a lock.
+//  - statement_timeout: a statement that runs longer than this once it holds its locks fails with 57014
+//    (for example the CHECK scan of ethereum_keys at 20261021_0001, which runs under ACCESS EXCLUSIVE).
+//  - idle_in_transaction_session_timeout: the server ends a connection that sits idle inside a
+//    transaction for this long. A migration file with an explicit BEGIN that fails leaves its connection
+//    idle in an aborted transaction, which keeps every lock it took until the connection ends; this
+//    bounds that hold if the engine lingers on its error path.
+// The `migrate deploy` child is also killed (whole process group) after MIGRATION_DEPLOY_KILL_TIMEOUT_MS,
+// so its connections always drop. A killed child is never auto-resolved.
+//
+// REQUIREMENTS AND RISKS for whoever runs this:
+//  - DATABASE_URL must be a DIRECT (not pooled) endpoint. The settings reach the server as a startup
+//    parameter, which a pooler such as PgBouncer usually refuses; the connection then fails before any
+//    statement runs and nothing is applied.
+//  - A migration that holds ACCESS EXCLUSIVE on ethereum_keys while it waits for another table (the
+//    reviewed org-custody migrations take all their locks up front to avoid this) can deadlock with
+//    application transactions that touch "user" and then ethereum_keys. Run the deploy in a low-traffic
+//    window; a deadlock victim is reported (40P01) and, like any failure faster than the lock timeout, is
+//    never auto-resolved.
+export const MIGRATION_LOCK_TIMEOUT_MS = 5000;
+export const MIGRATION_STATEMENT_TIMEOUT_MS = 60_000;
+export const MIGRATION_IDLE_IN_TRANSACTION_TIMEOUT_MS = 10_000;
+// Three statement timeouts plus the lock waits: far more than the reviewed migrations need, finite.
+export const MIGRATION_DEPLOY_KILL_TIMEOUT_MS = 180_000;
+// A failure faster than the lock timeout cannot be a lock timeout (nor a statement timeout, which is longer).
+export const MIGRATION_AUTO_RESOLVE_MIN_ELAPSED_MS = MIGRATION_LOCK_TIMEOUT_MS;
+
+// Return the URL with each `-c <name>=<value>` setting in its `options` parameter, merged with any
+// options the URL already carries (an existing setting of the same name, in any spelling, is replaced,
+// everything else is kept) and URL-encoded. Idempotent. Never logs.
+// A `#` starts a URL fragment and would be mangled by the merge, so it fails fast with a fixed message.
+function withSessionSettings(databaseUrl: string, settings: ReadonlyArray<readonly [string, number]>): string {
+  if (databaseUrl.includes('#')) {
+    throw new Error('DATABASE_URL contains "#"; percent-encode it as %23 so the migration lock timeout can be added');
+  }
+  const queryStart = databaseUrl.indexOf('?');
+  const base = queryStart === -1 ? databaseUrl : databaseUrl.slice(0, queryStart);
+  const segments = queryStart === -1 ? [] : databaseUrl.slice(queryStart + 1).split('&').filter(Boolean);
+  const kept: string[] = [];
+  const options: string[] = [];
+  for (const segment of segments) {
+    const separator = segment.indexOf('=');
+    const key = separator === -1 ? segment : segment.slice(0, separator);
+    if (key !== 'options') {
+      kept.push(segment);
+      continue;
+    }
+    let value = separator === -1 ? '' : decodeURIComponent(segment.slice(separator + 1));
+    for (const [name] of settings) {
+      // Drop `-c name=…`, `-cname=…` and `--name=…`; keep every other setting.
+      value = value
+        .replace(new RegExp(`(?:^|\\s)-c\\s*${name}=\\S*`, 'g'), ' ')
+        .replace(new RegExp(`(?:^|\\s)--${name}=\\S*`, 'g'), ' ');
+    }
+    value = value.trim();
+    if (value !== '') options.push(value);
+  }
+  for (const [name, value] of settings) options.push(`-c ${name}=${value}`);
+  kept.push(`options=${encodeURIComponent(options.join(' '))}`);
+  return `${base}?${kept.join('&')}`;
+}
+
+export function withMigrationLockTimeout(databaseUrl: string, timeoutMs: number = MIGRATION_LOCK_TIMEOUT_MS): string {
+  return withSessionSettings(databaseUrl, [['lock_timeout', timeoutMs]]);
+}
+
+// lock_timeout, statement_timeout and idle_in_transaction_session_timeout for the migration connection.
+export function withMigrationSessionLimits(databaseUrl: string): string {
+  return withSessionSettings(databaseUrl, [
+    ['lock_timeout', MIGRATION_LOCK_TIMEOUT_MS],
+    ['statement_timeout', MIGRATION_STATEMENT_TIMEOUT_MS],
+    ['idle_in_transaction_session_timeout', MIGRATION_IDLE_IN_TRANSACTION_TIMEOUT_MS],
+  ]);
+}
+
+// The environment of every migration child process: the caller's environment
+// with DATABASE_URL carrying the session limits.
+export function migrationChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const databaseUrl = env.DATABASE_URL;
+  if (!databaseUrl) return env;
+  return { ...env, DATABASE_URL: withMigrationSessionLimits(databaseUrl) };
+}
+
 function run(command: string, args: string[]) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
-    env: process.env,
+    env: migrationChildEnv(process.env),
     encoding: 'utf8',
     stdio: 'inherit',
   });
@@ -249,6 +336,286 @@ function run(command: string, args: string[]) {
 
 function runBunScript(script: string) {
   run(process.execPath, ['run', script]);
+}
+
+// What a reviewed pending migration creates, from its SQL. Used only to prove, before a failed
+// migration is marked rolled back, that none of it exists. A pending migration without an entry here
+// (and a reviewed checksum in preTc488AdditiveMigrations) is NEVER auto-resolved.
+export interface MigrationObjects {
+  types: readonly string[];
+  columns: readonly string[]; // 'table.column'
+  constraints: readonly string[];
+  tables: readonly string[];
+  indexes: readonly string[];
+}
+
+export const reviewedMigrationObjects: ReadonlyMap<string, MigrationObjects> = new Map([
+  ['20261021_0001_org_key_custody', {
+    types: ['KeyCustody', 'KeyGrantRole'],
+    columns: ['ethereum_keys.custody'],
+    constraints: [
+      'ethereum_keys_custody_org_shape_check',
+      'org_keys_pkey', 'org_keys_keyId_fkey',
+      'key_grants_pkey', 'key_grants_keyId_fkey', 'key_grants_granteeUserId_fkey',
+      'org_key_signature_audits_pkey', 'org_key_signature_audits_keyId_fkey', 'org_key_signature_audits_grantId_fkey',
+    ],
+    tables: ['org_keys', 'key_grants', 'org_key_signature_audits'],
+    indexes: [
+      'org_keys_pkey', 'org_keys_orgId_idx',
+      'key_grants_pkey', 'key_grants_keyId_idx', 'key_grants_granteeUserId_idx', 'key_grants_one_active_owner_per_key',
+      'org_key_signature_audits_pkey', 'org_key_signature_audits_keyId_idx', 'org_key_signature_audits_grantId_idx',
+      'org_key_signature_audits_passkeyAssertionHash_key',
+    ],
+  }],
+  ['20261021_0002_org_key_sign_challenges', {
+    types: [],
+    columns: ['org_key_signature_audits.role', 'org_key_signature_audits.messageKind'],
+    constraints: [
+      'org_key_sign_challenges_pkey', 'org_key_sign_challenges_userId_fkey',
+      'org_key_sign_challenges_keyId_fkey', 'org_key_sign_challenges_grantId_fkey',
+    ],
+    tables: ['org_key_sign_challenges'],
+    indexes: [
+      'org_key_sign_challenges_pkey', 'org_key_sign_challenges_nonce_key', 'org_key_sign_challenges_userId_idx',
+      'org_key_sign_challenges_keyId_idx', 'org_key_sign_challenges_grantId_idx',
+    ],
+  }],
+  ['20261029_0001_org_registration_proofs', {
+    types: [],
+    columns: [],
+    constraints: [
+      'org_key_registration_challenges_pkey', 'org_registration_challenge_consumption_check',
+      'org_key_registration_challenges_sessionId_fkey',
+      'org_key_registrations_pkey', 'org_key_registrations_keyId_fkey', 'org_key_registrations_grantId_fkey',
+    ],
+    tables: ['org_key_registration_challenges', 'org_key_registrations'],
+    indexes: [
+      'org_key_registration_challenges_pkey', 'org_key_registration_challenges_assertionHash_key',
+      'org_key_registration_challenges_registrationId_idx', 'org_key_registration_challenges_expiresAt_idx',
+      'org_key_registrations_pkey', 'org_key_registrations_keyId_key', 'org_key_registrations_grantId_key',
+      'org_key_registrations_jti_key',
+    ],
+  }],
+]);
+
+export interface ReviewedMigration {
+  checksum: string;
+  objects: MigrationObjects;
+}
+
+// The pending migrations that may be auto-resolved: those with an object list AND a reviewed checksum.
+export function reviewedAutoResolvableMigrations(): Map<string, ReviewedMigration> {
+  const reviewed = new Map<string, ReviewedMigration>();
+  for (const [name, objects] of reviewedMigrationObjects) {
+    const checksum = preTc488AdditiveMigrations.get(name);
+    if (checksum) reviewed.set(name, { checksum, objects });
+  }
+  return reviewed;
+}
+
+export interface QueryClient {
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
+}
+
+// Every listed object that exists in the public schema, as 'kind name'.
+export async function listPresentMigrationObjects(database: QueryClient, objects: MigrationObjects): Promise<string[]> {
+  const rows = await database.$queryRawUnsafe<Array<{ object: string }>>(
+    `SELECT 'type ' || typname AS object FROM pg_type
+       WHERE typnamespace = 'public'::regnamespace AND typname = ANY($1::text[])
+     UNION ALL
+     SELECT 'column ' || table_name || '.' || column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name || '.' || column_name = ANY($2::text[])
+     UNION ALL
+     SELECT 'constraint ' || conname FROM pg_constraint WHERE conname = ANY($3::text[])
+     UNION ALL
+     SELECT 'table ' || table_name FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = ANY($4::text[])
+     UNION ALL
+     SELECT 'index ' || indexname FROM pg_indexes
+       WHERE schemaname = 'public' AND indexname = ANY($5::text[])`,
+    [...objects.types], [...objects.columns], [...objects.constraints], [...objects.tables], [...objects.indexes],
+  );
+  return rows.map((row) => row.object);
+}
+
+export interface CapturedChild {
+  status: number | null;
+  output: string;
+  elapsedMs: number;
+  timedOut: boolean;
+}
+
+const CAPTURED_OUTPUT_LIMIT = 1_000_000;
+
+// Run a child process in its own process group, teeing its stdout and stderr to ours while keeping them
+// for the auto-resolve decision, and SIGKILL the whole group after timeoutMs so that no grandchild (the
+// schema engine) keeps a database connection, and its locks, alive. The timer is real wall time on
+// purpose: it bounds a real process.
+export function runCapturedChild(
+  command: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+): Promise<CapturedChild> {
+  const { promise, resolve, reject } = Promise.withResolvers<CapturedChild>();
+  const started = Date.now();
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  let output = '';
+  let timedOut = false;
+  const collect = (sink: NodeJS.WriteStream) => (chunk: Buffer) => {
+    sink.write(chunk);
+    output = (output + chunk.toString('utf8')).slice(-CAPTURED_OUTPUT_LIMIT);
+  };
+  child.stdout.on('data', collect(process.stdout));
+  child.stderr.on('data', collect(process.stderr));
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // The group is already gone.
+    }
+  }, options.timeoutMs);
+  child.once('error', (error) => {
+    clearTimeout(timer);
+    reject(error);
+  });
+  child.once('close', (status) => {
+    clearTimeout(timer);
+    resolve({ status, output, elapsedMs: Date.now() - started, timedOut });
+  });
+  return promise;
+}
+
+// The one error the schema engine prints when a statement inside a migration's own BEGIN ... COMMIT
+// fails: it then sends its next command on the aborted transaction, and that error replaces the real
+// one (a lock timeout 55P03, a statement timeout 57014, but also any other failure). The class of the
+// real error is therefore unknown; the physical object check is the guard.
+export const ABORTED_TRANSACTION_ERROR_LINE =
+  'Error: ERROR: current transaction is aborted, commands ignored until end of transaction block';
+
+// True only if exactly one line of the output mentions an error at all, and it is the line above.
+export function isOnlyAbortedTransactionError(output: string): boolean {
+  const errorLines = output.split(/\r?\n/).filter((line) => /error/i.test(line));
+  return errorLines.length === 1 && errorLines[0]!.trimEnd() === ABORTED_TRANSACTION_ERROR_LINE;
+}
+
+export type AutoResolveDecision = { resolve: true; name: string } | { resolve: false; message: string };
+
+function seconds(ms: number): number {
+  return Math.round(ms / 1000);
+}
+
+// Decide whether a failed `migrate deploy` may be followed by `prisma migrate resolve --rolled-back`.
+// ALL of these must hold, in this order; the first one that does not hold stops with a fixed message
+// (never the URL, never the child's output):
+//   1. the child was not killed by the timeout;
+//   2. its output is exactly the aborted-transaction error, nothing else mentioning an error;
+//   3. it ran at least MIGRATION_AUTO_RESOLVE_MIN_ELAPSED_MS (a faster failure is not a lock wait);
+//   4. exactly one unfinished ledger row (no finished_at, no rolled_back_at), so no other failed row;
+//   5. its name has a reviewed object list and checksum;
+//   6. the row's checksum is that reviewed checksum;
+//   7. the ledger has no rolled-back row for that name (at most one auto-resolve per name, ever);
+//   8. none of the migration's objects exist (the transaction guarantee really held).
+export async function decideAutoResolve(input: {
+  child: CapturedChild;
+  rows: MigrationRow[];
+  reviewed: ReadonlyMap<string, ReviewedMigration>;
+  presentObjects: (name: string) => Promise<string[]>;
+}): Promise<AutoResolveDecision> {
+  const { child, rows, reviewed } = input;
+  const stop = (message: string): AutoResolveDecision => ({ resolve: false, message });
+  const elapsed = seconds(child.elapsedMs);
+  if (child.timedOut) {
+    return stop(`migrate deploy was killed after ${elapsed}s; not marking any migration rolled back; read the database state by hand`);
+  }
+  if (!isOnlyAbortedTransactionError(child.output)) {
+    return stop(`migrate deploy failed after ${elapsed}s with an error other than the aborted-transaction error; not marking any migration rolled back`);
+  }
+  if (child.elapsedMs < MIGRATION_AUTO_RESOLVE_MIN_ELAPSED_MS) {
+    return stop(`migrate deploy failed after ${elapsed}s, faster than the ${seconds(MIGRATION_LOCK_TIMEOUT_MS)}s lock timeout, so it is probably not a lock or statement timeout; not marking any migration rolled back; read the failure by hand`);
+  }
+  const unfinished = rows.filter((row) => !row.finished_at && !row.rolled_back_at);
+  if (unfinished.length !== 1) {
+    return stop(`${unfinished.length} unfinished migration rows after the failure (expected exactly 1); not marking any migration rolled back`);
+  }
+  const row = unfinished[0]!;
+  const known = reviewed.get(row.migration_name);
+  if (!known) {
+    return stop(`unfinished migration ${row.migration_name} has no reviewed object list; not marking it rolled back`);
+  }
+  if (row.checksum !== known.checksum) {
+    return stop(`unfinished migration ${row.migration_name} has a checksum that differs from the reviewed one; not marking it rolled back`);
+  }
+  if (rows.some((other) => other.migration_name === row.migration_name && other.rolled_back_at)) {
+    return stop(`migration ${row.migration_name} was already marked rolled back once; not doing it a second time; a human must read the failure`);
+  }
+  const present = await input.presentObjects(row.migration_name);
+  if (present.length > 0) {
+    return stop(`${present.length} object(s) of migration ${row.migration_name} exist after the failure; not marking it rolled back`);
+  }
+  return { resolve: true, name: row.migration_name };
+}
+
+// `prisma migrate deploy`, and after a failure the narrow auto-resolve above. Always throws on failure:
+// either the fixed stop message, or (after the one allowed `migrate resolve --rolled-back`) the fixed
+// "marked rolled back; retry the deploy" message. It never retries the deploy itself.
+export async function migrateDeployWithAutoResolve(options: {
+  database: QueryClient;
+  command: string;
+  deployArgs: string[];
+  resolveArgs: (name: string) => string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  reviewed: ReadonlyMap<string, ReviewedMigration>;
+  timeoutMs?: number;
+}): Promise<void> {
+  const child = await runCapturedChild(options.command, options.deployArgs, {
+    cwd: options.cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs ?? MIGRATION_DEPLOY_KILL_TIMEOUT_MS,
+  });
+  if (child.status === 0 && !child.timedOut) return;
+
+  const rows = await options.database.$queryRawUnsafe<MigrationRow[]>(
+    'SELECT migration_name, checksum, finished_at, rolled_back_at FROM "_prisma_migrations"',
+  );
+  const decision = await decideAutoResolve({
+    child,
+    rows,
+    reviewed: options.reviewed,
+    presentObjects: (name) => listPresentMigrationObjects(options.database, options.reviewed.get(name)!.objects),
+  });
+  if (!decision.resolve) throw new Error(decision.message);
+
+  const resolved = spawnSync(options.command, options.resolveArgs(decision.name), {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: 'utf8',
+    stdio: 'inherit',
+  });
+  if (resolved.status !== 0) {
+    throw new Error(`migrate resolve for ${decision.name} exited with status ${resolved.status ?? 1}; the migration is still marked failed`);
+  }
+  throw new Error(
+    `error class unknown (aborted transaction); migration ${decision.name} marked rolled back; elapsed ${seconds(child.elapsedMs)}s since the migrate started; retry the deploy`,
+  );
+}
+
+function migrateDeploy(database: QueryClient): Promise<void> {
+  return migrateDeployWithAutoResolve({
+    database,
+    command: process.execPath,
+    deployArgs: [prismaBin, 'migrate', 'deploy', '--schema', prismaSchema],
+    resolveArgs: (name) => [prismaBin, 'migrate', 'resolve', '--rolled-back', name, '--schema', prismaSchema],
+    cwd: repoRoot,
+    env: migrationChildEnv(process.env),
+    reviewed: reviewedAutoResolvableMigrations(),
+  });
 }
 
 async function sha256(path: string): Promise<string> {
@@ -313,7 +680,7 @@ async function deployAdditiveMigrationsBeforeTc488(
       // Prisma has no single-migration flag. The destructive custody cutover
       // is the only parked entry; the reviewed expand migrations remain visible
       // to the normal engine and are applied in their migration order.
-      run(process.execPath, [prismaBin, 'migrate', 'deploy', '--schema', prismaSchema]);
+      await migrateDeploy(database);
     } finally {
       for (const name of movedMigrations.reverse()) {
         await rename(join(temporaryRoot, name), join(migrationsDir, name));
@@ -458,6 +825,7 @@ async function deployAdditiveMigrationsBeforeTc488(
 
 async function main() {
   requirePostgresUrl();
+  migrationChildEnv(process.env); // fails fast, before any database access, if the URL cannot carry the lock timeout
   await assertReviewedMigrationFiles();
   const database = createPrismaClient({ connectionString: process.env.DATABASE_URL });
   try {
@@ -478,7 +846,7 @@ async function main() {
 
     if (mode === 'full') {
       runBunScript('scripts/assert-production-migration-ready.ts');
-      runBunScript('db:migrate:apply');
+      await migrateDeploy(database); // the command of db:migrate:apply, run so a hung child is killed and a failure can be read
       runBunScript('db:migrate:verify');
       return;
     }
