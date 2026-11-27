@@ -39,6 +39,8 @@ export type FakeBootstrapRow = {
   failureCode: string | null;
   failureReason: string | null;
   sweepAttempts: number;
+  /** Who asked for the setup; absent on a row made before the column. */
+  authority?: string | null;
 };
 
 export type NewBootstrapRow = Pick<

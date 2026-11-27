@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import {
     embedCreateAccount,
     embedSendEmailOtp,
@@ -8,6 +9,8 @@
     embedVerifyEmailOtp,
     isEmbedContext,
   } from '$lib/embed-passkey';
+  import { embedPasskeySignInErrorText } from '$lib/embed-passkey-not-allowed';
+  import { webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -18,8 +21,13 @@
   import Button from '$lib/components/ui/button.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
+  /** How long the choices wait for the provider list before they render without the Google and Apple rows. */
+  const PROVIDERS_WAIT_MS = 1000;
+
   interface Props {
     prompt: string;
+    /** Shown above the prompt: why the frame asks for a sign-in again. */
+    note?: string | null;
     onauthenticated: () => void;
     hasEoa?: boolean;
     onuseexternalwallet?: () => void;
@@ -27,15 +35,19 @@
     passkeysSupported?: boolean;
     /** Opens account recovery; offered when an email has no account. */
     onrecover?: () => void;
+    /** The sign page's own flow id: a passkey sign-in made here covers that request's Approve. */
+    flowId?: string;
   }
 
   let {
     prompt,
+    note = null,
     onauthenticated,
     hasEoa = false,
     onuseexternalwallet,
     passkeysSupported = true,
     onrecover,
+    flowId,
   }: Props = $props();
 
   type BusyAction = 'send-email' | 'verify-email' | 'create-account' | 'passkey' | SocialProviderId;
@@ -48,9 +60,22 @@
   let error = $state('');
   let busy = $state<BusyAction | null>(null);
   let providers = $state<SocialProviderId[]>([]);
+  // The first paint of the choices waits for the provider list, bounded; a list that arrives later adds its rows.
+  let providersSettled = $state(false);
 
-  onMount(async () => {
-    providers = await loadConfiguredSocialProviders().catch(() => []);
+  onMount(() => {
+    let live = true;
+    const bound = setTimeout(() => { providersSettled = true; }, PROVIDERS_WAIT_MS);
+    loadConfiguredSocialProviders().catch(() => []).then((found) => {
+      if (!live) return;
+      clearTimeout(bound);
+      providers = found;
+      providersSettled = true;
+    });
+    return () => {
+      live = false;
+      clearTimeout(bound);
+    };
   });
 
   async function sendOtp() {
@@ -60,7 +85,7 @@
       await embedSendEmailOtp(email);
       step = 'otp';
     } catch (cause: any) {
-      error = cause.message || 'Failed to send code';
+      error = sendCodeErrorMessage(cause, { email, passkey: passkeysSupported, fallback: 'Failed to send code' });
     } finally {
       busy = null;
     }
@@ -108,9 +133,9 @@
     error = '';
     try {
       if (isEmbedContext()) {
-        await embedSignInPasskey();
+        await embedSignInPasskey(flowId ? webSignFlowHeaders(flowId) : undefined);
       } else {
-        const result = await authClient.signIn.passkey();
+        const result = await authClient.signIn.passkey(flowId ? { fetchOptions: { headers: webSignFlowHeaders(flowId) } } : undefined);
         if (result.error) {
           error = authErrorMessage(result.error, 'Passkey sign-in failed');
           return;
@@ -118,7 +143,7 @@
       }
       onauthenticated();
     } catch (cause: any) {
-      error = cause.message || 'Passkey sign-in failed';
+      error = embedPasskeySignInErrorText(cause, step);
     } finally {
       busy = null;
     }
@@ -146,6 +171,9 @@
 </script>
 
 <div class="flex flex-col items-center justify-center py-2 text-center">
+  {#if note && step !== 'new-account'}
+    <p class="mb-3 w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 text-sm text-surface-700" data-testid="sign-in-note">{note}</p>
+  {/if}
   {#if step !== 'new-account'}
     <p class="mb-4 text-sm text-surface-500">{prompt}</p>
   {/if}
@@ -156,7 +184,23 @@
     </div>
   {/if}
 
-  {#if step === 'choices'}
+  {#if step === 'choices' && !providersSettled}
+    <!-- The rows take the height the settled choices have with Google and Apple configured, so the frame does not move when they appear. -->
+    <div class="flex w-full flex-col" aria-busy="true" data-testid="sign-in-choices-pending">
+      <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+      <div class="mt-3 flex w-full flex-col gap-3">
+        <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+        <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+      </div>
+      {#if passkeysSupported}
+        <div class="my-4 h-4 w-full"></div>
+        <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+      {/if}
+      {#if hasEoa && onuseexternalwallet}
+        <div class="mt-3 h-4 w-full"></div>
+      {/if}
+    </div>
+  {:else if step === 'choices'}
     <Button onclick={() => { step = 'email'; error = ''; }} disabled={busy !== null} class="w-full rounded-xl">
       Continue with email
     </Button>

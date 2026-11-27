@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import { api } from '$lib/api';
   import { readSignedSessionToken, setSessionToken } from '$lib/embed-passkey';
   import { newAccountSignupToken } from '$lib/email-signup';
@@ -17,8 +18,10 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
   import TermsStep from '$lib/components/auth/terms-step.svelte';
-  import { pendingTerms, type TermsStatus } from '$lib/terms';
+  import { checkTerms, type TermsStatus } from '$lib/terms';
+  import { termsCheckedFirst } from '$lib/terms-release';
 
   let { data } = $props();
 
@@ -33,13 +36,26 @@
   let loadingProvider = $state<SocialProviderId | null>(null);
   // TC-3232: a new account accepts the Terms before the passkey offer or anything else.
   let terms = $state<{ status: TermsStatus; email: string; next: () => void | Promise<void> } | null>(null);
+  // The status couldn't be read: Try again runs the check again, then `next`. Sign-up never continues past it.
+  let termsRetry = $state<(() => void | Promise<void>) | null>(null);
 
   async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
-    const status = await pendingTerms();
-    if (!status) return false;
+    if (!termsCheckedFirst()) return false;
+    const result = await checkTerms();
+    if (result.state === 'accepted') return false;
+    if (result.state !== 'required') {
+      termsRetry = next;
+      return true;
+    }
     const session = await authClient.getSession().catch(() => null);
-    terms = { status, email: session?.data?.user.email ?? email, next };
+    terms = { status: result.status, email: session?.data?.user.email ?? email, next };
     return true;
+  }
+
+  async function retryTermsCheck() {
+    const next = termsRetry;
+    termsRetry = null;
+    if (next && !await askTermsFirst(next)) await next();
   }
 
   async function termsAccepted() {
@@ -103,7 +119,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
-        error = authErrorMessage(result.error, 'Failed to send code');
+        error = sendCodeErrorMessage(result.error, { email, passkey: false, fallback: 'Failed to send code' });
       } else {
         step = 'otp';
       }
@@ -291,6 +307,8 @@
     onaccepted={termsAccepted}
     onsignin={() => { terms = null; otp = ''; error = ''; step = 'email'; }}
   />
+{:else if termsRetry}
+  <TermsCheckFailed onretry={retryTermsCheck} />
 {:else}
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">

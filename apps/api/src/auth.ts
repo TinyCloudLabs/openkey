@@ -37,6 +37,7 @@ import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
+import { FLOW_PASSKEY_HEADER, recordFlowPasskeyAfterHook } from './services/approval-passkey';
 import { passkeyEnrolmentPlugin, type ResolvedSession } from './services/passkey-enrolment';
 import {
   appleTokenClientId,
@@ -47,8 +48,10 @@ import {
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
 import { signInCodeStorage } from './services/email-code-storage';
+import { EMAIL_CODE_ALLOWED_ATTEMPTS, emailCodeAtomicVerify } from './services/email-code-atomic-verify';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
+import { EMAIL_OTP_ADDRESS_LIMIT_OFF } from './middleware/email-otp-rate-limit';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
@@ -58,6 +61,7 @@ import { confirmedSocialProvider, socialConfirmation } from './services/social-c
 import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
 import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
+import { emailOtpDelivery } from './services/email-otp-delivery';
 import { withReviewerDatabase } from './services/reviewer-database';
 import { reviewerAuth } from './services/reviewer-auth';
 import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
@@ -76,6 +80,7 @@ const resend = process.env.RESEND_API_KEY
 
 // Environment-based configuration
 const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
+const otpDelivery = emailOtpDelivery(resend, isDev);
 const rpID = process.env.WEBAUTHN_RP_ID!;
 const origin = process.env.WEBAUTHN_ORIGIN!;
 
@@ -206,6 +211,12 @@ const passkeyFreshnessPlugin = {
           (ctx.body as { response?: { id?: unknown } } | undefined)?.response?.id,
         );
       }) as AuthMiddleware,
+    }, {
+      // One passkey per interaction: a passkey sign-in that names its native request covers that request's Approve.
+      matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
+      handler: (async (ctx: { headers?: Headers; body?: unknown; context: { returned?: unknown } }) => {
+        return recordFlowPasskeyAfterHook(prisma, ctx.context.returned, ctx.headers?.get(FLOW_PASSKEY_HEADER), ctx.body);
+      }) as AuthMiddleware,
     }],
   },
 } satisfies BetterAuthPlugin;
@@ -269,26 +280,37 @@ function currentRequestResource(): unknown {
   return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
 }
 function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
-  const cappedLifetime = (seconds: number) => {
+  // An Apple reviewer's tokens end on the source deadline in whole seconds: exp = iat + lifetime <= floor(deadline).
+  // The provider samples an integral iat and reads `accessTokenExpiresIn` (or `idTokenExpiresIn`) in the same
+  // synchronous step, so the second this getter reads is iat's. It reads `refreshTokenExpiresIn` for that same iat only
+  // after `customTokenResponseFields` has awaited the native code exchange, when the clock may be seconds later. The
+  // access read keeps its second for the endpoint call and the refresh read subtracts that second. A second read
+  // after iat only shortens a lifetime, so exp never passes the deadline (the database adapter also caps every row).
+  const accessTokenSecond = new WeakMap<object, number>();
+  const cappedLifetime = (seconds: number, token: 'access' | 'id' | 'refresh') => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    // Native provider tokens use an integral iat sampled before this getter.
-    // Avoid subtracting the fractional second twice while keeping exp <= the
-    // source deadline (the database adapter also caps every row).
-    const remaining = reviewer.store === 'apple'
-      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
-      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    let remaining: number;
+    if (reviewer.store === 'apple') {
+      const call = endpointContext.getStore();
+      let second = Math.floor(Date.now() / 1000);
+      if (call && token === 'access') accessTokenSecond.set(call, second);
+      if (call && token === 'refresh') second = accessTokenSecond.get(call) ?? second;
+      remaining = Math.floor((reviewer.deadline ?? Date.now()) / 1000) - second;
+    } else {
+      remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    }
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
     enumerable: true,
-    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource())),
+    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource()), 'access'),
   });
   Object.defineProperty(plugin.options, 'idTokenExpiresIn', {
-    enumerable: true, get: () => cappedLifetime(3600),
+    enumerable: true, get: () => cappedLifetime(3600, 'id'),
   });
   Object.defineProperty(plugin.options, 'refreshTokenExpiresIn', {
-    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600),
+    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600, 'refresh'),
   });
   return plugin;
 }
@@ -323,6 +345,12 @@ export const auth = betterAuth({
     provider: 'postgresql',
     transaction: true,
   }),
+
+  // The email-code endpoints are limited per target email by middleware/email-otp-rate-limit.ts, ahead of this
+  // handler; the address-keyed limit is off for them because the address is caller-chosen or shared.
+  rateLimit: {
+    customRules: EMAIL_OTP_ADDRESS_LIMIT_OFF,
+  },
 
   // Passwords stay disabled; email OTP is the default authentication path.
   emailAndPassword: {
@@ -405,26 +433,7 @@ export const auth = betterAuth({
     // Email OTP is the default registration and sign-in method. A verified code
     // for an unknown email asks the user to confirm before an account exists.
     emailOTP({
-      async sendVerificationOTP({ email, otp, type }) {
-        if (!resend) {
-          if (isDev) log('warn', 'otp_delivery_unconfigured');
-          return;
-        }
-
-        await resend.emails.send({
-          from: 'OpenKey <noreply@openkey.so>',
-          to: email,
-          subject: 'Verify your OpenKey email',
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
-              <h2 style="color: #1a1a1a; margin-bottom: 24px;">Your verification code</h2>
-              <p style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #667eea; margin: 32px 0; text-align: center;">${otp}</p>
-              <p style="color: #666; font-size: 14px;">This code expires in 5 minutes.</p>
-              <p style="color: #888; font-size: 12px; margin-top: 24px;">If you didn't request this, you can safely ignore this email.</p>
-            </div>
-          `,
-        });
-      },
+      sendVerificationOTP: otpDelivery.sendVerificationOTP,
       generateOTP({ email }: { email: string }) {
         if (process.env.TEE_MODE === 'development' && email === 'test@openkey.dev') {
           return '000000';
@@ -433,11 +442,13 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
+      allowedAttempts: EMAIL_CODE_ALLOWED_ATTEMPTS,
       // Codes are stored hashed, so a resend mails a new code and the earlier
       // one stops working; the sign-in page asks for the latest email.
       resendStrategy: 'rotate',
       storeOTP: signInCodeStorage,
     }),
+    otpDelivery.plugin,
     emailSignupConfirmation(prisma),
 
     // Bearer plugin - returns the signed session token in the set-auth-token header, and accepts
@@ -606,6 +617,9 @@ export const auth = betterAuth({
       },
     }))) as any,
     reviewerAuth(prisma, origin),
+    // Last: reviewer sign-in answers its own paths before a code is graded, and every other hook that
+    // can refuse one of the code endpoints runs first, so no code is spent on a request that is refused.
+    emailCodeAtomicVerify(prisma),
   ],
 
   // Provider entries are present only when every required secret is configured.

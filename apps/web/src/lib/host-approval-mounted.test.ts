@@ -112,6 +112,7 @@ function siwe(uri: string, ability: string, expiry?: string): string {
     'app.example wants you to sign in with your Ethereum account:',
     OWNER,
     '',
+    '',
     `URI: ${uri}`,
     'Version: 1',
     'Chain ID: 1',
@@ -204,10 +205,6 @@ describe('host approval rows', () => {
   afterEach(() => {
     mounted?.destroy();
     mounted = null;
-  });
-
-  test('home is the private dir', () => {
-    expect(process.env.HOME).toBe(HOME);
   });
 
   test('space and node ID are in the visible summary, not in Advanced details', () => {

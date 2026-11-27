@@ -32,6 +32,73 @@ export const LOADER = {
   },
 } as const;
 
+/** The starting window and its upper limit on a signed approval request. */
+export const APPROVAL_EXPIRY = {
+  /** @deprecated The approval page offers a choice of 1 hour or the length the app asked for, so this line is not shown. */
+  onceStart: 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.',
+  shortenLimit: 'This approval can last up to {duration}.',
+  /** A signed request for a secret's own key whose start is shorter than its maximum. */
+  lengthen: 'This request starts at {start}, as the app asked. You can choose up to {max}.',
+  /** The same request when it starts at its maximum. Shorter lengths are still offered. */
+  lengthFixed: "This request lasts {max}, as the app asked. That's the most it can be.",
+} as const;
+
+/**
+ * A signed approval request for one named secret and decrypt. `{requester}` is named only when OpenKey knows it
+ * from the request's signature; any other request gets `headingUnnamed`.
+ */
+export const ONE_SECRET = {
+  heading: '{requester} wants to use one secret',
+  headingUnnamed: 'A request to use one secret',
+  hint: 'Review it, choose how long, then approve.',
+  /** Under the "Read the secret {NAME}" row, shown only when the request's one decrypt is that secret's own key. */
+  decryptNote: 'Lets it open only this secret.',
+} as const;
+
+/**
+ * A one-tap approval request whose signer OpenKey can't name: the page says so and names no requester.
+ * The "Returned to" row and the receipt's "Sent to" row are left out.
+ */
+export const UNVERIFIED_REQUESTER = {
+  /** The "Requested by" value, with `line` under it. */
+  name: 'Not verified',
+  line: 'OpenKey can’t confirm who made this link.',
+  /** In place of `DONE.approved.line`. */
+  approvedLine: 'You can close this window.',
+  /** In place of `DONE.declined.line`. */
+  declinedLine: 'Whoever sent this link has been told no. If that was a mistake, ask for a new link.',
+  /**
+   * One line under `line`, set only when the link's signer is a listed requester and its request is outside what that
+   * requester may ask for. `{app}` is the listed requester's verified name; the "Requested by" value stays `name`.
+   * `unreadable` is for a request OpenKey could not read, or one with no permissions.
+   */
+  reasons: {
+    lifetime: 'This link asks for longer access than {app} is allowed to ask for.',
+    service: 'This link asks for a service {app} is not allowed to use.',
+    action: 'This link asks to do something {app} is not allowed to do.',
+    path: 'This link asks for data outside what {app} is allowed to reach.',
+    space: 'This link asks for a space {app} is not allowed to ask for.',
+    renewal: 'This link asks to renew access, which {app} is not allowed to ask for.',
+    context: '{app} doesn’t send this kind of request.',
+    unreadable: 'OpenKey couldn’t read this link’s request.',
+  },
+} as const;
+
+/** The key an approval request's access goes to, under the "Requested by" line: this label, then the key. */
+export const RECIPIENT_KEY = {
+  label: 'Access goes to',
+} as const;
+
+/**
+ * The owner approves in OpenKey's own page and OpenKey sets up their TinyCloud space as part of it (a signed approval
+ * request or a device request). `creates` is for an approval that sets the space up. `requesterText` labels the
+ * requester's reason as written by the requester.
+ */
+export const OWN_PAGE_APPROVAL = {
+  creates: 'Approving also creates your TinyCloud space, where your data from this request is kept.',
+  requesterText: "Written by whoever sent this request. OpenKey can't confirm it.",
+} as const;
+
 export const CLOSE_TAB = 'Close this tab';
 export const TAB_KEPT_OPEN = 'Your browser kept this tab open. Close it from your browser.';
 
@@ -97,6 +164,8 @@ export const DONE = {
     heading: 'Signed. Go back to your terminal.',
     line: 'Your terminal has your signature and will finish revoking the permission.',
   },
+  /** The approved /delegate page with no code says this in place of `approved.line`: `{returnTo}` is where the person goes back to (the CLI, Claude…). */
+  returnTo: 'You can close this window and return to {returnTo}.',
   receipt: {
     access: 'Access',
     ends: 'Ends',
@@ -112,6 +181,18 @@ export const DONE = {
       terminalThatShowedCode: 'The terminal that showed the code',
       requester: '{requester}',
     },
+  },
+  /**
+   * How the app's TinyCloud space came out, in a quiet box under the line. `{space}` is the space's short name.
+   * `failed` comes with the server's reason in a fold named `details`.
+   */
+  spaceNote: {
+    ready: 'Your ‘{space}’ space in TinyCloud is ready.',
+    pending: 'Your ‘{space}’ space in TinyCloud is being set up. This can take a minute. The app will continue when it’s ready.',
+    unknown: 'OpenKey couldn’t confirm that your ‘{space}’ space in TinyCloud is set up. The app will tell you what to do.',
+    failed: 'Setting up your ‘{space}’ space in TinyCloud didn’t finish. The app will tell you what to do.',
+    notReady: 'Your ‘{space}’ space in TinyCloud isn’t set up yet. The app will tell you what to do.',
+    details: 'Details',
   },
 } as const;
 
@@ -152,20 +233,38 @@ export const CODE = {
   expired: {
     eyebrow: 'Approved, but not delivered',
     heading: 'This code ran out of time',
-    line: 'Codes last 5 minutes and this one wasn’t used, so no access was handed over. Run the command again to get a new request.',
+    /** The approval is still good, so a new code can be made for it. */
+    lineNewCode: 'Code expired. Get a new code, or start again in the CLI.',
+    /** The approval has ended too: no new code can be made. */
+    lineApprovalEnded: 'Code expired, and so has this approval. Start again in the CLI.',
     box: 'Expired',
+    newCode: 'Get a new code',
+    newCodeFailed: 'Couldn’t get a new code. Try again, or start again in the CLI.',
   },
+  /** Read out once, when a minute is left. */
+  oneMinuteLeft: '1 minute left to use this code.',
 } as const;
 
 /** /device. */
 export const DEVICE = {
+  /** The browser tab's title. */
+  title: 'Review a sign-in request — OpenKey',
   eyebrow: 'Sign-in request from a device',
   headingCode: 'Does your terminal show this code?',
+  /** The code tiles' label: `{first}` and `{second}` are the code's halves, one character at a time ("W D J B"). */
+  codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
+  reasonNote: OWN_PAGE_APPROVAL.requesterText,
+  /** The list of what is asked for. */
+  asksList: 'Requested access',
+  sensitive: 'Sensitive',
   yesSignedOut: 'Yes, it matches. Sign in to review',
   yesSignedIn: 'Yes, it matches. Review the request',
   no: 'No, it’s different',
   advanced: 'Advanced details',
+  /** Inside the fold. */
+  shareOrigin: 'Share origin',
+  nodeOrigin: 'Node origin',
   noHeading: 'Stopped. Nothing was approved.',
   noLine: 'The code here didn’t match your terminal, so this request may have been started by someone else. It has been left unanswered and will expire by itself.',
   noClose: CLOSE_TAB,
@@ -191,7 +290,11 @@ export const POPUP_WINDOW = {
     heading: 'Signed in',
     line: 'This window will close. Go back to the other one.',
   },
-  failed: { heading: '{provider} sign-in didn’t finish' },
+  failed: {
+    heading: '{provider} sign-in didn’t finish',
+    /** When the return did not say which provider it came from. */
+    headingNoProvider: 'Sign-in didn’t finish',
+  },
   lost: {
     heading: 'This window lost its link to OpenKey',
     line: 'Close it and press the sign-in button again.',
@@ -212,6 +315,10 @@ export const REVOKE_REVIEW = {
     expires: 'Signature expires',
   },
   fold: 'Exact message to sign',
+  /** More than one of the account's keys owns the permission: the person picks the one to sign with. */
+  chooseKey: 'Choose the owner signing key',
+  /** A key with no name of its own. `{n}` is its index. */
+  keyFallback: 'Key {n}',
   cancel: 'Cancel',
   revoke: 'Revoke',
 } as const;
@@ -226,6 +333,11 @@ export const STOP_PARTS = {
   youChose: 'You chose',
   found: 'What OpenKey found',
   supportLabel: 'Details for support',
+  anotherProfile: 'Go back to the app or terminal and start again with a different profile.',
+  keyUnavailable: 'This key was archived or removed after you opened this page. Choose one of your other keys to continue.',
+  restartRequest: 'Start again from the app or command.',
+  keyName: 'Key {index}',
+  wantsWallet: 'wants {short}',
   copy: 'Copy',
   copied: 'Copied',
   buttons: {

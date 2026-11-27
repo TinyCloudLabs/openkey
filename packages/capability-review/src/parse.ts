@@ -15,6 +15,8 @@ import { actionId, permissionId } from "./ids.js";
 import { classifyRecapEntry, classifySeverityFromActions } from "./classify.js";
 import { isKeyDeleteAbility } from "./key-resource.js";
 import { parseEncryptionResource } from "./encryption-resource.js";
+import { parseSiweFields, siweExpirationTime } from "./siwe-fields.js";
+import { PROTOCOL_HINT } from "./copy.js";
 import type {
   CapabilityAction,
   CapabilityGrant,
@@ -45,6 +47,8 @@ export interface ParseContext {
    * required-action heuristics.
    */
   requiredActionIds?: string[];
+  /** Exact encryption resources named by the widget renewal request. */
+  renewalOnlyResources?: readonly string[];
   /**
    * Explicit selection to render. If omitted, all parsed actions are
    * considered selected (default consent).
@@ -79,9 +83,6 @@ const SIWE_ADDRESS_LINE = /^0x[a-fA-F0-9]{40}$/m;
 const SIWE_URI_LINE = /^URI: (.+)$/m;
 const SIWE_VERSION_LINE = /^Version: (.+)$/m;
 const SIWE_CHAIN_LINE = /^Chain ID: (\d+)$/m;
-const SIWE_NONCE_LINE = /^Nonce: (.+)$/m;
-const SIWE_ISSUED_LINE = /^Issued At: (.+)$/m;
-const SIWE_EXPIRATION_LINE = /^Expiration Time: (.+)$/m;
 // ReCap capabilities are appended by TinyCloud as a resources list.
 const SIWE_RESOURCE_LINE = /^- (.+)$/gm;
 
@@ -156,38 +157,27 @@ function looksLikeSiwe(message: string): boolean {
   );
 }
 
-function firstMatch(re: RegExp, text: string): string | null {
-  const m = text.match(re);
-  return m && m[1] ? m[1] : null;
-}
-
+/** The immutable fields, read by the shared grammar (`parseSiweFields`); null when the message does not parse or has no expiry. */
 function parseImmutableSiweFields(
   message: string,
   signer: SignerInfo,
 ): ImmutableSiweFields | null {
-  const domain = firstMatch(SIWE_DOMAIN_LINE, message);
-  const addrMatch = message.match(SIWE_ADDRESS_LINE);
-  const chainRaw = firstMatch(SIWE_CHAIN_LINE, message);
-  const nonce = firstMatch(SIWE_NONCE_LINE, message);
-  const issuedAt = firstMatch(SIWE_ISSUED_LINE, message);
-  const expirationTime = firstMatch(SIWE_EXPIRATION_LINE, message);
-  if (!domain || !addrMatch || !chainRaw || !nonce || !issuedAt || !expirationTime) {
-    return null;
-  }
-  const address = addrMatch[0];
-  const chainId = Number(chainRaw);
+  const parsed = parseSiweFields(message);
+  if (!parsed.ok) return null;
+  const fields = parsed.fields;
+  if (fields.expirationTime === undefined) return null;
   // The prepared session carries the JWK as an out-of-band field, not in
   // the SIWE. Keep the placeholder null so the caller can back-fill it
   // after issuing the /prepare context.
   return {
-    address,
-    chainId,
-    domain,
-    issuedAt,
-    expirationTime,
+    address: fields.address,
+    chainId: Number(fields.chainId),
+    domain: `${fields.scheme !== undefined ? `${fields.scheme}://` : ""}${fields.domain}`,
+    issuedAt: fields.issuedAt,
+    expirationTime: fields.expirationTime,
     spaceId: /* filled by caller */ signer.address, // placeholder; caller must overwrite
     jwk: null,
-    nonce,
+    nonce: fields.nonce,
   };
 }
 
@@ -531,12 +521,11 @@ function decodeRecapUri(
  * Extract ReCap resource lines and split them into (service, space, path,
  * actions) tuples. Empty on non-ReCap SIWE.
  *
- * ReCap resources take one of two forms:
- *   - `urn:recap:<b64>` (canonical wire form): base64url-encoded JSON with an
- *     `att` map keyed by resource URI. This is what a signed TinyCloud SIWE
- *     actually carries; see decodeRecapUri.
- *   - `<service>/<verb>:<space>[/<path>]` (legacy expanded form): kept for
- *     backward compatibility with older tinycloud-node revisions.
+ * The canonical wire form is `urn:recap:<b64>`: base64url-encoded JSON with an
+ * `att` map keyed by resource URI (see decodeRecapUri). The node accepts only
+ * URI resources, and parseCapabilityReview refuses any SIWE the node's grammar
+ * refuses before this runs, so the old expanded `<service>/<verb>:<space>`
+ * lines (not URIs) never reach it.
  *
  * Emits warnings for malformed input instead of throwing.
  */
@@ -558,79 +547,12 @@ function parseRecapResources(message: string): {
       continue;
     }
 
-    // Legacy expanded form: <service>/<verb>:<space>[/<path>]
-    const firstColon = raw.indexOf(":");
-    if (firstColon < 0) {
-      warnings.push({
-        code: "malformed-space",
-        message: `Resource "${raw}" is missing a service:space separator.`,
-      });
-      continue;
-    }
-    const head = raw.slice(0, firstColon);
-    const rest = raw.slice(firstColon + 1);
-    const slash = head.indexOf("/");
-    if (slash < 0) {
-      warnings.push({
-        code: "malformed-space",
-        message: `Resource "${raw}" is missing a service/action separator.`,
-      });
-      continue;
-    }
-    const service = head.slice(0, slash);
-    const action = head.slice(slash + 1);
-    // The space URI is `tinycloud:...:<name>`; the path is anything after
-    // the space name. We split on the LAST `:` after `tinycloud:` to keep
-    // colons inside path elements.
-    let space = rest;
-    let path = "";
-    if (rest.startsWith("tinycloud:")) {
-      // Walk forward `tinycloud:pkh:eip155:<chain>:<addr>:<name>[/<path>]`
-      // Path is delimited by the FIRST `/` after the space name.
-      const slashIdx = rest.indexOf("/");
-      if (slashIdx >= 0) {
-        space = rest.slice(0, slashIdx);
-        path = rest.slice(slashIdx + 1);
-      } else {
-        space = rest;
-        path = "";
-      }
-    }
-    // Legacy expanded form (`<service>/<verb>:<space>[/<path>]`) has no
-    // separate resource-side short-service segment on the wire; the
-    // service is fully implied by the ability head. resourceService is
-    // therefore null (no wire signal to compare against) and
-    // serviceMismatch is false. Include the null resourceService in the
-    // grouping key to keep this branch symmetrical with decodeRecapUri.
-    const key = `${service}\x00${space}\x00${path}\x00`;
-    let entry = grouped.get(key);
-    if (!entry) {
-      entry = {
-        service,
-        space,
-        path,
-        actions: [],
-        caveatsByAbility: {},
-        resourceService: null,
-        serviceMismatch: false,
-      };
-      grouped.set(key, entry);
-    }
-    // Dedupe actions but flag the duplicate so callers can note the redundancy.
-    const qualified = `${service}/${action}`;
-    if (entry.actions.includes(qualified)) {
-      warnings.push({
-        code: "duplicate-action",
-        message: `Action ${qualified} appears multiple times for ${space}/${path}.`,
-      });
-    } else {
-      entry.actions.push(qualified);
-    }
-    // Legacy expanded form cannot encode caveats — record empty list so
-    // downstream comparisons treat every ability uniformly.
-    if (entry.caveatsByAbility[qualified] === undefined) {
-      entry.caveatsByAbility[qualified] = [];
-    }
+    // Any other resource is a URI, whose scheme cannot hold the
+    // `<service>/<verb>` a TinyCloud grant needs.
+    warnings.push({
+      code: "malformed-space",
+      message: `Resource "${raw}" is missing a service/action separator.`,
+    });
   }
 
   // Deterministic order: sort grants by (service, space, path) and actions
@@ -709,13 +631,14 @@ function buildActions(
 
 function ownerFromSpace(space: string): {
   owner: string | null;
+  chainId: string | null;
   ownedBySelf: boolean | null;
 } {
   const match = space.match(
-    /^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40})(?::|$)/,
+    /^tinycloud:pkh:eip155:(\d+):(0x[a-fA-F0-9]{40})(?::|$)/,
   );
-  if (!match) return { owner: null, ownedBySelf: null };
-  return { owner: match[1]!.toLowerCase(), ownedBySelf: null };
+  if (!match) return { owner: null, chainId: null, ownedBySelf: null };
+  return { owner: match[2]!.toLowerCase(), chainId: match[1]!, ownedBySelf: null };
 }
 
 function buildGrants(
@@ -724,6 +647,7 @@ function buildGrants(
   signer: SignerInfo,
 ): CapabilityGrant[] {
   const signerAddress = signer.address.toLowerCase();
+  const renewalOnly = new Set(ctx.renewalOnlyResources);
   return entries.map((entry): CapabilityGrant => {
     // Resource ownership is relative to the signer. Application identity is
     // a separate manifest concern and must never be inferred from an EVM
@@ -740,13 +664,14 @@ function buildGrants(
     });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
+    // The URI of a top-level ReCap encryption resource is kept in space.
     const encryption = parseEncryptionResource(entry.space);
     // Top-level encryption resources use an owner DID rather than a
     // tinycloud: space. Check the chain as well as the address before saying
     // the named keys belong to the signer.
     const ownedBySelf = encryption
       ? encryption.ownerDid.toLowerCase() === `did:pkh:eip155:${signer.chainId}:${signer.address}`.toLowerCase()
-      : ownership.owner === null ? null : ownership.owner === signerAddress;
+      : ownership.owner === null ? null : ownership.owner === signerAddress && ownership.chainId === String(signer.chainId);
     // Blocker 4 follow-up (Defect 2): grant ID service segment is the
     // resource-derived service (canonicalized to `tinycloud.<short>`)
     // when the wire carried one; falls back to the ability-derived
@@ -759,6 +684,7 @@ function buildGrants(
     const idService = effectiveServiceForId(entry.service, entry.resourceService);
     return {
       id: permissionId(idService, entry.space, entry.path),
+      ...(encryption?.kind === "key" && renewalOnly.has(entry.space) ? { renewalOnly: true as const } : {}),
       family,
       severity,
       service: entry.service,
@@ -801,9 +727,29 @@ export function parseCapabilityReview(
     };
   }
 
+  // 1b. TC-3826: a SIWE the node's grammar refuses has no fields or expiry
+  //     OpenKey can show truthfully, so it is never signable: the same
+  //     non-signable state as a malformed ReCap.
+  if (!parseSiweFields(ctx.message).ok) {
+    warnings.push({ code: "unparseable-siwe", message: PROTOCOL_HINT["malformed-recap"] });
+    return {
+      version: 1,
+      protocol: "malformed-recap",
+      rawMessage: ctx.message,
+      requester: ctx.requester,
+      reason: ctx.reason,
+      signer: ctx.signer,
+      expiry: null,
+      immutable: null,
+      metadataTrust: ctx.metadataTrust,
+      permissions: [],
+      parseWarnings: warnings,
+    };
+  }
+
   // 2. Parse SIWE-level fields.
   const immutable = parseImmutableSiweFields(ctx.message, ctx.signer);
-  const expiration = firstMatch(SIWE_EXPIRATION_LINE, ctx.message);
+  const expiration = siweExpirationTime(ctx.message);
 
   const { entries, warnings: recapWarnings } = parseRecapResources(ctx.message);
   warnings.push(...recapWarnings);

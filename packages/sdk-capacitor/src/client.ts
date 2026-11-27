@@ -4,17 +4,26 @@ import {
   delegationNeedsRenewalNow,
   discoverOpenKeyServer,
   exchangeDelegationCode,
+  exchangeStepUpCode,
   generateCodeChallenge,
   generateCodeVerifier,
   generateSessionKeypair,
   generateState,
+  isNativeStepUpAppId,
+  nativeStepUpHomeBinding,
   normalizeDelegationPermissions,
   parseNativeCallback,
   renewDelegation,
+  requestStepUp,
   revokeDelegation,
+  revokeStepUp,
   sendParRequest,
   sessionKeypairFromJwk,
   type NativeDelegationPermission,
+  type NativeRenewalAsk,
+  type NativeRenewalReceipt,
+  type NativeStepUpPermission,
+  type NativeStepUpRenewal,
   type NativeFetch,
   type NativeLoginMethod,
   type NativeSessionJwk,
@@ -23,6 +32,7 @@ import {
   type OpenKeyServerMetadata,
   type SleepFn,
   type TinyCloudDelegation,
+  type TinyCloudStepUp,
 } from '@openkey/core';
 import { OpenKeyCapacitor, type OpenKeyCapacitorPlugin } from './plugin';
 import { NativeSessionStorage } from './storage';
@@ -31,6 +41,13 @@ import { verifyTinyCloudDelegation } from './verify';
 export interface OpenKeyNativeOptions {
   clientId: string;
   redirectUri: string;
+  /**
+   * Redirect URI of the step-up browser step (TC-3569); it must be registered on
+   * the client. Defaults to `redirectUri`, which every platform already routes
+   * back to the app. A separate URI needs its own route (Android's intent filter
+   * and plugin accept only `/callback` today).
+   */
+  stepUpRedirectUri?: string;
   issuer?: string;
   ephemeralSession?: boolean;
   /** Android Custom Tabs appearance. iOS ASWebAuthenticationSession ignores this option. */
@@ -46,6 +63,15 @@ export interface OpenKeyNativeOptions {
   verifyDelegation?: (delegation: TinyCloudDelegation) => Promise<void>;
 }
 
+export interface NativeSignInOptions {
+  capabilities: NativeDelegationPermission[];
+  ttlSeconds?: number;
+  siweNonce?: string;
+  loginHint?: string;
+  loginMethod?: NativeLoginMethod;
+  renewal?: NativeRenewalAsk;
+}
+
 export interface NativeTokens {
   accessToken: string;
   refreshToken: string;
@@ -57,6 +83,14 @@ export interface NativeSession {
   tokens: NativeTokens;
   delegation: TinyCloudDelegation;
   sessionKey: NativeSessionKeypair;
+  /** Use the node's effective expiry for this CID; OpenKey does not remint the grant. */
+  renewalMode?: 'leased';
+  /** New exchange only. Save the receipt separately only after successful node admission. */
+  renewal?: NativeRenewalReceipt | null;
+  /** Monotonic receipt arrival for the admission deadline. New exchange only. */
+  renewalArrivedAt?: number;
+  /** Step-ups held for this grant, by app id; absent when there are none. */
+  stepUps?: Record<string, TinyCloudStepUp>;
 }
 
 interface StoredSession {
@@ -67,6 +101,10 @@ interface StoredSession {
   permissions: NativeDelegationPermission[];
   /** Milliseconds when the current refresh token was issued or rotated. */
   refreshIssuedAt?: number;
+  /** The device can use its bound token only to stop the standing lease after OAuth expiry. */
+  standingRevokeUntil?: number;
+  /** Step-ups held for this grant, by app id. Absent in sessions stored before TC-3569. */
+  stepUps?: Record<string, TinyCloudStepUp>;
 }
 
 interface PendingRevokeGrant {
@@ -74,6 +112,7 @@ interface PendingRevokeGrant {
   refreshToken: string;
   attempts: number;
   expiresAt: number;
+  standing?: true;
 }
 
 interface PendingRevokeRecord {
@@ -88,6 +127,7 @@ interface ExchangeIntent {
   privateJwk: NativeSessionJwk & { d: string };
   refreshToken?: string;
   expiresAt: number;
+  standing?: true;
 }
 
 function asNativeError(error: unknown): OpenKeyNativeError {
@@ -115,7 +155,29 @@ class SessionReadError extends OpenKeyNativeError {
   }
 }
 
+/** The step-ups that have not expired, or `undefined` when none have. */
+function liveStepUps(stepUps: Record<string, TinyCloudStepUp> | undefined, now = Date.now()): Record<string, TinyCloudStepUp> | undefined {
+  if (!stepUps) return undefined;
+  const live = Object.fromEntries(Object.entries(stepUps).filter(([, stepUp]) => Date.parse(stepUp.expiresAt) > now));
+  return Object.keys(live).length > 0 ? live : undefined;
+}
+
+/** A stored `stepUps` of the wrong shape never invalidates the sign-in session around it. */
+function sanitizeStepUps(value: unknown): Record<string, TinyCloudStepUp> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const clean: Record<string, TinyCloudStepUp> = {};
+  for (const [appId, entry] of Object.entries(value)) {
+    const candidate = entry as Partial<TinyCloudStepUp> | null;
+    if (isNativeStepUpAppId(appId) && candidate && typeof candidate === 'object' && candidate.appId === appId &&
+        typeof candidate.expiresAt === 'string' && Array.isArray(candidate.permissions)) {
+      clean[appId] = candidate as TinyCloudStepUp;
+    }
+  }
+  return Object.keys(clean).length > 0 ? clean : undefined;
+}
+
 const TERMINAL_RENEW_CODES = new Set(['INVALID_GRANT', 'CONSENT_REQUIRED', 'ACCESS_DENIED', 'SPACE_UNAVAILABLE']);
+const MAX_STANDING_LEASE_MS = 365 * 24 * 60 * 60_000;
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_REVOKE_ATTEMPTS = 20;
 
@@ -139,8 +201,9 @@ function refreshExpiry(record: StoredSession): number {
 }
 
 function pendingGrant(record: StoredSession): PendingRevokeGrant {
-  return { privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
-    attempts: 1, expiresAt: refreshExpiry(record) };
+  return { privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken, attempts: 1,
+    expiresAt: record.standingRevokeUntil ?? refreshExpiry(record),
+    ...(record.standingRevokeUntil !== undefined && { standing: true }) };
 }
 
 type SessionMatch = { key: string; token?: string } | null;
@@ -167,6 +230,8 @@ interface SessionCoordinator {
   signOutFlight?: Promise<void>;
   pendingRevokeFlight?: Promise<void>;
   activeIntents: Set<string>;
+  /** App ids with a step-up request in flight; one per app. */
+  activeStepUps: Set<string>;
 }
 
 // One queue and epoch per physical secure-store identity and key prefix.
@@ -177,7 +242,7 @@ function coordinatorFor(storeIdentity: object, namespace: string): SessionCoordi
   if (!byNamespace) { byNamespace = new Map(); coordinators.set(storeIdentity, byNamespace); }
   let coordinator = byNamespace.get(namespace);
   if (!coordinator) {
-    coordinator = { epoch: 0, signInAttempt: 0, signedOut: false, sessionEpochs: new Map(), storageTail: Promise.resolve(), renewTail: Promise.resolve(), renewals: new Map(), activeIntents: new Set() };
+    coordinator = { epoch: 0, signInAttempt: 0, signedOut: false, sessionEpochs: new Map(), storageTail: Promise.resolve(), renewTail: Promise.resolve(), renewals: new Map(), activeIntents: new Set(), activeStepUps: new Set() };
     byNamespace.set(namespace, coordinator);
   }
   return coordinator;
@@ -193,6 +258,7 @@ export class OpenKeyNative {
   private readonly storage: NativeSessionStorage;
   private readonly coordinator: SessionCoordinator;
   private metadataPromise?: Promise<OpenKeyServerMetadata>;
+  private readonly stepUpRedirectUri: string;
 
   constructor(private readonly options: OpenKeyNativeOptions) {
     if (options.browserTheme && (!/^#[0-9a-fA-F]{6}$/.test(options.browserTheme.toolbarColor) ||
@@ -200,6 +266,7 @@ export class OpenKeyNative {
       throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid browserTheme');
     }
     this.issuer = options.issuer ?? 'https://api.openkey.so/api/auth';
+    this.stepUpRedirectUri = options.stepUpRedirectUri ?? options.redirectUri;
     this.plugin = options.plugin ?? OpenKeyCapacitor;
     this.fetchFn = options.fetchFn;
     this.sleepFn = options.sleepFn;
@@ -228,6 +295,10 @@ export class OpenKeyNative {
     const redirect = new URL(options.redirectUri);
     if (redirect.protocol !== 'https:' && !redirect.hostname) {
       throw new OpenKeyNativeError('SERVER', 'Private-use redirect URI must have a host');
+    }
+    const stepUpRedirect = new URL(this.stepUpRedirectUri);
+    if (stepUpRedirect.protocol !== 'https:' && !stepUpRedirect.hostname) {
+      throw new OpenKeyNativeError('SERVER', 'Private-use step-up redirect URI must have a host');
     }
     // Initialization is synchronous for callers; cleanup runs in the background.
     // A transient retry remains in secure storage for the next opportunity.
@@ -279,8 +350,10 @@ export class OpenKeyNative {
     if (value == null) return null;
     try {
       const stored = JSON.parse(value) as StoredSession;
-      if (stored.version !== 1 || !stored.tokens?.refreshToken || !stored.delegation || !stored.privateJwk) throw new Error();
+      if (stored.version !== 1 || !stored.tokens?.refreshToken || !stored.delegation || !stored.privateJwk ||
+          (stored.standingRevokeUntil !== undefined && !Number.isFinite(stored.standingRevokeUntil))) throw new Error();
       sessionKeypairFromJwk(stored.privateJwk);
+      stored.stepUps = sanitizeStepUps(stored.stepUps);
       return stored;
     } catch {
       throw new SessionReadError('Stored OpenKey session is invalid', true);
@@ -334,11 +407,15 @@ export class OpenKeyNative {
       catch { throw new OpenKeyNativeError('STORAGE', 'Exchange intent could not be saved'); }
     });
   }
-  private markExchangeToken(attemptId: string, token: string): Promise<void> {
+  private markExchangeToken(attemptId: string, token: string, standingLeaseExpiresAt?: number): Promise<void> {
     return this.withStorage(async () => {
       const intent = await this.readExchangeIntent();
       if (!intent || intent.attemptId !== attemptId) throw new OpenKeyNativeError('STORAGE', 'Exchange intent was lost before its token could be saved');
       intent.refreshToken = token;
+      if (standingLeaseExpiresAt !== undefined && Number.isFinite(standingLeaseExpiresAt)) {
+        intent.standing = true;
+        intent.expiresAt = Math.max(intent.expiresAt, Math.min(standingLeaseExpiresAt, Date.now() + MAX_STANDING_LEASE_MS));
+      }
       try { await this.plugin.secureStoreSet({ key: this.exchangeIntentKey, value: JSON.stringify(intent) }); }
       catch { throw new OpenKeyNativeError('STORAGE', 'Exchanged refresh token could not be saved'); }
     });
@@ -372,7 +449,7 @@ export class OpenKeyNative {
       const error = asNativeError(caught);
       if (transientRevoke(error)) {
         await this.appendPendingRevoke({ privateJwk: intent.privateJwk, refreshToken: intent.refreshToken,
-          attempts: 1, expiresAt: intent.expiresAt });
+          attempts: 1, expiresAt: intent.expiresAt, ...(intent.standing && { standing: true }) });
         await this.clearExchangeIntent(intent.attemptId);
         throw error;
       }
@@ -381,7 +458,7 @@ export class OpenKeyNative {
   }
   private appendPendingRevoke(grant: PendingRevokeGrant): Promise<void> {
     return this.withStorage(async () => {
-      if (Date.now() >= grant.expiresAt || grant.attempts >= MAX_REVOKE_ATTEMPTS) return;
+      if (Date.now() >= grant.expiresAt || (!grant.standing && grant.attempts >= MAX_REVOKE_ATTEMPTS)) return;
       const record = await this.readPending();
       if (record.grants.some((item) => item.refreshToken === grant.refreshToken)) return;
       record.grants.push(grant);
@@ -411,7 +488,7 @@ export class OpenKeyNative {
     const attempted = new Map<string, number>();
     let transient: OpenKeyNativeError | undefined;
     for (const grant of record.grants) {
-      if (Date.now() >= grant.expiresAt || grant.attempts >= MAX_REVOKE_ATTEMPTS) {
+      if (Date.now() >= grant.expiresAt || (!grant.standing && grant.attempts >= MAX_REVOKE_ATTEMPTS)) {
         settled.add(grant.refreshToken);
         continue;
       }
@@ -425,7 +502,7 @@ export class OpenKeyNative {
         if (!transientRevoke(error)) settled.add(grant.refreshToken);
         else {
           const attempts = grant.attempts + 1;
-          if (attempts >= MAX_REVOKE_ATTEMPTS) settled.add(grant.refreshToken);
+          if (!grant.standing && attempts >= MAX_REVOKE_ATTEMPTS) settled.add(grant.refreshToken);
           else attempted.set(grant.refreshToken, attempts);
           transient ??= error;
         }
@@ -520,10 +597,12 @@ export class OpenKeyNative {
   private present(record: StoredSession): NativeSession {
     const sessionKey = sessionKeypairFromJwk(record.privateJwk);
     this.coordinator.sessionEpochs.set(record.privateJwk.x, this.coordinator.epoch);
-    return { tokens: record.tokens, delegation: record.delegation, sessionKey };
+    const stepUps = liveStepUps(record.stepUps);
+    return { tokens: record.tokens, delegation: record.delegation, sessionKey,
+      ...(record.standingRevokeUntil !== undefined && { renewalMode: 'leased' as const }), ...(stepUps ? { stepUps } : {}) };
   }
 
-  signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }): Promise<NativeSession> {
+  signIn(options: NativeSignInOptions): Promise<NativeSession> {
     if (this.coordinator.signInFlight) return Promise.reject(new OpenKeyNativeError('UNAVAILABLE', 'A sign-in is already in progress'));
     const attempt = ++this.coordinator.signInAttempt;
     const pending = this.signInOnce(options, attempt);
@@ -532,7 +611,7 @@ export class OpenKeyNative {
     return pending;
   }
 
-  private async signInOnce(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }, attempt: number): Promise<NativeSession> {
+  private async signInOnce(options: NativeSignInOptions, attempt: number): Promise<NativeSession> {
     // Keep the existing session active until the replacement is ready to commit.
     await this.coordinator.signOutFlight?.catch(() => {});
     this.assertAttempt(attempt);
@@ -552,22 +631,11 @@ export class OpenKeyNative {
     const { requestUri } = await sendParRequest(metadata, {
       clientId: this.options.clientId, redirectUri: this.options.redirectUri, state,
       codeChallenge: challenge, sessionKey, permissions: options.capabilities,
-      ttlSeconds: options.ttlSeconds, siweNonce: options.siweNonce,
+      ttlSeconds: options.ttlSeconds, siweNonce: options.siweNonce, renewal: options.renewal,
       loginHint: options.loginHint, loginMethod: options.loginMethod,
     }, this.fetchFn);
     const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
-    let callback: string;
-    try {
-      callback = (await this.plugin.openAuthSession({ url, callbackScheme: new URL(this.options.redirectUri).protocol.slice(0, -1), callbackUrl: this.options.redirectUri, expectedState: state, ephemeral: this.options.ephemeralSession ?? true, browserTheme: this.options.browserTheme })).url;
-    } catch (error) { throw asNativeError(error); }
-    let returned: URL;
-    try { returned = new URL(callback); }
-    catch { throw new OpenKeyNativeError('SERVER', 'Callback URL is not parseable'); }
-    const expected = new URL(this.options.redirectUri);
-    if (returned.protocol !== expected.protocol || returned.host !== expected.host || returned.pathname !== expected.pathname) {
-      throw new OpenKeyNativeError('STATE_MISMATCH', 'Callback destination does not match redirect URI');
-    }
-    const { code } = parseNativeCallback({ url: callback, expectedState: state, issuer: this.issuer });
+    const code = await this.authorize(url, this.options.redirectUri, state);
     const intent: ExchangeIntent = { version: 1, attemptId: state, privateJwk: sessionKey.privateJwk,
       expiresAt: Date.now() + REFRESH_TTL_MS };
     this.coordinator.activeIntents.add(state);
@@ -579,8 +647,8 @@ export class OpenKeyNative {
       result = await exchangeDelegationCode({ metadata, code, redirectUri: this.options.redirectUri,
         clientId: this.options.clientId, codeVerifier: verifier, sessionKey,
         requestedPermissions: options.capabilities, expectedTinycloudHost: this.expectedHost(), fetchFn: this.fetchFn,
-        onRefreshToken: async (token) => {
-          try { await this.markExchangeToken(state, token); }
+        onRefreshToken: async (token, standingLeaseExpiresAt) => {
+          try { await this.markExchangeToken(state, token, standingLeaseExpiresAt); }
           catch (caught) {
             const error = asNativeError(caught);
             error.rotatedRefreshToken = token;
@@ -588,12 +656,18 @@ export class OpenKeyNative {
           }
         } });
       await this.verifier(result.delegation);
+      const refreshIssuedAt = Date.now();
+      const standingLeaseExpiry = result.renewal ? Date.parse(result.renewal.receipt.leaseExpiresAt) : 0;
+      const standingRevokeUntil = result.renewalMode === 'leased'
+        ? Math.max(refreshIssuedAt + REFRESH_TTL_MS, Math.min(standingLeaseExpiry, refreshIssuedAt + MAX_STANDING_LEASE_MS))
+        : undefined;
       const record: StoredSession = {
         version: 1,
         tokens: { accessToken: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn, accessTokenExpiresAt: result.accessTokenExpiresAt },
         delegation: result.delegation, privateJwk: sessionKey.privateJwk,
         permissions: normalizeDelegationPermissions(options.capabilities),
-        refreshIssuedAt: Date.now(),
+        refreshIssuedAt,
+        ...(standingRevokeUntil !== undefined && { standingRevokeUntil }),
       };
       await this.coordinator.renewTail;
       this.assertAttempt(attempt);
@@ -608,8 +682,10 @@ export class OpenKeyNative {
       const error = asNativeError(caught);
       const token = result?.refreshToken ?? error.rotatedRefreshToken;
       if (token) {
-        const settled = await this.abandonGrant({ privateJwk: sessionKey.privateJwk, refreshToken: token,
-          attempts: 1, expiresAt: grantExpiry(Date.now(), result?.delegation) }, metadata, true);
+        const intent = await this.withStorage(() => this.readExchangeIntent()).catch(() => null);
+        const settled = await this.abandonGrant({ privateJwk: sessionKey.privateJwk, refreshToken: token, attempts: 1,
+          expiresAt: intent?.standing ? intent.expiresAt : grantExpiry(Date.now(), result?.delegation),
+          ...(intent?.standing && { standing: true }) }, metadata, true);
         error.rotatedRefreshToken = undefined;
         if (settled) await this.clearExchangeIntent(state).catch(() => {});
         // A transient revoke keeps the token in pending revoke. The intent
@@ -629,7 +705,7 @@ export class OpenKeyNative {
     }
     if (!result) throw new OpenKeyNativeError('SERVER', 'Code exchange returned no result');
     if (epoch === undefined) throw new OpenKeyNativeError('SERVER', 'Sign-in session was not stored');
-    if (delegationNeedsRenewalNow(result.delegation)) {
+    if (result.renewalMode !== 'leased' && delegationNeedsRenewalNow(result.delegation)) {
       try {
         const renewed = await this.renewOnce({}, epoch);
         this.coordinator.signedOut = false;
@@ -650,7 +726,8 @@ export class OpenKeyNative {
     this.assertEpoch(epoch);
     if (!stored) throw new OpenKeyNativeError('SERVER', 'Sign-in session was not stored');
     this.coordinator.signedOut = false;
-    return this.present(stored);
+    return { ...this.present(stored),
+      ...(result.renewalMode === 'leased' && { renewal: result.renewal, renewalArrivedAt: result.renewalArrivedAt }) };
   }
 
   async current(): Promise<NativeSession | null> {
@@ -678,8 +755,7 @@ export class OpenKeyNative {
     const flightKey = `${epoch}:${JSON.stringify({ siweNonce: options.siweNonce ?? null, permissions: sorted })}`;
     const existing = this.coordinator.renewals.get(flightKey);
     if (existing) return existing;
-    const pending = this.coordinator.renewTail.then(() => this.renewOnce(options, epoch));
-    this.coordinator.renewTail = pending.then(() => {}, () => {});
+    const pending = this.inRenewQueue(() => this.renewOnce(options, epoch));
     this.coordinator.renewals.set(flightKey, pending);
     void pending.finally(() => { if (this.coordinator.renewals.get(flightKey) === pending) this.coordinator.renewals.delete(flightKey); }).catch(() => {});
     return pending;
@@ -689,6 +765,7 @@ export class OpenKeyNative {
     this.assertEpoch(epoch);
     let record = await this.readQueued();
     if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+    if (record.standingRevokeUntil !== undefined) throw new OpenKeyNativeError('CONSENT_REQUIRED', 'This delegation uses node renewal.');
     const metadata = await this.metadata();
     let conflictRetried = false;
     for (;;) {
@@ -700,6 +777,7 @@ export class OpenKeyNative {
           refreshToken: record.tokens.refreshToken, sessionKey: key,
           requestedPermissions: record.permissions, permissionsSubset: options.capabilities,
           siweNonce: options.siweNonce, expectedTinycloudHost: this.expectedHost(),
+          heldStepUps: record.stepUps,
           fetchFn: this.fetchFn, sleepFn: this.sleepFn });
       } catch (caught) {
         if (this.coordinator.epoch !== epoch) {
@@ -785,6 +863,7 @@ export class OpenKeyNative {
         this.assertEpoch(epoch);
       }
       record.delegation = renewed.delegation;
+      record.stepUps = await this.mergeStepUps(record.stepUps, renewed.stepUps);
       try { await this.write(record, epoch, { key: record.privateJwk.x, token: renewed.refreshToken }); }
       catch (caught) {
         if (this.coordinator.epoch !== epoch) {
@@ -803,6 +882,164 @@ export class OpenKeyNative {
       this.assertEpoch(epoch);
       return this.present(record);
     }
+  }
+
+  private inRenewQueue<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.coordinator.renewTail.then(operation);
+    this.coordinator.renewTail = pending.then(() => {}, () => {});
+    return pending;
+  }
+
+  /** Open the authorization sheet and return the code of the callback for `state`; the callback must land on `redirectUri`. */
+  private async authorize(url: string, redirectUri: string, state: string): Promise<string> {
+    let callback: string;
+    try {
+      callback = (await this.plugin.openAuthSession({ url, callbackScheme: new URL(redirectUri).protocol.slice(0, -1), callbackUrl: redirectUri, expectedState: state, ephemeral: this.options.ephemeralSession ?? true, browserTheme: this.options.browserTheme })).url;
+    } catch (error) { throw asNativeError(error); }
+    let returned: URL;
+    try { returned = new URL(callback); }
+    catch { throw new OpenKeyNativeError('SERVER', 'Callback URL is not parseable'); }
+    const expected = new URL(redirectUri);
+    if (returned.protocol !== expected.protocol || returned.host !== expected.host || returned.pathname !== expected.pathname) {
+      throw new OpenKeyNativeError('STATE_MISMATCH', 'Callback destination does not match redirect URI');
+    }
+    return parseNativeCallback({ url: callback, expectedState: state, issuer: this.issuer }).code;
+  }
+
+  private assertStepUpAllowed(appId: string): void {
+    if (!isNativeStepUpAppId(appId)) throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid step-up app id');
+    if (this.coordinator.signedOut) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is active');
+    if (this.coordinator.signOutFlight) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'Sign-out is in progress');
+    if (this.coordinator.signInFlight) throw new OpenKeyNativeError('UNAVAILABLE', 'Sign-in is in progress');
+  }
+
+  /**
+   * Add one framed app's read-only step-up to the current Home grant (TC-3569):
+   * request, system-browser consent, code exchange, then store the signed
+   * delegation with the session. The Home session, its refresh token and its
+   * stored record are untouched when any step fails.
+   */
+  async requestStepUp(options: { appId: string; capabilities: NativeStepUpPermission[] }): Promise<TinyCloudStepUp> {
+    this.assertStepUpAllowed(options.appId);
+    if (this.coordinator.activeStepUps.has(options.appId)) {
+      throw new OpenKeyNativeError('UNAVAILABLE', 'A step-up for this app is already in progress');
+    }
+    this.coordinator.activeStepUps.add(options.appId);
+    try { return await this.requestStepUpOnce(options, this.coordinator.epoch); }
+    finally { this.coordinator.activeStepUps.delete(options.appId); }
+  }
+
+  private async requestStepUpOnce(options: { appId: string; capabilities: NativeStepUpPermission[] }, epoch: number): Promise<TinyCloudStepUp> {
+    const metadata = await this.metadata();
+    const state = generateState();
+    const verifier = generateCodeVerifier();
+    const challenge = await generateCodeChallenge(verifier);
+    // The request is made with the grant's current refresh token, which a
+    // renewal rotates: it runs in the renew queue so it never sees a dead one.
+    const { home, binding, requestUri } = await this.inRenewQueue(async () => {
+      this.assertEpoch(epoch);
+      const stored = await this.readQueued();
+      if (!stored) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+      // Fail closed before the user is asked: a Home delegation that cannot bind a step-up gets none.
+      const homeBinding = nativeStepUpHomeBinding(stored.delegation);
+      const pushed = await requestStepUp({ metadata, clientId: this.options.clientId, refreshToken: stored.tokens.refreshToken,
+        sessionKey: sessionKeypairFromJwk(stored.privateJwk), appId: options.appId, redirectUri: this.stepUpRedirectUri,
+        state, codeChallenge: challenge, permissions: options.capabilities, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+      return { home: stored, binding: homeBinding, requestUri: pushed.requestUri };
+    });
+    const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
+    const code = await this.authorize(url, this.stepUpRedirectUri, state);
+    // A sign-out or a new sign-in during the consent screen ends this step-up.
+    this.assertEpoch(epoch);
+    const sessionKey = sessionKeypairFromJwk(home.privateJwk);
+    try {
+      const stepUp = await exchangeStepUpCode({ metadata, code, redirectUri: this.stepUpRedirectUri, clientId: this.options.clientId,
+        codeVerifier: verifier, sessionKey, appId: options.appId, requestedPermissions: options.capabilities,
+        expectedTinycloudHost: this.expectedHost(), ...binding, fetchFn: this.fetchFn });
+      try { await this.verifier(stepUp); }
+      catch { throw new OpenKeyNativeError('SERVER', 'Step-up delegation failed verification'); }
+      // Persist on top of whatever a renewal stored meanwhile; a renewal and this write never interleave.
+      await this.inRenewQueue(async () => {
+        this.assertEpoch(epoch);
+        const current = await this.readQueued();
+        if (!current || current.privateJwk.x !== home.privateJwk.x) {
+          throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The stored OpenKey session changed');
+        }
+        const expected = matchFor(current);
+        current.stepUps = liveStepUps({ ...current.stepUps, [stepUp.appId]: stepUp });
+        await this.write(current, epoch, expected);
+      });
+      return stepUp;
+    } catch (error) {
+      // The code was redeemed, so the server may hold a step-up this client refused or could not store.
+      // A server refusal of the exchange itself (an OAuth error) created nothing.
+      if (!(error instanceof OpenKeyNativeError && error.serverError !== undefined)) {
+        await this.discardStepUp(options.appId, home.privateJwk.x, epoch);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * End one app's step-up on the server and drop it from the stored session.
+   * The Home grant and every other app's step-up are untouched. The local copy
+   * is removed only after the server confirms; a failure leaves it in place.
+   */
+  async revokeStepUp(appId: string): Promise<void> {
+    this.assertStepUpAllowed(appId);
+    const epoch = this.coordinator.epoch;
+    const metadata = await this.metadata();
+    await this.inRenewQueue(() => this.revokeStepUpQueued(metadata, appId, epoch));
+  }
+
+  /** Runs in the renew queue. `onlyKeyX` limits it to the grant whose session key has that public `x`. */
+  private async revokeStepUpQueued(metadata: OpenKeyServerMetadata, appId: string, epoch: number, onlyKeyX?: string): Promise<void> {
+    this.assertEpoch(epoch);
+    const record = await this.readQueued();
+    if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+    if (onlyKeyX !== undefined && record.privateJwk.x !== onlyKeyX) return;
+    await revokeStepUp({ metadata, clientId: this.options.clientId, refreshToken: record.tokens.refreshToken,
+      sessionKey: sessionKeypairFromJwk(record.privateJwk), appId, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+    // The session was replaced while the server answered: that grant's step-ups are not this record's.
+    if (this.coordinator.epoch !== epoch || !record.stepUps || !Object.hasOwn(record.stepUps, appId)) return;
+    const expected = matchFor(record);
+    const remaining = { ...record.stepUps };
+    delete remaining[appId];
+    record.stepUps = liveStepUps(remaining);
+    await this.write(record, epoch, expected);
+  }
+
+  /**
+   * Best effort after a step-up the server may have created was refused here:
+   * end it on the server and drop any local copy for the app. It never throws,
+   * so it cannot mask the error that caused it.
+   */
+  private async discardStepUp(appId: string, keyX: string, epoch: number): Promise<void> {
+    try {
+      const metadata = await this.metadata();
+      await this.inRenewQueue(() => this.revokeStepUpQueued(metadata, appId, epoch, keyX));
+    } catch {
+      // The server row stays until the app calls revokeStepUp or the grant ends.
+    }
+  }
+
+  /**
+   * Fold a renewal's step-up fields into the held ones: renewed ones replace,
+   * `removed` ones go, and `dropped`, `failed` and rejected ones stay as they
+   * were until their own expiry. A renewed step-up the verifier refuses is
+   * treated like a rejected one.
+   */
+  private async mergeStepUps(held: Record<string, TinyCloudStepUp> | undefined, renewal: NativeStepUpRenewal | undefined): Promise<Record<string, TinyCloudStepUp> | undefined> {
+    const next: Record<string, TinyCloudStepUp> = { ...held };
+    if (renewal) {
+      for (const appId of renewal.removed) delete next[appId];
+      for (const stepUp of renewal.renewed) {
+        if (renewal.removed.includes(stepUp.appId)) continue;
+        try { await this.verifier(stepUp); next[stepUp.appId] = stepUp; }
+        catch { /* the held copy stays until it expires */ }
+      }
+    }
+    return liveStepUps(next);
   }
 
   signOut(): Promise<void> {
@@ -851,8 +1088,7 @@ export class OpenKeyNative {
           const error = asNativeError(caught);
           if (transientRevoke(error)) {
             revokeError ??= error;
-            try { await this.appendPendingRevoke({ privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
-              attempts: 1, expiresAt: refreshExpiry(record) }); }
+            try { await this.appendPendingRevoke(pendingGrant(record)); }
             catch {
               this.coordinator.signedOut = false;
               throw storageFailure('Pending revoke could not be saved; session remains stored', revokeError);

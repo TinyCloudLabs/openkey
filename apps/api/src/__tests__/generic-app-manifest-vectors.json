@@ -1,0 +1,2096 @@
+{
+  "description": "TC-3443: what the SDK's generic manifest asks for when an app names no permissions. Generated from js-sdk sdk-core (genericAppId and genericAppManifest in packages/sdk-core/src/owner-access.ts, resolved by resolveManifest with the standard tier in packages/sdk-core/src/manifest.ts). OpenKey grants the same set to a delegate request with no permissions. When the SDK changes these, regenerate this file and change OpenKey to match.",
+  "source": "TinyCloudLabs/js-sdk master fbdbaa7ba (#1134) plus the TC-3930 line-break fix (skgbafa/tc-3930-genericappid-newline); manifest.ts unchanged since b0feca279",
+  "vectors": [
+    {
+      "host": "notes.example.com",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "Notes.Example.com:3000",
+      "appId": "com.example.notes_3000",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes_3000/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes_3000/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "localhost",
+      "appId": "localhost",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "localhost/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "localhost/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "[::1]:3000",
+      "appId": "o_8d59a2581124dff8",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_8d59a2581124dff8/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_8d59a2581124dff8/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "bad_host.example",
+      "appId": "o_bfaa0d5b273b053e",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_bfaa0d5b273b053e/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_bfaa0d5b273b053e/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "",
+      "appId": "node.app",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": null,
+      "appId": "node.app",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "NOTES.EXAMPLE.COM",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com:443",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com:3000:4000",
+      "appId": "o_bde36bf288b2cc4c",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_bde36bf288b2cc4c/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_bde36bf288b2cc4c/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com:abc",
+      "appId": "o_d7b53f7a5761953d",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_d7b53f7a5761953d/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_d7b53f7a5761953d/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com.",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com..",
+      "appId": "o_b5fce5bcb7c4b375",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_b5fce5bcb7c4b375/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_b5fce5bcb7c4b375/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes..example.com",
+      "appId": "o_9cb37f1ac89452ed",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_9cb37f1ac89452ed/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_9cb37f1ac89452ed/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": ".",
+      "appId": "node.app",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "..",
+      "appId": "o_cdb4ee2aea69cc6a",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_cdb4ee2aea69cc6a/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_cdb4ee2aea69cc6a/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": ".notes.example.com",
+      "appId": "o_7a21bd9de1dac2cb",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_7a21bd9de1dac2cb/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_7a21bd9de1dac2cb/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "::1",
+      "appId": "o_eff8e7ca506627fe",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_eff8e7ca506627fe/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_eff8e7ca506627fe/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "[2001:db8::1]",
+      "appId": "o_ecda91ca4e05f8c7",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_ecda91ca4e05f8c7/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_ecda91ca4e05f8c7/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "127.0.0.1",
+      "appId": "1.0.0.127",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "1.0.0.127/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "1.0.0.127/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "127.0.0.1:8080",
+      "appId": "1.0.0.127_8080",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "1.0.0.127_8080/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "1.0.0.127_8080/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "bücher.example",
+      "appId": "o_c6b737c4a99ba714",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_c6b737c4a99ba714/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_c6b737c4a99ba714/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "xn--bcher-kva.example",
+      "appId": "example.xn--bcher-kva",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "example.xn--bcher-kva/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "example.xn--bcher-kva/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "evil.example/notes.example.com",
+      "appId": "o_e4f8f4c01c199dce",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_e4f8f4c01c199dce/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_e4f8f4c01c199dce/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "evil.example%2fnotes.example.com",
+      "appId": "o_00ca7cb0184562f9",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_00ca7cb0184562f9/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_00ca7cb0184562f9/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "evil.example%2Fnotes.example.com",
+      "appId": "o_00ca7cb0184562f9",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_00ca7cb0184562f9/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_00ca7cb0184562f9/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "user@notes.example.com",
+      "appId": "o_ced7fec49c76f6d2",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_ced7fec49c76f6d2/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_ced7fec49c76f6d2/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "user:pass@notes.example.com",
+      "appId": "o_eeb62fd910ba1abd",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_eeb62fd910ba1abd/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_eeb62fd910ba1abd/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": " notes.example.com ",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com\n",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes example.com",
+      "appId": "o_c2243706de3bec02",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_c2243706de3bec02/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_c2243706de3bec02/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "-bad.example",
+      "appId": "o_2c7985306bdaeb27",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_2c7985306bdaeb27/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_2c7985306bdaeb27/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "bad-.example",
+      "appId": "o_5086fda11d8b59ea",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_5086fda11d8b59ea/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_5086fda11d8b59ea/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "a-b.example",
+      "appId": "example.a-b",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "example.a-b/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "example.a-b/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "appId": "example.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "example.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "example.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "appId": "o_fdeeb40dffc11e15",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_fdeeb40dffc11e15/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_fdeeb40dffc11e15/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "*.example.com",
+      "appId": "o_47287a8f16ec75e6",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_47287a8f16ec75e6/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_47287a8f16ec75e6/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com?x=1",
+      "appId": "o_48303e65ac594b59",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_48303e65ac594b59/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_48303e65ac594b59/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com#frag",
+      "appId": "o_3b9dac6a714c16f9",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_3b9dac6a714c16f9/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_3b9dac6a714c16f9/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "  ",
+      "appId": "node.app",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": ":3000",
+      "appId": "node.app",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "node.app/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "Notes.Example.com.",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com:80",
+      "appId": "com.example.notes",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com:8443",
+      "appId": "com.example.notes_8443",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes_8443/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes_8443/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "Notes.Example.com.:08443",
+      "appId": "com.example.notes_8443",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "com.example.notes_8443/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "com.example.notes_8443/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "localhost:3000",
+      "appId": "localhost_3000",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "localhost_3000/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "localhost_3000/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "[::1]",
+      "appId": "o_6d16ab695dd7911d",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_6d16ab695dd7911d/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_6d16ab695dd7911d/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "Bad_Host.example:443",
+      "appId": "o_bfaa0d5b273b053e",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_bfaa0d5b273b053e/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_bfaa0d5b273b053e/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "bad_host.example:8443",
+      "appId": "o_cbd1f4a0b4de55c9",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_cbd1f4a0b4de55c9/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_cbd1f4a0b4de55c9/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "com.example.notes_8443",
+      "appId": "o_e96b28388c342d7a",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_e96b28388c342d7a/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_e96b28388c342d7a/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com\nother.example",
+      "appId": "o_e2aea855b3a3e306",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_e2aea855b3a3e306/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_e2aea855b3a3e306/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com\r\nother.example",
+      "appId": "o_cef7d391e7d6f5fe",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_cef7d391e7d6f5fe/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_cef7d391e7d6f5fe/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com\nother.example:8443",
+      "appId": "o_c9a8104a811cd897",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_c9a8104a811cd897/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_c9a8104a811cd897/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com\nother.example:443",
+      "appId": "o_e2aea855b3a3e306",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_e2aea855b3a3e306/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_e2aea855b3a3e306/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    },
+    {
+      "host": "notes.example.com other.example",
+      "appId": "o_fcd22395ad11264d",
+      "space": "applications",
+      "resources": [
+        {
+          "service": "tinycloud.kv",
+          "space": "applications",
+          "path": "o_fcd22395ad11264d/",
+          "actions": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/put",
+            "tinycloud.kv/del",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata"
+          ]
+        },
+        {
+          "service": "tinycloud.sql",
+          "space": "applications",
+          "path": "o_fcd22395ad11264d/",
+          "actions": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/write"
+          ]
+        },
+        {
+          "service": "tinycloud.capabilities",
+          "space": "applications",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        }
+      ],
+      "expiryMs": 604800000,
+      "includePublicSpace": false
+    }
+  ]
+}

@@ -4,6 +4,7 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -66,6 +67,7 @@ async function mockApi(
     }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('https://app.test/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>app</p>' }));
   await page.route('https://accounts.google.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>google</p>' }));
   await page.route('https://appleid.apple.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>apple</p>' }));
@@ -190,6 +192,34 @@ test.describe('native login', () => {
 
     await page.getByRole('button', { name: 'Use email instead' }).click();
     await expect(page.locator('#email')).toBeVisible();
+  });
+
+  // TC-3596: one passkey per interaction. The sign-in names the pending request, so Approve for it asks for nothing more.
+  test('the passkey sign-in names the pending request it was opened for', async ({ page }) => {
+    await page.addInitScript(() => {
+      const bytes = (text: string) => new TextEncoder().encode(text).buffer;
+      navigator.credentials.get = async () => ({
+        id: 'AAAA', rawId: bytes('id'), type: 'public-key', authenticatorAttachment: 'platform',
+        response: { authenticatorData: bytes('data'), clientDataJSON: bytes('{}'), signature: bytes('sig'), userHandle: null },
+        getClientExtensionResults: () => ({}),
+      }) as unknown as Credential;
+    });
+    const api = await mockApi(page);
+    await page.route('**/api/auth/passkey/generate-authenticate-options', (route) => json(route, {
+      challenge: 'AAAA', rpId: 'localhost', allowCredentials: [], userVerification: 'required', timeout: 60000,
+    }));
+    const verifyHeaders: Array<Record<string, string>> = [];
+    await page.route('**/api/auth/passkey/verify-authentication', (route) => {
+      verifyHeaders.push(route.request().headers());
+      return json(route, { session: session.session, user: session.user });
+    });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'passkey' })}`);
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Continue with passkey' }).click();
+
+    await expect.poll(() => verifyHeaders.length).toBe(1);
+    expect(verifyHeaders[0]!['x-openkey-passkey-flow']).toBe('req-1');
+    expect(api.count('/api/auth/passkey/verify-authentication')).toBe(0);
   });
 
   test('the code step is one one-time-code input drawn as six 44x52 boxes, and Continue waits for the sixth digit', async ({ page }) => {
@@ -454,7 +484,7 @@ test.describe('native login', () => {
       await page.route('**/api/auth/sign-in/social', (route) => json(route, { url: 'https://evil.example/auth', redirect: false }));
       await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
       await expect(page.locator('#email')).toBeVisible();
-      await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in couldn't be completed. Try again.");
       expect(page.url()).toContain(ORIGIN);
     });
 
@@ -462,7 +492,7 @@ test.describe('native login', () => {
       const api = await mockApi(page, { providers: ['google'] });
       await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
       await expect(page.locator('#email')).toBeVisible();
-      await expect(page.getByRole('alert')).toHaveText("Apple sign-in isn't available right now. Continue with your email instead.");
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in isn't available. Choose another way to sign in below.");
       await page.waitForLoadState('networkidle');
       expect(api.count('/api/auth/sign-in/social')).toBe(0);
       await expect(page.getByRole('button', { name: 'Continue with Apple' })).toHaveCount(0);
@@ -536,13 +566,14 @@ test.describe('native login', () => {
       expect(api.count('/api/auth/sign-in/social')).toBe(0);
     });
 
-    test('an existing account asks for sign-in and an email code to add Apple', async ({ page }) => {
+    test('an existing account asks for sign-in before adding Apple', async ({ page }) => {
       await mockApi(page, { providers: ['apple'] });
       await page.route('**/api/auth/social/continuation**', (route) =>
         json(route, { outcome: 'account_exists', providerId: 'apple', email: 'sam@example.test', name: 'Sam', isPrivateEmail: false }));
       await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
-      await expect(page.getByText('An OpenKey account already uses sam@example.test.')).toBeVisible();
-      await expect(page.getByText('Sign in to it and verify with an email code to add Apple in Settings.')).toBeVisible();
+      await expect(page.getByTestId('social-account-exists')).toHaveText(
+        'An OpenKey account already uses sam@example.test. Sign in to it, then add Apple in Settings.',
+      );
       await page.getByRole('button', { name: 'Sign in to your account' }).click();
       await expect(page.locator('#email')).toHaveValue('sam@example.test');
     });
@@ -561,7 +592,7 @@ test.describe('native login', () => {
       await page.route('**/api/auth/social/continuation**', (route) =>
         json(route, { outcome: 'new_account', providerId: 'apple', email: 'sam@example.test', isPrivateEmail: false }));
       await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
-      await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in couldn't be completed. Try again.");
       await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
     });
   });

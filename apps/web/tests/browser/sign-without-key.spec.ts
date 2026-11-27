@@ -8,6 +8,7 @@ import { test, expect, type Page, type Route, type FrameLocator } from '@playwri
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const ADDRESS_A = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const ADDRESS_B = '0x1111111111111111111111111111111111111111';
@@ -73,6 +74,7 @@ async function mockApi(page: Page, account: Account) {
       if (account.listFails) return json(route, 500, { error: 'Internal error' });
       return json(route, 200, { keys: account.keys.filter((k) => !k.archivedAt) });
     }
+    if (/^\/api\/keys\/[^/]+\/sign\/passkey$/.test(path) && route.request().method() === 'POST') return json(route, 200, { required: false });
     const sign = path.match(/^\/api\/keys\/([^/]+)\/sign$/);
     if (sign && route.request().method() === 'POST') {
       const body = route.request().postDataJSON() as { message: string };
@@ -89,6 +91,7 @@ async function mockApi(page: Page, account: Account) {
     }
     return json(route, 404, { error: `unmocked ${path}` });
   });
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 function newAccount(keys: Key[], signedIn = true): Account {

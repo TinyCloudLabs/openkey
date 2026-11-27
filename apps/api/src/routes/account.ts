@@ -15,12 +15,16 @@ import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
   controlMutationError,
+  isTinyCloudManageKeyMode,
+  type TinyCloudManageKeyMode,
 } from '../services/tinycloud-manage-key-control';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
 import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
 import {
+  approvalPasskeyOffer,
   approvalRequestDigest,
+  checkApprovalPasskey,
   createApprovalPasskeyChallenge,
   lowersPasskeyApprovalMode,
   parsePasskeyApprovalMode,
@@ -29,6 +33,7 @@ import {
   PASSKEY_APPROVAL_NOT_STEP_UP,
   PASSKEY_APPROVAL_REQUIRED,
   verifyApprovalPasskey,
+  type ApprovalBinding,
 } from '../services/approval-passkey';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
@@ -256,6 +261,44 @@ accountRouter.get('/tinycloud-manage-key', async (c) => {
   });
 });
 
+// TC-3442: turning TinyCloud signing back on lets apps sign later without a button, so the passkey setting treats it
+// as sensitive; the passkey confirms this mode at this policy epoch. Stopping signing never asks.
+function manageKeyModePasskeyBinding(mode: string, expectedEpoch: number): ApprovalBinding {
+  return { purpose: 'manage_key_mode', requestDigest: approvalRequestDigest(mode, String(expectedEpoch)) };
+}
+
+function manageKeyAppPasskeyBinding(clientId: string, expectedEpoch: number): ApprovalBinding {
+  return { purpose: 'manage_key_app_enable', requestDigest: approvalRequestDigest(clientId, String(expectedEpoch)) };
+}
+
+accountRouter.post('/tinycloud-manage-key/passkey', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; expectedEpoch?: unknown } | null;
+  if (!isTinyCloudManageKeyMode(body?.mode) || !Number.isSafeInteger(body?.expectedEpoch)) {
+    return c.json({ error: 'mode and expectedEpoch are required' }, 400);
+  }
+  if (body.mode === 'USER_CONTROLLED_EXCLUSIVE') return c.json({ required: false });
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: c.get('user').id, sessionId: c.get('session')?.id ?? null },
+    manageKeyModePasskeyBinding(body.mode, body.expectedEpoch as number), 'sensitive',
+  ));
+});
+
+accountRouter.post('/tinycloud-apps/:clientId/passkey', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { enabled?: unknown; expectedEpoch?: unknown } | null;
+  if (typeof body?.enabled !== 'boolean' || !Number.isSafeInteger(body.expectedEpoch)) {
+    return c.json({ error: 'enabled and expectedEpoch are required' }, 400);
+  }
+  if (!body.enabled) return c.json({ required: false });
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: c.get('user').id, sessionId: c.get('session')?.id ?? null },
+    manageKeyAppPasskeyBinding(c.req.param('clientId'), body.expectedEpoch as number), 'sensitive',
+  ));
+});
+
 accountRouter.patch('/tinycloud-manage-key', async (c) => {
   const user = c.get('user');
   const rejected = rejectNonBrowserControlRequest(c);
@@ -268,9 +311,18 @@ accountRouter.patch('/tinycloud-manage-key', async (c) => {
   }
   const error = controlMutationError(body);
   if (error) return c.json({ error }, 400);
-  const patch = body as { mode: string; expectedEpoch: number };
+  const patch = body as { mode: TinyCloudManageKeyMode; expectedEpoch: number; passkeyAssertion?: unknown };
+  if (patch.mode !== 'USER_CONTROLLED_EXCLUSIVE') {
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      manageKeyModePasskeyBinding(patch.mode, patch.expectedEpoch), 'sensitive', patch.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  }
+  // The assertion is not part of the change: a replay of the same change is recognised whichever assertion it carried.
+  const { passkeyAssertion: _assertion, ...request } = patch;
   const result = await changeTinyCloudManageKeyMode(prisma, user.id, {
-    mode: patch.mode as any, expectedEpoch: patch.expectedEpoch, request: body,
+    mode: patch.mode, expectedEpoch: patch.expectedEpoch, request,
   });
   if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
   if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
@@ -506,13 +558,23 @@ accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
     return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Request body must be an object' }, 400);
-  const patch = body as { enabled?: unknown; expectedEpoch?: unknown; confirmation?: unknown };
+  const patch = body as { enabled?: unknown; expectedEpoch?: unknown; confirmation?: unknown; passkeyAssertion?: unknown };
   if (typeof patch.enabled !== 'boolean' || !Number.isSafeInteger(patch.expectedEpoch) || (patch.expectedEpoch as number) < 0 || patch.confirmation !== 'TAKE CONTROL') {
     return c.json({ error: 'enabled, expectedEpoch, and typed confirmation "TAKE CONTROL" are required' }, 400);
   }
   const clientId = c.req.param('clientId');
+  // TC-3442: enabling an app lets it sign later without a button, so the passkey setting treats it as sensitive.
+  // Disabling never asks.
+  if (patch.enabled) {
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      manageKeyAppPasskeyBinding(clientId, patch.expectedEpoch as number), 'sensitive', patch.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  }
+  const { passkeyAssertion: _assertion, ...request } = patch;
   const result = await changeTinyCloudManageKeyGrant(prisma, user.id, clientId, {
-    enabled: patch.enabled, expectedEpoch: patch.expectedEpoch as number, request: body,
+    enabled: patch.enabled, expectedEpoch: patch.expectedEpoch as number, request,
   });
   if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
   if (result.kind === 'missing_consent') return c.json({ error: 'TinyCloud signing consent not found' }, 404);
@@ -647,7 +709,7 @@ accountRouter.post('/delete', async (c) => {
   // Stop every renewal lease before the keys go (TC-2946): once they are deleted nobody can revoke a lease
   // OpenKey signed, and the node would keep renewing its grant. A lease counts as stopped only when its node
   // confirmed; any other outcome deletes nothing, and a retry sends the ones still open again.
-  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
+  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all', includeNativeStops: true });
   if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
   // Count and delete every user key. TC-488 removed tenant-managed keys.
@@ -660,7 +722,7 @@ accountRouter.post('/delete', async (c) => {
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // A lease approved since the revocations above would outlive the keys; a retry stops it first.
-    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all' }, new Date()) }) > 0) return 'LEASES';
+    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all', includeNativeStops: true }, new Date()) }) > 0) return 'LEASES';
     const activeOwnerGrants = await tx.keyGrant.count({ where: { granteeUserId: user.id, role: 'OWNER', revokedAt: null } });
     if (activeOwnerGrants > 0) return 'OWNER';
     if (!passkeyStepUp) {

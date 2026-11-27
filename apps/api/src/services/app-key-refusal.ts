@@ -7,7 +7,7 @@
 // ReCap cannot be read exactly is refused.
 
 import { elevatedKindOf } from '@openkey/capability-review';
-import { isAppsKeyResource, isKeyDeleteAbility, keyPathOfResource, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
+import { isAppsKeyResource, isEncryptionResource, isKeyDeleteAbility, keyPathOfAnyResource, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
 export type AppKeyRefusalReason =
@@ -172,7 +172,7 @@ function refusalForResources(
 }
 
 /** Every resource of every `urn:recap:` resource of a SIWE message with its ability names, or `null` when a ReCap cannot be read exactly. */
-function recapResources(siwe: string): Array<[string, string[]]> | null {
+export function recapResources(siwe: string): Array<[string, string[]]> | null {
   const resources: Array<[string, string[]]> = [];
   if (!isSiweShaped(siwe)) return resources;
   for (const match of siwe.matchAll(RECAP_RESOURCE)) {
@@ -198,12 +198,13 @@ function isKeyBlockAbility(ability: string): boolean {
  * The encryption resources of a SIWE message outside `apps/` that carry
  * `key.block` or `key.unblock`: a bare network, a key or a prefix. The node
  * does not tie these two abilities to the requesting host, so a browser
- * request may name them only under its own `apps/<app id>/`.
+ * request may name them only after the owner decided on the warning screen,
+ * and a ticket request may not name them at all.
  */
 export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]]> {
   return (recapResources(siwe) ?? []).filter(
     ([resource, abilities]) =>
-      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      isEncryptionResource(resource) &&
       !isAppsKeyResource(resource) &&
       abilities.some(isKeyBlockAbility),
   );
@@ -231,7 +232,7 @@ export function exactShareKeyRefusal(siwe: string): AppKeyRefusal | null {
   const resources = recapResources(siwe);
   if (resources === null) return { reason: 'recap_unreadable' };
   const exact = resources.some(([resource, abilities]) => {
-    const path = keyPathOfResource(resource);
+    const path = keyPathOfAnyResource(resource);
     return path !== null && EXACT_SHARE_KEY.test(path) && abilities.some(isEncryptionGrantAbility);
   });
   return exact ? { reason: 'share_key_not_minted' } : null;
@@ -246,9 +247,10 @@ export function exactShareKeyRefusalForMessage(message: string): AppKeyRefusal |
 }
 
 /**
- * Does this message ask for anything the extra warning screen covers: `decrypt` or `key.create` on a whole encryption
- * network, or on a key or prefix outside `apps/` (`elevatedKindOf`, shared with the screen)? Text and `0x` hex are
- * both read. A ReCap that cannot be read is not elevated here: the refusal checks report it.
+ * Does this message ask for anything the extra warning screen covers: `decrypt`, `key.create`, `key.block` or
+ * `key.unblock` on a whole encryption network, or on a key or prefix outside `apps/` (`elevatedKindOf`, shared with
+ * the screen)? Text and `0x` hex are both read. A ReCap that cannot be read is not elevated here: the refusal checks
+ * report it.
  */
 export function messageHasElevatedPermissions(message: string): boolean {
   const hasElevated = (siwe: string): boolean =>
@@ -268,7 +270,8 @@ export function messageHasElevatedPermissions(message: string): boolean {
  *
  * `entries` are the wasm-parsed entries of the same message, when the caller
  * has them: `space` and `path` of every entry, under any service name, get the
- * same check.
+ * same check, and so does the resource string that `space`, `service` and
+ * `path` make together (the space-path form of an encryption resource).
  *
  * `admitted` lists the `apps/` resources an earlier step admitted for this
  * message. A resource is passed only when it is byte-equal to an admitted one
@@ -283,6 +286,9 @@ export function appKeyRefusalForSiwe(
   if (resources === null) return { reason: 'recap_unreadable' };
   for (const entry of entries ?? []) {
     resources.push([entry.space, [...entry.actions]], [entry.path, [...entry.actions]]);
+    // The same entry as the resource string the text scan reads, so a space-path
+    // resource is classified identically from both views.
+    if (entry.service !== undefined) resources.push([`${entry.space}/${entry.service}/${entry.path}`, [...entry.actions]]);
   }
   return refusalForResources(resources, admitted);
 }
@@ -293,18 +299,6 @@ export function appKeyRefusalForMessage(message: string): AppKeyRefusal | null {
   if (direct) return direct;
   const decoded = decodeHexUtf8(message);
   return decoded === null ? null : appKeyRefusalForSiwe(decoded);
-}
-
-/**
- * Does a message, as written or as UTF-8 when it is `0x` hex, carry `key.block`
- * or `key.unblock` on an encryption resource outside `apps/`? A route that
- * signs a message without a manifest cannot tell which app asks, so it refuses
- * these whatever the origin.
- */
-export function blocksOutsideApps(message: string): boolean {
-  if (blockResourcesOutsideApps(message).length > 0) return true;
-  const decoded = decodeHexUtf8(message);
-  return decoded !== null && blockResourcesOutsideApps(decoded).length > 0;
 }
 
 export function appKeyRefusalCode(refusal: AppKeyRefusal): AppKeyRefusalCode {

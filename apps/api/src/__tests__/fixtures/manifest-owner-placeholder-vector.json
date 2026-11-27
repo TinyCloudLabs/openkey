@@ -1,0 +1,167 @@
+{
+  "chainId": 1,
+  "owner": "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+  "template": {
+    "manifest_version": 1,
+    "app_id": "xyz.tinycloud.example.vector",
+    "name": "Vector App",
+    "permissions": [
+      {
+        "service": "tinycloud.kv",
+        "space": "applications",
+        "path": "/",
+        "actions": [
+          "tinycloud.kv/get",
+          "tinycloud.kv/put"
+        ]
+      },
+      {
+        "service": "tinycloud.encryption",
+        "path": "urn:tinycloud:encryption:{owner}:default",
+        "actions": [
+          "tinycloud.encryption/decrypt"
+        ],
+        "skipPrefix": true
+      },
+      {
+        "service": "tinycloud.encryption",
+        "path": "urn:tinycloud:encryption:{owner}:default/share/",
+        "actions": [
+          "tinycloud.encryption/decrypt"
+        ]
+      }
+    ]
+  },
+  "resolvedPermissions": [
+    {
+      "service": "tinycloud.kv",
+      "space": "applications",
+      "path": "/",
+      "actions": [
+        "tinycloud.kv/get",
+        "tinycloud.kv/put"
+      ]
+    },
+    {
+      "service": "tinycloud.encryption",
+      "path": "urn:tinycloud:encryption:did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default",
+      "actions": [
+        "tinycloud.encryption/decrypt"
+      ],
+      "skipPrefix": true
+    },
+    {
+      "service": "tinycloud.encryption",
+      "path": "urn:tinycloud:encryption:did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default/share/",
+      "actions": [
+        "tinycloud.encryption/decrypt"
+      ]
+    }
+  ],
+  "templateCanonicalSha256": "09c461675f972127f9ecf1b3eb59bbc911dcb0ab06c4b5633e9e9358af1f3ff6",
+  "refusals": {
+    "ownerInSpace": {
+      "manifest": {
+        "manifest_version": 1,
+        "app_id": "xyz.tinycloud.example.vector",
+        "name": "Vector App",
+        "permissions": [
+          {
+            "service": "tinycloud.kv",
+            "space": "{owner}",
+            "path": "/",
+            "actions": [
+              "tinycloud.kv/get",
+              "tinycloud.kv/put"
+            ]
+          },
+          {
+            "service": "tinycloud.encryption",
+            "path": "urn:tinycloud:encryption:{owner}:default",
+            "actions": [
+              "tinycloud.encryption/decrypt"
+            ],
+            "skipPrefix": true
+          },
+          {
+            "service": "tinycloud.encryption",
+            "path": "urn:tinycloud:encryption:{owner}:default/share/",
+            "actions": [
+              "tinycloud.encryption/decrypt"
+            ]
+          }
+        ]
+      },
+      "canonicalSha256": "6a50345c2c9d8c8855bd4ec3e470fe583db7e78e91da78fb602e9482ae1f3ec2"
+    },
+    "otherPlaceholderInPath": {
+      "manifest": {
+        "manifest_version": 1,
+        "app_id": "xyz.tinycloud.example.vector",
+        "name": "Vector App",
+        "permissions": [
+          {
+            "service": "tinycloud.kv",
+            "space": "applications",
+            "path": "/",
+            "actions": [
+              "tinycloud.kv/get",
+              "tinycloud.kv/put"
+            ]
+          },
+          {
+            "service": "tinycloud.encryption",
+            "path": "urn:tinycloud:encryption:{other}:default",
+            "actions": [
+              "tinycloud.encryption/decrypt"
+            ],
+            "skipPrefix": true
+          },
+          {
+            "service": "tinycloud.encryption",
+            "path": "urn:tinycloud:encryption:{owner}:default/share/",
+            "actions": [
+              "tinycloud.encryption/decrypt"
+            ]
+          }
+        ]
+      },
+      "canonicalSha256": "2dba8410e42f2cbe40f6cac52fc25affb0775181b49aed431ec9350cf090ee17"
+    },
+    "ownerInKeyName": {
+      "manifest": {
+        "manifest_version": 1,
+        "app_id": "xyz.tinycloud.example.vector",
+        "name": "Vector App",
+        "permissions": [
+          {
+            "service": "tinycloud.kv",
+            "space": "applications",
+            "path": "/",
+            "actions": [
+              "tinycloud.kv/get",
+              "tinycloud.kv/put"
+            ]
+          },
+          {
+            "service": "tinycloud.encryption",
+            "path": "urn:tinycloud:encryption:{owner}:default",
+            "actions": [
+              "tinycloud.encryption/decrypt"
+            ],
+            "skipPrefix": true
+          },
+          {
+            "service": "tinycloud.encryption",
+            "path": "urn:tinycloud:encryption:{owner}:default/share/",
+            "actions": [
+              "tinycloud.encryption/decrypt"
+            ]
+          }
+        ],
+        "{owner}": "x"
+      },
+      "canonicalSha256": "97551a1706db2a8fca3cc17bac70539a78b565eb01de29e3495a37ad51fbdc90"
+    }
+  }
+}

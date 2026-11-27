@@ -107,7 +107,7 @@ const SIWE = `localhost:5173 wants you to sign in with your Ethereum account:\n$
 
 const SIGNATURE = await owner.signMessage({ message: SIWE });
 
-test('a refused signing shows the error, gives Revoke and Cancel back, and the next Revoke signs', async () => {
+test('a refused revocation offers Close this tab and a retry that signs', async () => {
   const signReplies: Response[] = [
     Response.json({ error: 'Signing failed', code: 'sign_failed' }, { status: 500 }),
     Response.json({ siwe: SIWE, signature: SIGNATURE, deliveryState: delivery.state, selectedKeyId: key.id, protocolVersion: 1 }),
@@ -131,12 +131,13 @@ test('a refused signing shows the error, gives Revoke and Cancel back, and the n
   try {
     await until(() => !!button('Revoke') && !button('Revoke')!.disabled, 'the Revoke button');
     button('Revoke')!.click();
-    await until(() => !!target.querySelector('[role="alert"]'), 'the refusal');
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain('Signing failed');
-    expect(button('Revoke')!.disabled).toBe(false);
-    expect(button('Cancel')!.disabled).toBe(false);
-    button('Revoke')!.click();
-    await until(() => target.textContent!.includes('Paste this response into the CLI'), 'the signed result');
+    const stop = () => target.querySelector('[data-testid="stop-page"]');
+    await until(() => !!stop(), 'the refusal');
+    expect(stop()?.querySelector('h1')?.textContent).toBe('The approval didn’t go through');
+    expect(button('Try again')?.disabled).toBe(false);
+    expect(button('Close this tab')?.disabled).toBe(false);
+    button('Try again')!.click();
+    await until(() => target.textContent!.includes('Paste this into your terminal'), 'the signed result');
     expect(calls.filter(path => path.endsWith('/owner-revocation/sign'))).toHaveLength(2);
   } finally {
     unmount(app);
@@ -145,7 +146,7 @@ test('a refused signing shows the error, gives Revoke and Cancel back, and the n
   }
 });
 
-test('after a refused signing the owner can cancel', async () => {
+test('after a refused signing Close this tab cancels the revocation', async () => {
   const calls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -165,8 +166,8 @@ test('after a refused signing the owner can cancel', async () => {
   try {
     await until(() => !!button('Revoke') && !button('Revoke')!.disabled, 'the Revoke button');
     button('Revoke')!.click();
-    await until(() => !!target.querySelector('[role="alert"]'), 'the refusal');
-    button('Cancel')!.click();
+    await until(() => !!target.querySelector('[data-testid="stop-page"]'), 'the refusal');
+    button('Close this tab')!.click();
     await until(() => calls.some(path => path.endsWith('/cancel-claimed')), 'the cancel request');
   } finally {
     unmount(app);

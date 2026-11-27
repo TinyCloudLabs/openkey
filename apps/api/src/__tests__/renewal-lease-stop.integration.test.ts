@@ -242,6 +242,78 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(withRequest)).toBe(false);
   });
 
+  test('the stop sweep revokes every OpenKey-signed lease, reports wallet-signed ones, retries what the node did not confirm, and runs only for `stop`', async () => {
+    const sweep = await import('../services/renewal-lease-sweep');
+    const saved = process.env.OPENKEY_RENEWAL_LEASES;
+    try {
+      for (const [value, expected] of [[undefined, false], ['enabled', false], ['disabled', false], ['STOP', false], ['stop', true]] as const) {
+        if (value === undefined) delete process.env.OPENKEY_RENEWAL_LEASES; else process.env.OPENKEY_RENEWAL_LEASES = value;
+        expect(sweep.renewalLeaseStopSweepEnabled()).toBe(expected);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.OPENKEY_RENEWAL_LEASES; else process.env.OPENKEY_RENEWAL_LEASES = saved;
+    }
+
+    // Earlier tests in this file leave live leases behind; the sweep counts every account's, so start clean.
+    await prisma.renewalLease.updateMany({ data: { revokedAt: new Date() } });
+    const first = await account();
+    const second = await account();
+    const walletOwner = await account('EXTERNAL');
+    const firstLease = await lease(first, null);
+    const secondLease = await lease(second, null);
+    const secondDown = await lease(second, null, 'down');
+    const walletLease = await lease(walletOwner, null);
+    const ended = await lease(first, null, 'ok', -1_000);
+
+    // Stopped, wallet-signed and unconfirmed leases are each counted once; one that already ended is left alone.
+    expect(await sweep.stopAllRenewalLeasesOnce(prisma)).toEqual({ users: 3, stopped: 2, walletRequired: 1, notStopped: 1 });
+    expect(await stopped(firstLease)).toBe(true);
+    expect(await stopped(secondLease)).toBe(true);
+    expect(await stopped(secondDown)).toBe(false);
+    expect(await stopped(walletLease)).toBe(false);
+    expect(await stopped(ended)).toBe(false);
+
+    // The node comes back: the next pass settles the one it did not confirm; the wallet lease still waits for its wallet.
+    nodes.down.up = true;
+    try {
+      expect(await sweep.stopAllRenewalLeasesOnce(prisma)).toEqual({ users: 2, stopped: 1, walletRequired: 1, notStopped: 0 });
+    } finally {
+      nodes.down.up = false;
+    }
+    expect(await stopped(secondDown)).toBe(true);
+    // Running again changes nothing.
+    expect(await sweep.stopAllRenewalLeasesOnce(prisma)).toEqual({ users: 1, stopped: 0, walletRequired: 1, notStopped: 0 });
+    expect(await stopped(walletLease)).toBe(false);
+  });
+
+  test('the operator report counts only live leases, split by who signed them, and the stop sweep takes its OpenKey-signed count to zero', async () => {
+    const { renewalLeaseReport } = await import('../services/renewal-lease-report');
+    const { stopAllRenewalLeasesOnce } = await import('../services/renewal-lease-sweep');
+    await prisma.renewalLease.updateMany({ data: { revokedAt: new Date() } });
+    expect(await renewalLeaseReport(prisma)).toEqual({ live: 0, openkeySigned: 0, walletSigned: 0, unconfirmed: 0, accounts: 0, earliestEnd: null, latestEnd: null });
+
+    const managed = await account();
+    const other = await account();
+    const wallet = await account('EXTERNAL');
+    await lease(managed, null, 'ok', 3_600_000);
+    await lease(managed, null, 'ok', 7_200_000);
+    await lease(other, null, 'ok', 5_400_000, true); // recorded before the node confirmed it
+    await lease(wallet, null);
+    await lease(managed, null, 'ok', -1_000); // already ended
+    const stoppedAlready = await lease(other, null);
+    await prisma.renewalLease.update({ where: { leaseCid: stoppedAlready }, data: { revokedAt: new Date() } });
+
+    const before = await renewalLeaseReport(prisma);
+    expect(before).toMatchObject({ live: 4, openkeySigned: 3, walletSigned: 1, unconfirmed: 1, accounts: 3 });
+    expect(Date.parse(before.earliestEnd!)).toBeLessThan(Date.parse(before.latestEnd!));
+
+    // Counts only: nothing in the report can name a lease, an account or an address.
+    expect(JSON.stringify(before)).not.toMatch(/did:pkh|0x[0-9a-f]{40}|bafkr/i);
+
+    await stopAllRenewalLeasesOnce(prisma);
+    expect(await renewalLeaseReport(prisma)).toMatchObject({ live: 1, openkeySigned: 0, walletSigned: 1, unconfirmed: 0, accounts: 1 });
+  });
+
   test('a node that does not confirm leaves the lease on; the retry stops it', async () => {
     const owner = await account();
     const { cookie } = await owner.session();

@@ -86,7 +86,9 @@ beforeEach(() => {
   bootstrapSettled = new Promise<void>(resolve => { settleBootstrap = resolve; });
   process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
   process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = 'off';
-  process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '100';
+  // Generous: a CI runner under load took longer than 100 ms for one approval and the test failed with
+  // tinycloud_requested_space_timeout. Only the test that holds a space on purpose uses a short budget.
+  process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '5000';
 });
 afterEach(async () => {
   // Drain the real bootstrap's background seeding before closing its loopback node.
@@ -103,7 +105,8 @@ async function post(path: string, body: Record<string, unknown>) {
   return { status: response.status, body: await response.json() as RouteBody };
 }
 async function prepare() {
-  const response = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions });
+  // The owner approves a link on OpenKey's own page: the only attribution an ordinary prepare can carry.
+  const response = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions, linkDelivery: 'paste' });
   expect(response.status).toBe(200);
   return response.body;
 }
@@ -129,6 +132,7 @@ test('a fresh managed approval confirms both spaces on the loopback node before 
 });
 
 test('a secondary space still hosting cannot be hidden by a ready primary space', async () => {
+  process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '100'; // this test waits the whole budget out on purpose
   node.hosted.add(spaces[1]!.spaceId);
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -178,7 +182,7 @@ test('a fully deselected space stays in the requested set without a signed grant
   const baseline = permissions.filter(entry => entry.service !== 'tinycloud.capabilities');
   const initial = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions: baseline });
   const selection = initial.body.selectedActionKeys.filter(key => key.split('\0')[1] === spaces[0]!.spaceId);
-  const narrowed = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions: baseline, actionKeys: selection });
+  const narrowed = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions: baseline, actionKeys: selection, linkDelivery: 'paste' });
   expect(narrowed.status).toBe(200);
   expect(narrowed.body.requestedSpaces).toEqual(spaces.map(space => ({ ...space, spaceReady: null })));
   const completed = await post('/', { ...approval(narrowed.body), permissions: baseline });

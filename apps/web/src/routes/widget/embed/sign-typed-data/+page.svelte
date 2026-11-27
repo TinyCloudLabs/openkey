@@ -1,16 +1,26 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
+  } from '$lib/approval-passkey';
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { clearSessionToken, getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { originAuthority } from '$lib/requester-display';
+  import { registryTypedDataSignRefusal } from '@openkey/capability-review';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
 
   type KeyCredential = { token: string | null; sessionId: string | null | undefined };
   let keyReadCredential: KeyCredential | null = null;
@@ -35,9 +45,22 @@
   let requestVersion = $state(0);
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let signInNote = $state<string | null>(null);
 
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // In the frame the request is read only once the account is known to have agreed to the Terms.
+  const isAuthenticated = $derived(signedIn && (!inIframe || $termsGate.phase === 'open'));
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+  }
 
   // Exact embedding origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
@@ -124,6 +147,55 @@
     return () => { active = false; };
   });
 
+  // Hardening: typed-data signing. The registry's node-location struct is refused unless the requester is TinyCloud One;
+  // the host is told once, and nothing is offered or sent to the API.
+  const registryRefusal = $derived(typedData ? registryTypedDataSignRefusal(typedData, origin) : null);
+  let registryRefusalReported = false;
+  $effect(() => {
+    if (!registryRefusal || registryRefusalReported) return;
+    registryRefusalReported = true;
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: 'REGISTRY_RECORD_SIGN_REFUSED' },
+    });
+  });
+
+  // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
+  // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends
+  // nothing until the offer for the current request has landed: it waits while the fetch is in flight and fetches
+  // again after a failure.
+  const passkeyOfferInput = $derived(
+    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData && !registryRefusal ? `${requestVersion}:${key.id}` : null,
+  );
+  let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferRevision = $state(0);
+  let passkeyOfferFetch = $state<PasskeyOfferFetch>('idle');
+  const passkeyOfferGate = $derived(approvalPasskeyGate({
+    input: passkeyOfferInput, held: passkeyOffer, fetch: passkeyOfferFetch,
+  }));
+  $effect(() => {
+    const input = passkeyOfferInput;
+    void passkeyOfferRevision;
+    const [offerKey, data] = untrack(() => [key, typedData]);
+    if (input === null || !offerKey || !data) {
+      passkeyOfferFetch = 'idle';
+      return;
+    }
+    let current = true;
+    passkeyOfferFetch = 'pending';
+    api.signTypedDataPasskey(offerKey.id, data, origin ?? undefined).then(
+      (need) => {
+        if (!current) return;
+        passkeyOffer = { input, need };
+        passkeyOfferFetch = 'idle';
+      },
+      () => { if (current) passkeyOfferFetch = 'failed'; },
+    );
+    return () => { current = false; };
+  });
+  const offerFailure = $derived(passkeyOfferFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
+
   function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, window.parent)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
@@ -164,17 +236,35 @@
   }
 
   async function signTypedData() {
-    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing || registryRefusal) return;
 
     const credential = keyOwnerCredential;
     if (!checkKeyCredential(credential)) return;
     const version = requestVersion;
+    // Without the offer for this data nothing is sent: Sign waits for the fetch in flight, or fetches again.
+    const gate = passkeyOfferGate;
+    if (gate.action === 'retry') passkeyOfferRevision++;
+    if (gate.action !== 'send') return;
+    const passkeyNeed = gate.need;
 
     signing = true;
     error = '';
 
+    // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same offer
+    // stays for the next tap.
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
     try {
-      const result = await api.signTypedData(key.id, typedData);
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e: unknown) {
+      if (version === requestVersion) {
+        error = (e as Error).message;
+        signing = false;
+      }
+      return;
+    }
+
+    try {
+      const result = await api.signTypedData(key.id, typedData, passkeyAssertion, origin ?? undefined);
       if (version !== requestVersion) return;
       if (!checkKeyCredential(credential)) return;
       sendResponse({
@@ -185,7 +275,14 @@
       });
       sendClose();
     } catch (e: any) {
-      if (version === requestVersion && checkKeyCredential(credential)) error = e.message || 'Signing failed';
+      if (version === requestVersion && checkKeyCredential(credential)) {
+        error = e.message || 'Signing failed';
+        // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced.
+        if (isPasskeyApprovalRefusal(e)) {
+          passkeyOffer = null;
+          passkeyOfferRevision++;
+        }
+      }
     } finally {
       if (version === requestVersion) signing = false;
     }
@@ -238,12 +335,17 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !isAuthenticated}
+    {#if registryRefusal}
+      <RegistryRecordRefusal variant="embed" onclose={sendClose} />
+    {:else if !signedIn}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this data"
-        onauthenticated={() => { embedAuthenticated = true; }}
+        note={signInNote}
+        onauthenticated={() => { signInNote = null; embedAuthenticated = true; }}
         {passkeysSupported}
       />
+    {:else if !isAuthenticated}
+      <TermsGate surface="embed" onsignedout={termsSignedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
@@ -294,15 +396,15 @@
           <pre class="m-0 whitespace-pre-wrap break-all font-mono text-xs text-surface-900 max-h-[100px] overflow-y-auto">{JSON.stringify(typedData.message, null, 2)}</pre>
         </div>
 
-        {#if error}
+        {#if error || offerFailure}
           <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">
-            {error}
+            {error || offerFailure}
           </div>
         {/if}
 
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancel}>Cancel</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={signTypedData} disabled={signing}>
+          <Button size="sm" class="flex-1 rounded-xl" onclick={signTypedData} disabled={signing || passkeyOfferGate.action === 'wait'}>
             {signing ? 'Signing...' : 'Sign Data'}
           </Button>
         </div>

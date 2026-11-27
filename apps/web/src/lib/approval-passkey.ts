@@ -7,9 +7,6 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 
-/** Whether Settings shows the "Passkey for approvals" card. */
-export const PASSKEY_APPROVAL_SETTING_SHOWN = false;
-
 export type PasskeyApprovalMode = 'ALWAYS' | 'SENSITIVE' | 'NEVER';
 
 export interface PasskeyApprovalSetting {
@@ -43,6 +40,45 @@ export async function confirmWithPasskey(offer: ApprovalPasskeyOffer): Promise<A
   return { challengeToken: offer.challengeToken, response };
 }
 
+/**
+ * What an approval screen gets from the API before Approve: whether the tap needs the passkey, with its challenge.
+ * `flowCover` marks an offer that asks for none because this sign flow's own passkey sign-in covers it.
+ */
+export type ApprovalPasskeyNeed = { required: false; flowCover?: true } | ({ required: true } & ApprovalPasskeyOffer);
+
+/** The browser's passkey prompt was dismissed or failed. Nothing reached the API, so the same offer can be tried again. */
+export class PasskeyPromptError extends Error {
+  constructor(cause: unknown) {
+    super(passkeyApprovalCopy.cancelled, { cause });
+    this.name = 'PasskeyPromptError';
+  }
+}
+
+/**
+ * The `passkeyAssertion` an approval sends: undefined when the setting doesn't ask, else the answer to the offer.
+ * Call it straight from the Approve tap, before any other await, so the browser still sees the gesture.
+ * A dismissed or failed prompt throws `PasskeyPromptError`, whose message is the text to show.
+ */
+export async function answerApprovalPasskey(
+  need: ApprovalPasskeyNeed | null | undefined,
+): Promise<ApprovalPasskeyAssertion | undefined> {
+  if (!need?.required) return undefined;
+  try {
+    return await confirmWithPasskey(need);
+  } catch (error) {
+    throw new PasskeyPromptError(error);
+  }
+}
+
+/**
+ * Did the API refuse this approval over the passkey? Its message says to tap Approve again; the challenge is spent,
+ * so the screen fetches a new offer before the next tap.
+ */
+export function isPasskeyApprovalRefusal(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && PASSKEY_REFUSAL_CODES[code] === true;
+}
+
 // TC-3442 texts. Any wording change goes back to product sign-off.
 export const passkeyApprovalCopy = {
   title: 'Passkey for approvals',
@@ -56,6 +92,7 @@ export const passkeyApprovalCopy = {
   needsPasskey: 'Add a passkey to use this.',
   cancelled: "Your passkey didn't confirm this. Try again.",
   loadFailed: "Couldn't load this setting.",
+  offerFailed: "Couldn't get your passkey ready. Try again.",
 } as const;
 
 /** The API's passkey refusals speak of an Approve button; Settings has none, so it shows its own line for them. */
@@ -72,4 +109,29 @@ export function passkeyApprovalSettingError(error: unknown): string {
     return passkeyApprovalCopy.cancelled;
   }
   return message;
+}
+
+/** Where a screen stands with the offer it fetches for its Approve: not started, in flight, or failed. */
+export type PasskeyOfferFetch = 'idle' | 'pending' | 'failed';
+
+/** What Approve does with the offer a screen holds: send (with that offer), wait for it, or fetch it again. */
+export type ApprovalPasskeyGate =
+  | { action: 'send'; need: ApprovalPasskeyNeed | null }
+  | { action: 'wait' }
+  | { action: 'retry' };
+
+/**
+ * Decides what an Approve tap does about the passkey offer. `input` identifies what the offer must be for (null: the
+ * screen needs none, so the approval goes without an assertion); `held` is the offer that landed and the input it was
+ * fetched for. An offer fetched for other input never counts. Without a matching offer nothing is sent: while the
+ * fetch is in flight the tap waits, otherwise the offer is fetched again.
+ */
+export function approvalPasskeyGate(state: {
+  input: string | null;
+  held: { input: string; need: ApprovalPasskeyNeed } | null;
+  fetch: PasskeyOfferFetch;
+}): ApprovalPasskeyGate {
+  if (state.input === null) return { action: 'send', need: null };
+  if (state.held?.input === state.input) return { action: 'send', need: state.held.need };
+  return { action: state.fetch === 'pending' ? 'wait' : 'retry' };
 }

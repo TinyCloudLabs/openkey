@@ -18,6 +18,7 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from '../services/tinycloud-bootstrap-budget';
 import { startTinyCloudBootstrapSweep, sweepTinyCloudBootstrapOnce, type SweepOptions } from '../services/tinycloud-bootstrap-sweep';
+import { originProvisionAuthority, storedProvisionAuthority } from '../services/provision-authority';
 
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
@@ -26,6 +27,9 @@ const HOST = trustedTinyCloudBootstrapHost();
 const PRIVATE_KEY: `0x${string}` = `0x${'11'.repeat(32)}`;
 const ADDRESS = privateKeyToAccount(PRIVATE_KEY).address;
 const ENV_NAMES = ['TINYCLOUD_BOOTSTRAP_HOST', 'TINYCLOUD_BOOTSTRAP_SWEEP', 'TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS', 'NODE_ENV'];
+// A first-party app started these setups: only first-party authority sets an account up on the node, and the sweep retries only those.
+const authority = originProvisionAuthority('https://tinycloud.chat');
+const STORED_AUTHORITY = storedProvisionAuthority(authority);
 
 /** A timestamp offset from T0, in milliseconds. */
 const at = (ms: number): Date => new Date(T0.getTime() + ms);
@@ -84,6 +88,7 @@ function seedRow(n: number, opts: SeedOptions = {}): FakeBootstrapRow {
     sweepAttempts: opts.sweepAttempts ?? 0,
     attemptId: opts.attemptId ?? null,
     lockExpiresAt: opts.lockExpiresAt ?? null,
+    authority: STORED_AUTHORITY,
   });
 }
 
@@ -105,6 +110,7 @@ function approve(n: number, host = HOST) {
     privateKey: PRIVATE_KEY,
     host,
     chainId: 1,
+    authority,
   });
 }
 
@@ -221,6 +227,7 @@ async function seedPgliteRow(prisma: PrismaClient, n: number): Promise<void> {
       failureCode: 'tinycloud_bootstrap_node_timeout',
       failureReason: 'node timed out',
       sweepAttempts: 2,
+      authority: STORED_AUTHORITY,
     },
   });
 }
@@ -237,6 +244,7 @@ function approveOn(prisma: PrismaClient, n: number) {
     privateKey: PRIVATE_KEY,
     host: HOST,
     chainId: 1,
+    authority,
   });
 }
 
@@ -1144,7 +1152,7 @@ describe('TC-2380 lease reaper', () => {
         await pg.prisma.user.create({ data: { id: `user-${n}`, email: `user-${n}@example.test` } });
         await pg.prisma.ethereumKey.create({ data: { id: `key-${n}`, userId: `user-${n}`, address, publicKey: '', sealedBlob: 'sealed' } });
         await pg.prisma.tinyCloudBootstrapState.create({
-          data: { id: `state-${n}`, userId: `user-${n}`, keyId: `key-${n}`, address, chainId: 1, tinycloudHost: HOST, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION, status: 'failed', checkedAt: at(-60 * MIN) },
+          data: { id: `state-${n}`, userId: `user-${n}`, keyId: `key-${n}`, address, chainId: 1, tinycloudHost: HOST, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION, status: 'failed', checkedAt: at(-60 * MIN), authority: STORED_AUTHORITY },
         });
       }
       const abandoned = { status: 'in_progress', failureCode: null, failureReason: null, sweepAttempts: 0, attemptId: 'dead', checkedAt: at(-60 * MIN) };
@@ -1407,6 +1415,7 @@ describe('TC-2380 a node that says "not hosted" beats a cached complete', () => 
       privateKey: PRIVATE_KEY,
       host,
       chainId: 1,
+      authority,
       requestedSpaces,
     });
   }
@@ -1462,6 +1471,7 @@ describe('TC-2380 a failed re-claim of a complete row is never re-signed by the 
       privateKey: PRIVATE_KEY,
       host,
       chainId: 1,
+      authority,
       requestedSpaces: { spaces: ['default'], alreadyHosted: false, nodeReportedUnhosted: true, report: () => {}, ...extra },
     });
   }

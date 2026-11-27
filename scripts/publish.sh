@@ -6,6 +6,10 @@ set -e
 
 echo "=== Publishing OpenKey packages ==="
 
+# Validate release authorization before credentials or publishing are used.
+node .github/scripts/check-major-release-signoff.mjs stable
+node .github/scripts/check-major-release-signoff.mjs release
+
 # Configure npm authentication
 ./scripts/npm-auth.sh
 

@@ -197,14 +197,23 @@ async function post(path: string, body: Record<string, unknown>) {
   return { status: response.status, body: (await response.json()) as RouteBody };
 }
 
+// TC-3443: a request with no permissions gets only its own folder, so this test names the whole space.
+const wholeSpace = (space: string) => [
+  { service: 'tinycloud.kv', space, path: '', actions: ['tinycloud.kv/put', 'tinycloud.kv/get', 'tinycloud.kv/del', 'tinycloud.kv/list', 'tinycloud.kv/metadata'] },
+  { service: 'tinycloud.sql', space, path: '', actions: ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/admin'] },
+  { service: 'tinycloud.capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] },
+];
+
 /** The first approval of a new account: the CLI asks for the `default` space. */
 async function approveDefault() {
-  const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default' });
+  // The CLI's link, approved by the owner on OpenKey's own page, returning to the CLI's loopback listener.
+  const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions: wholeSpace('default'), linkDelivery: 'callback', linkCallback: 'http://127.0.0.1:8123/callback' });
   expect(prepared.status).toBe(200);
   return post('/', {
     keyId: keyRecord.id,
     jwk,
     host: node.url,
+    permissions: wholeSpace('default'),
     prepared: prepared.body.prepared,
     authorizationContextToken: prepared.body.authorizationContext!.token,
     selectedActionIds: prepared.body.selectedActionKeys,

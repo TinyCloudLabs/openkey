@@ -3,6 +3,7 @@
 import type { Page, Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 export const json = (route: Route, status: number, body: unknown) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -145,6 +146,7 @@ export async function mockApi(page: Page, options: MockOptions): Promise<MockSta
     }
     return json(route, 404, { error: `unmocked ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return mocked;
 }
 
@@ -180,6 +182,7 @@ function legacyPrepared() {
   const kvGet = 'tinycloud.kv/get';
   const legacySiwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:',
@@ -201,7 +204,7 @@ export const DEVICE_LINK = '/device?user_code=ABCD-EFGH';
 
 /** The device lookup the /device page makes. */
 export async function mockDeviceLookup(page: Page) {
-  await page.route('**/api/device-authorizations/lookup', (route) => json(route, 200, {
+  await page.route('**/api/device-authorizations/lookup**', (route) => json(route, 200, {
     id: 'device-fixture', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6MkFixture',
     publicJwk: jwk, relayPublicJwk: {},
     permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get'] }],

@@ -20,6 +20,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
 
+      # Pre-release security check: never publish unless every check in
+      # .github/required-checks.json passed on this exact SHA.
+      - name: Require green checks on the republished commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -86,9 +93,20 @@ jobs:
               continue
             fi
 
-            echo "Publishing $pkg_name@$pkg_version..."
+            # A prerelease version (0.13.0-beta.4) is published under its own tag (beta), never latest;
+            # a stable version is published under latest.
+            tag=latest
+            case "$pkg_version" in
+              *-*) tag="${pkg_version#*-}"; tag="${tag%%.*}" ;;
+            esac
+            if ! [[ "$tag" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "Cannot derive an npm tag from $pkg_name@$pkg_version"
+              exit 1
+            fi
+
+            echo "Publishing $pkg_name@$pkg_version with tag $tag..."
             cd "$pkg"
-            npm publish --access public 2>&1 || echo "  Failed or already published"
+            npm publish --access public --tag "$tag" 2>&1 || echo "  Failed or already published"
             cd "$GITHUB_WORKSPACE"
           done
         env:

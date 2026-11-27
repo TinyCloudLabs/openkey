@@ -126,7 +126,10 @@ const OWNER = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
 const urn = (rest: string) => `urn:tinycloud:encryption:${OWNER}:default${rest}`;
 const E = 'tinycloud.encryption/';
 
-function modelOf(resources: Array<Record<string, Record<string, unknown[]>>>): CapabilityReviewModel {
+function modelOf(
+  resources: Array<Record<string, Record<string, unknown[]>>>,
+  verifiedOrigin: string | null = 'https://gk.gbafa.com',
+): CapabilityReviewModel {
   return parseCapabilityReview({
     message: siweWithResources(resources.map(makeRecapResource), { domain: 'gk.gbafa.com', uri: 'https://gk.gbafa.com' }),
     signer: { label: 'Key', address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, provenance: 'managed' },
@@ -134,7 +137,7 @@ function modelOf(resources: Array<Record<string, Record<string, unknown[]>>>): C
     metadataTrust: { status: 'unsigned', reason: 'no manifest' },
     reason: { text: '', source: 'none' },
     requester: {
-      displayName: 'gk.gbafa.com', verifiedOrigin: 'https://gk.gbafa.com', appId: null,
+      displayName: 'gk.gbafa.com', verifiedOrigin, appId: null,
       manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none',
       manifestDigest: null, domainWarning: false, originWarning: false,
     },
@@ -207,7 +210,8 @@ describe('Approve with an extra permission in the request', () => {
     await click(approve(target));
     const found = cards(target);
     expect(found).toHaveLength(2);
-    expect(text(found[0]!.querySelector('h2'))).toContain('Unlock all your encrypted data');
+    expect(text(found[0]!.querySelector('h2'))).toContain('Use your master key to decrypt?');
+    expect(text(found[0])).toContain("gk.gbafa.com is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.");
     expect(text(found[0]!.querySelector('h2'))).toContain('Sensitive');
     expect(text(found[1]!.querySelector('h2'))).toContain('Unlock encrypted items in a folder named share');
     for (const card of found) {
@@ -216,6 +220,20 @@ describe('Approve with an extra permission in the request', () => {
     }
     expect(target.querySelectorAll('.elevated .status')).toHaveLength(0);
     cleanup();
+  });
+
+  test('the whole-network card is a master-key question, with the site in the body or the cue when no site is verified', async () => {
+    const asked = "is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.";
+    const verified = mounted(modelOf([network]));
+    await click(approve(verified.target));
+    expect(text(cards(verified.target)[0])).toContain(`gk.gbafa.com ${asked}`);
+    expect(text(cards(verified.target)[0])).not.toContain("OpenKey can't confirm");
+    verified.cleanup();
+    const unverified = mounted(modelOf([network], null));
+    await click(approve(unverified.target));
+    expect(text(cards(unverified.target)[0]!.querySelector('h2'))).toContain('Use your master key to decrypt?');
+    expect(text(cards(unverified.target)[0])).toContain(`This app ${asked} OpenKey can't confirm the site.`);
+    unverified.cleanup();
   });
 
   test('Continue stays disabled until every card has a choice, and a hint says why', async () => {
@@ -284,7 +302,7 @@ describe('Approve with an extra permission in the request', () => {
     await click(cardButton(cards(target)[0]!, 'Reject this permission'));
     await click(continueButton(target));
     const rows = [...target.querySelectorAll('[data-testid="elevated-not-approved"] li')].map((li) => text(li));
-    expect(rows).toEqual(['Not approved: Unlock all your encrypted data']);
+    expect(rows).toEqual(['Not approved: Use your master key to decrypt']);
     expect(text(target.querySelector('.not-approved + [role="status"]'))).toBe('1 permission not approved.');
     cleanup();
   });
@@ -321,7 +339,7 @@ describe('Approve with an extra permission in the request', () => {
     flushSync();
     await click(approve(target));
     expect(cards(target)).toHaveLength(1);
-    expect(text(cards(target)[0]!.querySelector('h2'))).toContain('Unlock all your encrypted data');
+    expect(text(cards(target)[0]!.querySelector('h2'))).toContain('Use your master key to decrypt?');
     expect(events.approved).toBe(2);
     cleanup();
   });
@@ -415,7 +433,7 @@ describe('accessibility', () => {
     await click(cardButton(cards(target)[0]!, 'Reject this permission'));
     const region = target.querySelector('.elevated [role="status"]')!;
     expect(region.getAttribute('aria-live')).toBe('polite');
-    expect(text(region)).toBe('Rejected: Unlock all your encrypted data. 1 left to decide.');
+    expect(text(region)).toBe('Rejected: Use your master key to decrypt. 1 left to decide.');
     cleanup();
   });
 });

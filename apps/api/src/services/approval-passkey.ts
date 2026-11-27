@@ -21,6 +21,7 @@ import {
 import { decodeHexUtf8, parseCapabilityReview, parseSiweChainId } from '@openkey/capability-review';
 import type { PrismaClient } from '@openkey/db';
 import { log } from '../log';
+import { issuedSession } from './passkey-freshness';
 
 export const PASSKEY_APPROVAL_MODES = ['ALWAYS', 'SENSITIVE', 'NEVER'] as const;
 export type PasskeyApprovalMode = (typeof PASSKEY_APPROVAL_MODES)[number];
@@ -105,7 +106,12 @@ export function approvalRequestDigest(...parts: string[]): string {
 
 /** What one approval is bound to: the route's purpose and the digest of the exact request. */
 export type ApprovalBinding = { purpose: string; requestDigest: string };
-export type ApprovalSubject = { sessionId: string; userId: string };
+/**
+ * Who approves: the account and the session the challenge is bound to. Routes behind the session middleware always
+ * have a session; without one no challenge is issued and no assertion verifies, so an approval that needs the passkey
+ * is refused.
+ */
+export type ApprovalSubject = { sessionId: string | null; userId: string };
 export type RelyingParty = { rpID: string; origin: string };
 
 export function relyingParty(): RelyingParty {
@@ -126,6 +132,7 @@ export type ApprovalPasskeyOffer = { challengeToken: string; options: PublicKeyC
 export async function createApprovalPasskeyChallenge(
   db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, rp = relyingParty(), now = new Date(),
 ): Promise<ApprovalPasskeyOffer | null> {
+  if (subject.sessionId === null) return null;
   const passkeys = await db.passkey.findMany({
     where: { userId: subject.userId, countsForStepUp: true }, select: { credentialID: true, transports: true },
   });
@@ -173,7 +180,8 @@ export async function verifyApprovalPasskey(
 ): Promise<ApprovalPasskeyResult> {
   const body = assertion as { challengeToken?: unknown; response?: unknown } | null | undefined;
   const response = body?.response as AuthenticationResponseJSON | undefined;
-  if (typeof body?.challengeToken !== 'string' || !response || typeof response !== 'object' || typeof response.id !== 'string') {
+  if (typeof body?.challengeToken !== 'string' || !response || typeof response !== 'object' || typeof response.id !== 'string'
+    || subject.sessionId === null) {
     return 'invalid';
   }
   const identifier = `${sessionPrefix(subject.sessionId)}${sha256(body.challengeToken)}`;
@@ -267,7 +275,188 @@ export async function approvalPasskeyOffer(
 ): Promise<{ required: false } | ({ required: true } & ApprovalPasskeyOffer)> {
   if (!await approvalNeedsPasskey(db, subject.userId, sensitivity)) return { required: false };
   const offer = await createApprovalPasskeyChallenge(db, subject, binding, rp, now);
-  // No passkey that counts means the mode in force is NEVER, read just above; a race with its removal fails closed
-  // at the route, which then refuses without an assertion.
+  // No offer means the passkey that counts was removed since the mode was read, or there is no session; the route
+  // then refuses the approval without an assertion, failing closed.
   return offer ? { required: true, ...offer } : { required: false };
+}
+
+/** How long a passkey sign-in made for one request covers that request's Approve. */
+export const FLOW_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+const FLOW_PREFIX = 'openkey-flow-passkey';
+/** A native request id is 24 random bytes in base64url (par.ts). */
+const FLOW_REQUEST_ID = /^[A-Za-z0-9_-]{32}$/;
+/**
+ * A web sign pop-up or iframe names its own flow: the sign page draws 24 random bytes in base64url under a `w.`
+ * prefix. The prefix keeps web ids apart from native request ids, which are checked against a stored request.
+ */
+const WEB_FLOW_ID = /^w\.[A-Za-z0-9_-]{32}$/;
+/** Header a sign-in page sets on its passkey sign-in: the native request or web sign flow it was opened for. */
+export const FLOW_PASSKEY_HEADER = 'x-openkey-passkey-flow';
+const isFlowId = (flowId: string) => FLOW_REQUEST_ID.test(flowId) || WEB_FLOW_ID.test(flowId);
+// The session id is server-issued and the flow id is checked against the two shapes above, so no caller text shapes
+// this identifier or collides with another verification row.
+const flowIdentifier = (sessionId: string, flowId: string) => `${FLOW_PREFIX}:${sessionId}:${flowId}`;
+
+/**
+ * The web flow id a sign page's request names in the flow header, or null for no header or any other value. Only the
+ * web sign routes read it; a native request id sent here names no web flow.
+ */
+export function webFlowIdFromHeader(value: string | null | undefined): string | null {
+  return typeof value === 'string' && WEB_FLOW_ID.test(value) ? value : null;
+}
+
+/** Which gate let an approval through, recorded on the approval for audit. */
+export type ApprovalPasskeyMethod = 'NOT_REQUIRED' | 'FLOW_PASSKEY' | 'REQUEST_PASSKEY';
+
+/** The user-verified flag (bit 2) of a WebAuthn authenticatorData, base64url. The signature covers it. */
+function authenticatorDataVerified(authenticatorData: unknown): boolean {
+  if (typeof authenticatorData !== 'string') return false;
+  const bytes = Buffer.from(authenticatorData, 'base64url');
+  return bytes.length >= 37 && (bytes[32]! & 0x04) !== 0;
+}
+
+/**
+ * One passkey per interaction: records that this session signed in with a passkey FOR this flow (`flowId`: the
+ * native request the sign-in page was opened from, or the web sign flow a sign pop-up or iframe drew). The
+ * sign-in's own assertion is the proof of presence,
+ * so that request's Approve, and only that one, asks for nothing more for five minutes. Nothing is recorded unless
+ * the assertion was user-verified by a passkey that counts for step-up (the bar an approval passkey meets), and
+ * the request exists, is RESOLVED (the state /authorize leaves it in before it sends the user to sign in), has a
+ * known kind, is unowned or this user's, and began before this assertion.
+ */
+export async function recordFlowPasskey(
+  db: Pick<PrismaClient, 'passkey' | 'verification' | 'tinyCloudNativeRequest'>,
+  input: { userId: string; sessionId: string; flowId: string; credentialId: string; userVerified: boolean }, now = new Date(),
+): Promise<boolean> {
+  if (!input.userVerified || !isFlowId(input.flowId)) return false;
+  // A native flow names a pending native request; a web flow is drawn by the sign page and has no stored row, so
+  // its cover rests on the user-verified step-up passkey and the session the sign-in issued alone.
+  if (!WEB_FLOW_ID.test(input.flowId)) {
+    const request = await db.tinyCloudNativeRequest.findUnique({
+      where: { id: input.flowId }, select: { status: true, kind: true, userId: true, createdAt: true, expiresAt: true },
+    });
+    if (!request || request.status !== 'RESOLVED' || (request.kind !== 'SIGNIN' && request.kind !== 'STEPUP')
+      || (request.userId !== null && request.userId !== input.userId)
+      || request.createdAt.getTime() > now.getTime() || request.expiresAt.getTime() <= now.getTime()) return false;
+  }
+  const passkey = await db.passkey.findFirst({
+    where: { credentialID: input.credentialId, userId: input.userId, countsForStepUp: true }, select: { id: true },
+  });
+  if (!passkey) return false;
+  const identifier = flowIdentifier(input.sessionId, input.flowId);
+  await db.verification.deleteMany({ where: { identifier } });
+  await db.verification.create({ data: {
+    id: randomUUID(), identifier, userId: input.userId, value: passkey.id, expiresAt: new Date(now.getTime() + FLOW_PASSKEY_MAX_AGE_MS),
+  } });
+  return true;
+}
+
+/**
+ * Better Auth's after hook for a passkey sign-in that names a request. A sign-in must never fail because the flow
+ * record could not be written, so nothing here throws; without the record Approve simply asks for its own passkey.
+ */
+export async function recordFlowPasskeyAfterHook(
+  db: Pick<PrismaClient, 'passkey' | 'verification' | 'tinyCloudNativeRequest'>,
+  returned: unknown, flowId: string | null | undefined, body: unknown, now = new Date(),
+): Promise<Record<string, never>> {
+  if (!flowId) return {};
+  try {
+    const session = await issuedSession(returned);
+    const response = (body as { response?: { id?: unknown; response?: { authenticatorData?: unknown } } } | undefined)?.response;
+    if (session && typeof response?.id === 'string') {
+      await recordFlowPasskey(db, {
+        ...session, flowId, credentialId: response.id, userVerified: authenticatorDataVerified(response.response?.authenticatorData),
+      }, now);
+    }
+  } catch {
+    log('warn', 'approval_passkey_flow_record_failed');
+  }
+  return {};
+}
+
+/**
+ * Did this session sign in with a passkey for this flow, within five minutes? Nothing else covers it: the row
+ * names the session that signed in, the user and the flow, and a request without a flow id is never covered.
+ */
+export async function flowPasskeyCovers(
+  db: Pick<PrismaClient, 'verification'>, subject: ApprovalSubject, flowId: string | null, now = new Date(),
+): Promise<boolean> {
+  if (subject.sessionId === null || flowId === null || !isFlowId(flowId)) return false;
+  const row = await db.verification.findFirst({
+    where: { identifier: flowIdentifier(subject.sessionId, flowId), userId: subject.userId, expiresAt: { gt: now } }, select: { id: true },
+  });
+  return row !== null;
+}
+
+/** Ends every session's cover for a flow when it is approved or denied, so none can outlive the decision. */
+export async function clearFlowPasskey(db: Pick<PrismaClient, 'verification'>, flowId: string | null): Promise<void> {
+  if (flowId === null || !isFlowId(flowId)) return;
+  await db.verification.deleteMany({ where: { identifier: { startsWith: `${FLOW_PREFIX}:`, endsWith: `:${flowId}` } } });
+}
+
+/** Ends the cover this session holds for one web sign flow, when the sign page is cancelled or closed. */
+export async function releaseFlowPasskey(
+  db: Pick<PrismaClient, 'verification'>, subject: ApprovalSubject, flowId: string | null,
+): Promise<void> {
+  if (subject.sessionId === null || flowId === null || !isFlowId(flowId)) return;
+  await db.verification.deleteMany({ where: { identifier: flowIdentifier(subject.sessionId, flowId), userId: subject.userId } });
+}
+
+/**
+ * `checkApprovalPasskey` for a request whose sign-in was started from it (`flowId`): a passkey sign-in made for this
+ * request counts as the approval's passkey. Says which gate let it through, so the approval can record it. Only
+ * such routes call this. The approvals that always ask (lowering the setting, manage-key mode, enabling an app,
+ * account deletion, passkey enrolment, key export or recovery) call `checkApprovalPasskey` and never see a
+ * sign-in's passkey.
+ */
+export async function checkApprovalPasskeyInFlow(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
+  assertion: unknown, flowId: string | null, rp = relyingParty(), now = new Date(),
+): Promise<{ refusal: ApprovalPasskeyRefusal } | { refusal: null; method: ApprovalPasskeyMethod }> {
+  if (!await approvalNeedsPasskey(db, subject.userId, sensitivity)) return { refusal: null, method: 'NOT_REQUIRED' };
+  if (await flowPasskeyCovers(db, subject, flowId, now)) {
+    log('info', 'approval_passkey_flow_covered');
+    return { refusal: null, method: 'FLOW_PASSKEY' };
+  }
+  const refusal = await checkApprovalPasskey(db, subject, binding, sensitivity, assertion, rp, now);
+  return refusal ? { refusal } : { refusal: null, method: 'REQUEST_PASSKEY' };
+}
+
+/**
+ * `checkApprovalPasskeyInFlow` for the web sign routes: the cover that lets the approval through is spent by the check
+ * itself, one delete that reports whether this call removed the row, so of two parallel approvals exactly one passes on
+ * the cover and the other needs its own passkey. A cover that is gone or expired falls back to the approval's own
+ * assertion. The offers stay read-only (`approvalPasskeyOfferInFlow`).
+ */
+export async function checkApprovalPasskeySpendingFlow(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
+  assertion: unknown, flowId: string | null, rp = relyingParty(), now = new Date(),
+): Promise<{ refusal: ApprovalPasskeyRefusal } | { refusal: null; method: ApprovalPasskeyMethod }> {
+  if (!await approvalNeedsPasskey(db, subject.userId, sensitivity)) return { refusal: null, method: 'NOT_REQUIRED' };
+  if (subject.sessionId !== null && flowId !== null && isFlowId(flowId)) {
+    const spent = await db.verification.deleteMany({
+      where: { identifier: flowIdentifier(subject.sessionId, flowId), userId: subject.userId, expiresAt: { gt: now } },
+    });
+    if (spent.count === 1) {
+      log('info', 'approval_passkey_flow_covered');
+      return { refusal: null, method: 'FLOW_PASSKEY' };
+    }
+  }
+  const refusal = await checkApprovalPasskey(db, subject, binding, sensitivity, assertion, rp, now);
+  return refusal ? { refusal } : { refusal: null, method: 'REQUEST_PASSKEY' };
+}
+
+/**
+ * `approvalPasskeyOffer` for the same kind of route: no challenge when this request's own sign-in already counts. An
+ * offer waived by a web sign flow's cover carries `flowCover: true`, so the sign page can hold the cover to its
+ * visibility check; a native request's cover and an offer waived by the setting carry no marker.
+ */
+export async function approvalPasskeyOfferInFlow(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
+  flowId: string | null, rp = relyingParty(), now = new Date(),
+): Promise<{ required: false; flowCover?: true } | ({ required: true } & ApprovalPasskeyOffer)> {
+  if (await approvalNeedsPasskey(db, subject.userId, sensitivity) && await flowPasskeyCovers(db, subject, flowId, now)) {
+    return flowId !== null && WEB_FLOW_ID.test(flowId) ? { required: false, flowCover: true } : { required: false };
+  }
+  return approvalPasskeyOffer(db, subject, binding, sensitivity, rp, now);
 }

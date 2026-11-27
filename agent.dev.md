@@ -91,9 +91,7 @@ bun dev:portless
 - Database schema changes should include Prisma migration or push guidance and production impact.
 - Deployment changes should explicitly call out whether they affect Phala API deployment,
   Cloudflare Pages web deployment, or local-only development.
-- Changesets are `minor` or `patch`, never `major`, even for breaking changes; say what breaks in
-  the changeset. A maintainer approves a major with an empty `approve-major-release: <package>`
-  commit on the PR, which agents never write. The `Major release guard` check enforces it (TC-615).
+- Classify stable API changes accurately: `major` for incompatible behavior with migration notes, `minor` for compatible features, and `patch` for fixes. A major changeset can be prepared before release approval. Actual major version bumps and publishing still require maintainer sign-off; agents never manufacture approval markers. The PR guard uses `prepare-pr`; release checks stay enforced.
 - When agent-facing context changes, update this document's additional notes and append a concise
   entry to `agent.changelog.md` so future agents can see what changed and why.
 - PR descriptions should list security implications, env changes, deployment impact, tests run, and
@@ -134,3 +132,7 @@ bun dev:portless
   frozen: never edit or revert them, even when reverting the feature that added a column
   to it. Back a feature out in code and leave the column unused. `codeDigest` in
   `20261111_0001_reviewer_accounts` is such a column (TC-2775).
+- Share sender smoke follows the completed production Pages check, not a merge.
+  Its publication gate uses the newest completed non-cancelled attempt for the
+  exact SHA; unpublished web skips smoke, real deployment/smoke failures stay red.
+  The successful API-deploy and manual smoke paths remain available (TC-3683).

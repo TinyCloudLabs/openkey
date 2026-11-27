@@ -18,12 +18,12 @@ describe('the shared reason map', () => {
   });
 
   test.each(codes)('maps the %s code to a reason of its own', (code: string) => {
-    const id = stopForReply({ status: 400, code });
+    const { id } = stopForReply({ status: 400, code });
     expect(id).not.toBe('S26');
     expect(STOPS[id]).toBeDefined();
   });
 
   test('an unknown code is the unexpected reply reason', () => {
-    expect(stopForReply({ status: 400, code: 'something_new' })).toBe('S26');
+    expect(stopForReply({ status: 400, code: 'something_new' }).id).toBe('S26');
   });
 });

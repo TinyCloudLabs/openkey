@@ -20,6 +20,8 @@
 // The transport is DUMB: it does not interpret request payloads beyond
 // the envelope. It surfaces valid requests to a caller-supplied handler.
 
+import { coversManySecrets, parseEncryptionResource } from "@openkey/capability-review";
+
 export interface WidgetTransportOptions {
   /**
    * The origin the widget is opened FROM. Every incoming and outgoing
@@ -62,6 +64,8 @@ export interface WidgetTransportOptions {
   protocolVersion?: number;
   /** V2 iframe phase identity supplied by the URL, before the request arrives. */
   requestId?: string;
+  /** Marks the `openkey:ready` message with `presentation: 1`: this window shows a `signMessage()` presentation. */
+  showsPresentation?: boolean;
 }
 
 export type InvalidReason =
@@ -100,6 +104,11 @@ export interface WidgetRenewalAsk {
 }
 
 const MAX_RENEWAL_LEASE_SECONDS = 365 * 24 * 60 * 60;
+
+/** Largest `presentation` a TinyCloud authorization request may carry. */
+const AUTHORIZATION_PRESENTATION_MAX_BYTES = 16 * 1024;
+/** Largest `presentation` a plain `signMessage()` request may carry: an icon of 32768 characters and the claimed text. */
+const SIGN_MESSAGE_PRESENTATION_MAX_BYTES = 40 * 1024;
 
 /** The request's renewal ask, or null when it is malformed or comes without `expiryChangeable: true`. */
 function readRenewalAsk(value: unknown, expiryChangeable: unknown): WidgetRenewalAsk | null {
@@ -347,7 +356,9 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
         drop("presentation must be a plain object");
       } else {
         // Serialize to measure size in bytes. 16KB is generous for a
-        // manifest bundle but rejects obvious abuse.
+        // manifest bundle but rejects obvious abuse. A plain `signMessage()`
+        // request (a v2 phase with no authorization protocol) may also carry an
+        // icon of up to 32768 characters, so its limit is larger.
         let serialized: string | null = null;
         try {
           serialized = JSON.stringify(payload.presentation);
@@ -357,8 +368,11 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
         if (serialized !== null) {
           // Use encoded byte-length to be robust to non-ASCII characters.
           const bytes = new TextEncoder().encode(serialized).byteLength;
-          if (bytes > 16 * 1024) {
-            drop(`presentation is ${bytes} bytes (>16KB)`);
+          const maxBytes = protocolVersion === 2 && payload.authorizationProtocolVersion !== 1
+            ? SIGN_MESSAGE_PRESENTATION_MAX_BYTES
+            : AUTHORIZATION_PRESENTATION_MAX_BYTES;
+          if (bytes > maxBytes) {
+            drop(`presentation is ${bytes} bytes (>${maxBytes / 1024}KB)`);
           } else {
             // Reject keys that look like trust/verification overrides. The
             // widget MUST derive trust from the server prepare response,
@@ -416,6 +430,26 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       }
       payload.renewal = renewal ?? undefined;
     }
+    if (payload.renewalOnlyResources !== undefined) {
+      const resources = payload.renewalOnlyResources;
+      payload.renewalOnlyResources = undefined;
+      if (payload.renewal) {
+        if (
+          Array.isArray(resources) &&
+          resources.length <= 64 &&
+          new Set(resources).size === resources.length &&
+          [...resources].every((resource) => {
+            if (typeof resource !== "string" || resource.length > 512) return false;
+            const parsed = parseEncryptionResource(resource);
+            return parsed?.kind === "key" && !coversManySecrets(parsed);
+          })
+        ) {
+          payload.renewalOnlyResources = resources;
+        } else {
+          console.warn("[widget-transport] dropping malformed renewal-only resources");
+        }
+      }
+    }
     // Reported origin is optional. Widget flows use their configured
     // origin for the actual channel; `reportedOrigin` is a defence-in-
     // depth hint the SDK can pass so the server prepare route can
@@ -451,12 +485,11 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       // The parent may lock this down further by expecting an origin here
       // too; the ready message carries no privileged data but MUST still
       // go to the configured origin (never "*").
-      expectedWindow.postMessage(
-        protocolVersion === 2
-          ? { type: "openkey:ready", protocolVersion, requestId: opts.requestId }
-          : { type: "openkey:ready", protocolVersion },
-        opts.origin,
-      );
+      const ready = protocolVersion === 2
+        ? { type: "openkey:ready", protocolVersion, requestId: opts.requestId }
+        : { type: "openkey:ready", protocolVersion };
+      // `presentation: 1` tells the SDK this window shows a sign request's presentation.
+      expectedWindow.postMessage(opts.showsPresentation ? { ...ready, presentation: 1 } : ready, opts.origin);
     },
     respond(response) {
       // Sol MAJOR-4 (continuation): clear active-request tracking after

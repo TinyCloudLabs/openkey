@@ -4,24 +4,27 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
-  import { copyText } from '$lib/clipboard';
-  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, parseSiweFields, defaultSelection, renderLiteral, renderSiweLiteral, siweExpirationTime, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
-  import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
+  import { ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { remainingFromServerClock } from '$lib/delegate-code-countdown';
-  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
-  import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { ApprovalReplyError, compareWallets, readHandoffReply, releasedSigningCancellation, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
+  import { OwnerMessageError } from '$lib/delegate-failure-text';
+  import StopPage from '$lib/components/approval/stop-page.svelte';
+  import { expiryAtCapped, requestedExpiryMs } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
-  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import { formatLocalAccessEnd } from '$lib/access-end';
+  import CodeBox from '$lib/components/approval/code-box.svelte';
+  import DonePage, { type ReceiptRow } from '$lib/components/approval/done-page.svelte';
+  import { PasskeyPromptError, answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { focusHeading } from '$lib/components/approval/focus-heading';
-  import { DONE } from '@openkey/sdk/approval-copy';
+  import { CODE, DONE, STOP_PARTS, STOPS, approvalStop, type StopView, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -74,7 +77,7 @@
     }
   });
   const signedExpiry = $derived.by(() => {
-    const value = (phase === 'preview' ? siweExpiration(previewMessage) : null) ?? siweExpiration(handoff?.request.siwe ?? '');
+    const value = (phase === 'preview' ? siweExpirationTime(previewMessage) : null) ?? siweExpirationTime(handoff?.request.siwe ?? '');
     if (!value) return null;
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
@@ -82,12 +85,14 @@
   // The exact end the open fold shows after the choice: what the preview signs, else what a pick would give
   // from now, else what the CLI asked for.
   const foldEndsAt = $derived.by(() => {
-    if (phase === 'preview') return siweExpiration(previewMessage) ?? null;
+    if (phase === 'preview') return siweExpirationTime(previewMessage);
     if (expiryChoiceMs !== null) return new Date(Date.now() + expiryChoiceMs).toISOString();
-    return siweExpiration(handoff?.request.siwe ?? '') ?? null;
+    return siweExpirationTime(handoff?.request.siwe ?? '');
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
+  // How many keys the account has: the receipt names the signing key only when there was a choice.
+  let accountKeyCount = $state(0);
   let model = $state<CapabilityReviewModel | null>(null);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
@@ -97,19 +102,73 @@
   let selected = $state(new Set<string>());
   let contextToken = $state('');
   let previewToken = $state('');
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let previewMessage = $state('');
   let previewActions = $state<string[]>([]);
   let code = $state('');
   let callbackFailed = $state(false);
   let delivered = $state(false);
   let error = $state('');
-  // The HTTP status of a reply that could not be read; shown in Advanced details only.
-  let replyFailureStatus = $state<number | null>(null);
+  let stop = $state<StopView | null>(null);
+  let retry = $state<(() => Promise<void>) | undefined>();
+  let cancelReleasedSigning = $state<(() => Promise<void>) | undefined>();
+  let signedOut = $state(false);
+  let retryClaimAfterSignIn = false;
+  let wanted = $state('');
+  let compared = $state<ReturnType<typeof compareWallets>>([]);
+  const expiredStop = () => approvalStop('S4', { preparedSignIn: true });
+
+  function report(cause: unknown, action?: () => Promise<void>, claiming = false) {
+    cancelReleasedSigning = undefined;
+    const view = stopForApprovalError(cause, {
+      phase: claiming ? 'claim' : 'approve', preparedSignIn: true,
+      permissionsEditable: phase === 'review', expiryChangeable: phase === 'review',
+      values: { email: $session.data?.user.email ?? '', keyName: key ? stopKeyName(key) : '' },
+    });
+    if (cause instanceof ServerReplyError) console.error(cause.message);
+    if (cause instanceof OwnerMessageError) {
+      error = cause.message;
+    } else if (view.placement === 'sign-in') {
+      signedOut = true;
+      retryClaimAfterSignIn = claiming;
+    } else if (view.placement === 'inline' && (!claiming || !!handoff)) {
+      error = [view.title, view.body].filter(Boolean).join('. ');
+    } else {
+      stop = view.placement === 'inline' ? approvalStop('S26', { status: 409, code: 'handoff_signing' }) : view;
+      retry = action;
+    }
+  }
+
+  async function retryStop() {
+    const action = retry;
+    stop = null;
+    retry = undefined;
+    await action?.();
+  }
+
+  function leaveRefusedSigning() {
+    void cancelOnClose?.();
+  }
+
+  async function switchAccount() {
+    const result = await authClient.signOut().catch(() => null);
+    if (!result || result.error) return;
+    stop = null;
+    loaded = false;
+  }
+
+  function resumeSignIn() {
+    if (retryClaimAfterSignIn) loaded = false;
+    retryClaimAfterSignIn = false;
+    signedOut = false;
+    loginRequired = false;
+  }
   let busy = $state(false);
   let loginRequired = $state(false);
   let cancelled = $state(false);
   let loaded = $state(false);
   let submitted = $state(false);
+  const cancelOnClose = $derived(stop?.id === 'S26' && !submitted ? cancelReleasedSigning : undefined);
   let signingIn = $state(false);
   let phase = $state<'review' | 'preview' | 'done'>('review');
   function validCallback(callback: string): boolean {
@@ -128,7 +187,8 @@
   onMount(() => {
     try {
       if (document.documentElement.dataset.preparedHandoffStorageError === '1') {
-        throw new Error('Tab storage is unavailable. Restart the CLI command.');
+        stop = approvalStop('S2');
+        return;
       }
       if (!encoded.startsWith('#tv2=')) throw new Error('Unsupported prepared sign-in transport. Restart the CLI command.');
       if (!fitsPreparedLinkBudget(location, encoded)) {
@@ -144,23 +204,35 @@
       }
       if (!isClaim(value)) throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
       // Freshness is decided on the server's clock once the first reply arrives (see `load`), never the device clock.
-      const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(value.request.siwe)?.[1]?.trim();
-      preparedExpiryMs = Date.parse(issuedAt ?? '') + 300_000;
-      if (!Number.isFinite(preparedExpiryMs)) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      // TC-3826: a request the node could not read (a control character, U+2028 or U+2029) is a mistake in the request, not an expiry.
+      const request = parseSiweFields(value.request.siwe);
+      if (!request.ok) {
+        clearPending();
+        stop = approvalStop('S19', { status: 400, code: 'invalid_siwe_message' });
+        return;
+      }
+      preparedExpiryMs = Date.parse(request.fields.issuedAt) + 300_000;
+      if (!Number.isFinite(preparedExpiryMs)) {
+        clearPending();
+        stop = expiredStop();
+        return;
+      }
       pending = value;
       // Bounds how long the unclaimed request stays in this tab: five minutes from mount on a plain timer.
       pendingTimeout = setTimeout(() => {
         pending = null;
         clearPending();
-        error = 'Prepared sign-in request expired. Restart the CLI command.';
+        stop = expiredStop();
+        retry = undefined;
       }, 300_000);
     } catch (cause) {
+      stop = approvalStop(encoded ? 'S1' : 'S3');
       clearPending();
-      error = cause instanceof Error ? cause.message : 'Invalid prepared sign-in request. Restart the CLI command.';
     } finally {
       initialized = true;
     }
     return () => {
+      leaveRefusedSigning();
       if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
       if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
     };
@@ -180,41 +252,20 @@
     previewToken = '';
     previewMessage = '';
     phase = 'review';
-    error = 'Prepared sign-in request expired. Restart the CLI command.';
+    stop = expiredStop();
+    retry = undefined;
   }
 
   // `needs` names the fields a successful answer must carry as text. With it, a
   // 2xx answer that is empty, not JSON, or without those fields is an unreadable
   // reply and nothing is approved.
-  async function post(path: string, body: unknown, needs?: string[], valid?: (reply: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
+  async function post(path: string, body: unknown, needs?: string[], valid?: (reply: Record<string, unknown>) => boolean, keepalive = false): Promise<Record<string, unknown>> {
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      keepalive,
     });
     serverDate = response.headers?.get('date') ?? null;
-    if (needs !== undefined && response.ok) {
-      let parsed: unknown;
-      try { parsed = await response.json(); } catch { throw new ServerReplyError(response.status); }
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new ServerReplyError(response.status);
-      const reply = parsed as Record<string, unknown>;
-      if (!hasText(reply, ...needs) || (valid && !valid(reply))) throw new ServerReplyError(response.status);
-      return reply;
-    }
-    const data: unknown = await response.json().catch(() => ({}));
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`Invalid response from ${path}.`);
-    const record = data as Record<string, unknown>;
-    if (path === 'handoffs/claim' && response.status === 404 && record.error === 'Not found') {
-      throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
-    }
-    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
-    return record;
-  }
-
-  // A reply that cannot be read leaves nothing approved; the status is shown in
-  // Advanced details and written to the console, never the reply.
-  function unreadableReply(status: number) {
-    replyFailureStatus = status;
-    error = '';
-    console.error(`OpenKey: unreadable server reply (HTTP ${status})`);
+    return readHandoffReply(response, (reply) => (!needs || hasText(reply, ...needs)) && (!valid || valid(reply)));
   }
 
   function selectedIds(): string[] {
@@ -228,52 +279,74 @@
   }
 
   async function load() {
+    const input = pending;
+    if (!input) return;
     busy = true;
     try {
-      const input = pending;
-      if (!input) throw new Error('Missing prepared sign-in request. Restart the CLI command.');
       const availability = await fetch(`${apiUrl}/api/delegate/handoffs/available`, {
         credentials: 'include', cache: 'no-store',
       });
-      if (availability.status === 404) {
-        throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
-      }
+      if (!availability.ok) throw new ApprovalReplyError(availability.status);
       const feature: unknown = await availability.json().catch(() => null);
-      if (!availability.ok || !feature || typeof feature !== 'object' ||
-        !('transportVersion' in feature) || feature.transportVersion !== 2) {
-        throw new Error('Could not verify prepared CLI sign-in availability. Restart the CLI command.');
+      if (!isRecord(feature)) throw new ServerReplyError(availability.status);
+      if (feature.transportVersion !== 2) {
+        stop = approvalStop('S12');
+        return;
       }
       // The availability reply carries the first server `Date`: the request is fresh or expired on that clock.
       const availableDate = availability.headers?.get('date') ?? null;
       const serverNowMs = availableDate === null ? NaN : Date.parse(availableDate);
       if (Number.isFinite(serverNowMs)) {
         const remaining = preparedExpiryMs - serverNowMs;
-        if (remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+        if (remaining <= 0) {
+          pending = null;
+          clearPending();
+          stop = expiredStop();
+          return;
+        }
       }
-      if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
-      const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt']);
-      if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
-      if (claimed.transportVersion !== 2 || claimed.ticket !== input.delivery.handoffId ||
-        typeof claimed.expiresAt !== 'string' || !Number.isFinite(Date.parse(claimed.expiresAt))) {
-        throw new Error('Invalid approval claim response. Restart the CLI command.');
+      if (pending !== input) return;
+      const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(input.request.siwe);
+      const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(input.request.siwe);
+      if (!match || !chain) {
+        stop = approvalStop('S11');
+        return;
       }
+      const { keys } = await api.listKeys();
+      accountKeyCount = keys.length;
+      const walletKeys = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase());
+      if (!walletKeys.length) {
+        wanted = shortWallet(match[2]!);
+        compared = compareWallets(keys);
+        stop = approvalStop('S17', { values: {
+          email: $session.data?.user.email ?? '', wanted: fill(STOP_PARTS.wantsWallet, { short: wanted }),
+        } });
+        return;
+      }
+      const candidates = walletKeys.filter(item => !input.request.keyId || item.id === input.request.keyId);
+      if (!candidates.length) {
+        pending = null;
+        clearPending();
+        stop = approvalStop('S25', { fixedKey: true });
+        return;
+      }
+      if (pending !== input) return;
+      const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt'], (reply) =>
+        reply.transportVersion === 2 && reply.ticket === input.delivery.handoffId &&
+        typeof reply.expiresAt === 'string' && Number.isFinite(Date.parse(reply.expiresAt)),
+      );
+      if (pending !== input) return;
       ticket = input.delivery.handoffId;
       // Counted on the server's clock: the claim's expiry minus the server's own Date header, never the device clock.
-      const remainingMs = remainingFromServerClock(claimed.expiresAt, serverDate);
+      const remainingMs = remainingFromServerClock(claimed.expiresAt as string, serverDate);
       if (remainingMs !== null) handoffTimeout = setTimeout(expireHandoff, remainingMs);
       const resolved: Handoff = {
         request: input.request,
         delivery: input.delivery.callback ? { callback: input.delivery.callback } : {},
-        expiresAt: claimed.expiresAt,
+        expiresAt: claimed.expiresAt as string,
       };
       pending = null;
       clearPending();
-      const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(resolved.request.siwe);
-      const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
-      if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
-      const { keys } = await api.listKeys();
-      const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
-      if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
       const choices = candidates.map(candidate => {
         const review = parseCapabilityReview({
           message: resolved.request.siwe,
@@ -290,15 +363,17 @@
       handoff = resolved;
       if (choices.length === 1) chooseKey(choices[0]!);
     } catch (cause) {
-      pending = null;
-      clearPending();
-      if (cause instanceof ServerReplyError) unreadableReply(cause.status);
-      else error = cause instanceof Error ? cause.message : 'Could not claim prepared sign-in.';
+      if (pending !== input && stop?.id === 'S4') return;
+      report(cause, pending === input ? load : undefined, true);
+      if (stop && !stop.buttons.includes('try-again')) {
+        pending = null;
+        clearPending();
+      }
     } finally { busy = false; }
   }
 
   $effect(() => {
-    if (!initialized || !pending || loaded || $session.isPending) return;
+    if (!initialized || !pending || loaded || signedOut || stop || $session.isPending) return;
     if (!$session.data) {
       // A focus-triggered session refresh can finish before the email auth
       // redirect. Do not consume the one-use claim in the page being left.
@@ -332,16 +407,17 @@
       }
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpiration(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
+      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpirationTime(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
+      // TC-3442: whether Approve needs the passkey, with the challenge for this preview.
+      passkeyNeed = isRecord(candidate.passkey) ? candidate.passkey as ApprovalPasskeyNeed : null;
       phase = 'preview';
     } catch (cause) {
-      if (cause instanceof ServerReplyError) unreadableReply(cause.status);
-      else error = cause instanceof Error ? cause.message : 'Could not preview sign-in.';
+      report(cause, preview);
     }
     finally { busy = false; }
   }
@@ -358,16 +434,24 @@
     busy = true;
     error = '';
     try {
-      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1 };
+      // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture. Without one the tap
+      // stays synchronous up to `submitted`, so a deadline passing mid-tap can't throw the handoff away.
+      const passkeyAssertion = key.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
+      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
       if (key.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
-        if (!provider) throw new Error('No browser wallet is available for this external key.');
+        if (!provider) throw new OwnerMessageError(STOPS.S32.lines.noWallet);
         const accounts = await provider.request({ method: 'eth_requestAccounts' });
         if (!Array.isArray(accounts) || !accounts.every(value => typeof value === 'string')) throw new Error('Wallet returned invalid accounts.');
         const account = accounts.find(value => value.toLowerCase() === key!.address.toLowerCase());
-        if (!account) throw new Error('The browser wallet does not contain the requested account.');
-        const signature = await provider.request({ method: 'personal_sign', params: [previewMessage, account] });
-        if (typeof signature !== 'string') throw new Error('Wallet returned an invalid signature.');
+        if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(key.address) }));
+        let signature: unknown;
+        try {
+          signature = await provider.request({ method: 'personal_sign', params: [previewMessage, account] });
+        } catch {
+          throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
+        }
+        if (typeof signature !== 'string') throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
         body.externalSignature = signature;
       }
       submitted = true;
@@ -405,8 +489,20 @@
         } catch { callbackFailed = true; }
       }
     } catch (cause) {
-      if (cause instanceof ServerReplyError) unreadableReply(cause.status);
-      else error = cause instanceof Error ? cause.message : 'Signing failed. Restart the CLI command.';
+      if (cause instanceof PasskeyPromptError) {
+        error = cause.message;
+      } else if (cause instanceof ApprovalReplyError && isPasskeyApprovalRefusal(cause)) {
+        // The refused challenge is spent: preview again before the next Approve.
+        busy = false;
+        await preview();
+        if (!stop) error = cause.message;
+      } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
+        error = STOPS.S32.lines.walletDeclined;
+      } else {
+        report(cause, submitted ? undefined : approve);
+        cancelReleasedSigning = releasedSigningCancellation(cause,
+          () => post('handoffs/cancel-claimed', { ticket }, undefined, undefined, true));
+      }
     } finally { busy = false; }
   }
 
@@ -422,9 +518,9 @@
       previewToken = '';
       previewMessage = '';
       phase = 'review';
-      error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+      cancelled = true;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not cancel sign-in.';
+      report(cause, cancel);
     } finally { busy = false; }
   }
 
@@ -433,7 +529,7 @@
     try {
       const result = await authClient.signIn.passkey();
       if (result.error) error = authErrorMessage(result.error, 'Passkey sign-in failed');
-      else loginRequired = false;
+      else resumeSignIn();
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Passkey sign-in failed'; }
     finally { signingIn = false; }
   }
@@ -441,17 +537,37 @@
   const ended = $derived(initialized && (cancelled || (!!error && !handoff && !pending)));
   const loaderOn = $derived(
     !initialized ||
-    (!ended && ($session.isPending || (!!$session.data && !loginRequired && !handoff && !code && (busy || pending !== null)))),
+    (!ended && !signedOut && ($session.isPending || (!!$session.data && !loginRequired && !handoff && !code && (busy || pending !== null)))),
   );
   const loaderLit = $derived(!initialized || $session.isPending ? 'session' : 'request');
-  const cardOn = $derived(initialized && !ended && !$session.isPending && !$session.data);
-  const signedInOn = $derived(initialized && !ended && !$session.isPending && !!$session.data && loginRequired);
+  const cardOn = $derived(initialized && !ended && !$session.isPending && (!$session.data || signedOut));
+  const signedInOn = $derived(initialized && !ended && !$session.isPending && !!$session.data && loginRequired && !signedOut);
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : handoff && phase === 'done' ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(handoff && phase === 'done' && !delivered && !cancelled ? 'code' : 'terminal');
+  // The end pages: who asked, and what the receipt can say for certain.
+  const requester = $derived(model?.requester.displayName ?? '');
+  const receiptRows = $derived.by(() => {
+    const rows: ReceiptRow[] = [];
+    const ends = siweExpirationTime(previewMessage);
+    if (ends) rows.push({ label: DONE.receipt.ends, value: formatLocalAccessEnd(ends) });
+    if (key && accountKeyCount > 1) {
+      rows.push({ label: DONE.receipt.signedWith, value: `${key.label ?? `Key ${key.keyIndex}`} ${key.address.slice(0, 6)}...${key.address.slice(-4)}` });
+    }
+    return rows;
+  });
 </script>
 
-<Slip at={slipAt} last={slipLast} center={loaderOn}>
-  {#if loaderOn}
+<svelte:window onpagehide={leaveRefusedSigning} />
+
+<Slip at={stop ? 2 : slipAt} last={slipLast} stopped={!!stop} email={stop && $session.data?.user.email}
+  center={!stop && (loaderOn || cancelled || (!!handoff && phase === 'done'))}>
+  {#if stop}
+    {#key stop}
+      <StopPage {stop} wanted={stop.id === 'S17' ? wanted : ''} compared={stop.id === 'S17' ? compared : []}
+        retry={retry ? retryStop : undefined} {switchAccount} {cancelOnClose}
+        chooseKey={keyChoices.length > 1 ? () => { stop = null; key = null; phase = 'review'; } : undefined} />
+    {/key}
+  {:else if loaderOn}
     <Loader phases={['session', 'request']} lit={loaderLit} />
   {:else if cardOn}
     <SignInCard
@@ -459,39 +575,30 @@
       registerHref={`/auth/register?returnTo=${encodeURIComponent('/delegate?transportVersion=2')}`}
       {error}
       {signingIn}
+      {signedOut}
       onPasskey={signIn}
+      onSignedIn={() => { if (signedOut) resumeSignIn(); }}
       onBegin={() => { error = ''; }}
       onCancel={cancelPending}
     />
   {:else if signedInOn}
     <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancelPending} />
   {:else if cancelled}
-    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{DONE.cancelled.heading}</h1>
-    <p class="m-0 text-pretty">{DONE.cancelled.line}</p>
+    <DonePage outcome="cancelled" />
+  {:else if handoff && phase === 'done' && delivered}
+    <DonePage outcome="signedIn" {requester} rows={receiptRows} />
+  {:else if handoff && phase === 'done'}
+    <CodeBox
+      fullCode={code}
+      eyebrow={CODE.eyebrow}
+      line={callbackFailed ? fill(CODE.lineNotReached, { destination: codeDestinationWord() }) : fill(CODE.line, { requester })}
+    />
   {:else}
     <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
-    {#if replyFailureStatus !== null}
-      <div role="alert" class="rounded-lg bg-red-50 p-3 text-red-800 space-y-2" data-testid="server-reply-refusal">
-        <p class="font-semibold">{SERVER_REPLY_TITLE}</p>
-        <p>{SERVER_REPLY_BODY}</p>
-        <details>
-          <summary>Advanced details</summary>
-          <p>Server reply: <code class="mono">HTTP {replyFailureStatus}</code></p>
-        </details>
-      </div>
-    {/if}
     {#if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>
-    {:else if handoff && phase === 'done'}
-      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p><CloseTabButton />
-      {:else}
-        <p>{callbackFailed ? 'Could not reach the CLI automatically. Paste this same response in your CLI.' : 'Paste this response in your CLI to complete sign-in.'}</p>
-        <p>Only paste this code into a terminal you started yourself.</p>
-        <textarea readonly aria-label="Full delegation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>
-        <button onclick={() => copyText(code)}>Copy full code</button>
-      {/if}
     {:else if handoff && keyChoices.length > 1 && !key}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
       <dl class="space-y-2 text-sm break-all">
@@ -553,6 +660,7 @@
         disabled={!expiryEditable}
         onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
         endsAt={foldEndsAt}
+        holder="device"
       />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}

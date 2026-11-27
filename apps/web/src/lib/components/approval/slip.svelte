@@ -14,13 +14,15 @@
     stopped?: boolean;
     /** Centre the page's content (the loader). */
     center?: boolean;
+    /** Show the three steps. The Google or Apple window has none. */
+    steps?: boolean;
     /** The signed-in account. The chip shows only when this is set. */
     email?: string | null;
     onSignOut?: () => void | Promise<void>;
     children: Snippet;
   }
 
-  let { at = 0, last = 'agent', stopped = false, center = false, email = null, onSignOut, children }: Props = $props();
+  let { at = 0, last = 'agent', stopped = false, center = false, steps: showSteps = true, email = null, onSignOut, children }: Props = $props();
 
   const steps = $derived([FRAME.steps.signIn, FRAME.steps.review, FRAME.steps.last[last]]);
   let menuOpen = $state(false);
@@ -84,14 +86,16 @@
       {/if}
     </header>
 
-    <ol class="m-0 grid list-none grid-cols-3 gap-1.5 p-0 px-5 min-[600px]:px-7" aria-label={FRAME.progress}>
-      {#each steps as label, index (index)}
-        <li
-          class="border-t-2 pt-[7px] text-[11.5px] font-semibold whitespace-nowrap {stepClass(index)}"
-          aria-current={at === index + 1 ? 'step' : undefined}
-        >{stopped && at === index + 1 ? fill(FRAME.stopped, { step: label }) : label}</li>
-      {/each}
-    </ol>
+    {#if showSteps}
+      <ol class="m-0 grid list-none grid-cols-3 gap-1.5 p-0 px-5 min-[600px]:px-7" aria-label={FRAME.progress}>
+        {#each steps as label, index (index)}
+          <li
+            class="border-t-2 pt-[7px] text-[11.5px] font-semibold whitespace-nowrap {stepClass(index)}"
+            aria-current={at === index + 1 ? 'step' : undefined}
+          >{stopped && at === index + 1 ? fill(FRAME.stopped, { step: label }) : label}</li>
+        {/each}
+      </ol>
+    {/if}
 
     <main class="flex flex-1 flex-col px-5 pt-[26px] pb-6 min-[600px]:px-7 min-[600px]:pt-[30px] min-[600px]:pb-7 {center ? 'items-center text-center' : ''}">
       {@render children()}

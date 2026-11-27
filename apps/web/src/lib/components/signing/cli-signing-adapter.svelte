@@ -41,9 +41,17 @@
     showSigner?: boolean;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
+    /** Words for a request for one named secret; see `SigningApproval`'s `oneSecret`. */
+    oneSecret?: { headline: string; hint: string; decryptNote: string } | null;
+    /** A one-tap request whose signer OpenKey can't name; see `SigningApproval`'s `unverifiedRequester`. */
+    unverifiedRequester?: { name: string; line: string; reason?: string | null } | null;
+    /** The key an approval request's access goes to; see `SigningApproval`'s `recipientKey`. */
+    recipientKey?: string | null;
+    /** The requester's name from OpenKey's own list, for the sign-in heading; see `SigningApproval`'s `signInApp`. */
+    signInApp?: string | null;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange, oneSecret = null, unverifiedRequester = null, recipientKey = null, signInApp = null }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -100,8 +108,13 @@
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   expiryBounded={transport.expiry?.bounded ?? false}
   expiryMaxMs={transport.expiry?.maxMs ?? null}
+  shortenOnlyExpiry={transport.expiry?.shortenOnly ?? null}
   renewal={transport.renewal ?? null}
   {showSigner}
+  {oneSecret}
+  {unverifiedRequester}
+  {recipientKey}
+  {signInApp}
   {onApprove}
   {onCancel}
   cancelText={transport.decline ? "Back" : undefined}

@@ -7,6 +7,7 @@
 
 import { test, expect, type Locator, type Page, type Route, type TestInfo } from '@playwright/test';
 import { HOST, LOOPBACK_ORIGIN, ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -113,6 +114,7 @@ async function stubApi(page: Page, options: {
     }
     return json(route, {});
   });
+  await context.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   // Apple's page: the user consents, and the API's callback redirects to the
   // return URL the start request named (its error URL on a failure), with its answer.
   await context.route('https://appleid.apple.com/**', (route) => {
@@ -258,7 +260,7 @@ test('account exists: nothing is linked; the user signs in and adds Apple after 
   const popup = await openApplePopup(page);
   const step = popup.getByTestId('social-account-exists');
   await expect(step).toContainText(
-    `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+    `An OpenKey account already uses ${EMAIL}. Sign in to it, then add Apple in Settings.`,
   );
   await expect(step.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
   await shot(popup, info, '04-account-exists');
@@ -515,7 +517,7 @@ test.describe('native sheet', () => {
     });
     await page.goto(`/auth/login?${NATIVE_QUERY}`);
     await expect(page.getByTestId('social-account-exists')).toHaveText(
-      `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+      `An OpenKey account already uses ${EMAIL}. Sign in to it, then add Apple in Settings.`,
     );
     await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
     await shot(page, info, '11-native-account-exists');

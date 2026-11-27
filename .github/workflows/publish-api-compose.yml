@@ -1,0 +1,140 @@
+# TC-3837: after a production API deploy, publish the exact app-compose the openkey-api CVM measured,
+# as an asset of the GitHub release `openkey-api-<commit>`. Its sha256 is the compose_hash in the
+# CVM's attestation, and the images inside are pinned by digest, so anyone can turn an attested
+# compose_hash into the code it runs.
+#
+# It runs when a deploy run completes, as its own run, so a publication failure fails here, loudly,
+# without changing the deploy run's conclusion (the Share sender smoke and the next deploy's smoke
+# gate key on that). The deploy writes the artifact `api-deploy-record` once `phala deploy` returns;
+# a run without it never reached the CVM, and there is nothing to publish.
+name: Publish API app-compose
+
+on:
+  workflow_run:
+    workflows:
+      - Deploy API to Phala Cloud
+      - TC-492 Production Cutover
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Only manual runs of this repository's main: both deploy workflows are workflow_dispatch only and
+    # refuse other refs. A failed run is still read, because it may have reached the CVM.
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion != 'skipped'
+    runs-on: ubuntu-latest
+    # The production environment holds the Phala key this job reads the measurement with.
+    environment: production
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # The record is data from another run: it is validated here and reaches later steps only
+      # through env. Its image is checked again against the live attestation. Its commit must be the
+      # deploy run's own commit (Deploy API); TC-492 records the candidate it validated against PR #170.
+      - name: Read the deploy record
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+            --jq '[.artifacts[] | select(.name == "api-deploy-record" and .expired == false)] | length')
+          if [ "$count" = "0" ]; then
+            echo "::notice::Run ${RUN_ID} did not reach the CVM; no app-compose to publish."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$count" = "1" ] || { echo "::error::run ${RUN_ID} has ${count} api-deploy-record artifacts" >&2; exit 1; }
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name api-deploy-record --dir "$RUNNER_TEMP/record"
+          commit=$(jq -r '.commit | strings' "$RUNNER_TEMP/record/record.json")
+          image=$(jq -r '.image | strings' "$RUNNER_TEMP/record/record.json")
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the deploy record's commit is not a full SHA" >&2; exit 1; }
+          [[ "$image" =~ ^skgbafa/openkey-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::the deploy record's image is not skgbafa/openkey-api pinned by digest" >&2; exit 1; }
+          case "$RUN_WORKFLOW_PATH" in
+            .github/workflows/deploy-api.yml)
+              [ "$commit" = "$RUN_HEAD_SHA" ] || { echo "::error::the deploy record names ${commit}, not the run's commit ${RUN_HEAD_SHA}" >&2; exit 1; } ;;
+            .github/workflows/tc-492-production-cutover.yml) ;;
+            *) echo "::error::unexpected triggering workflow ${RUN_WORKFLOW_PATH}" >&2; exit 1 ;;
+          esac
+          {
+            echo "found=true"
+            echo "commit=${commit}"
+            echo "image=${image}"
+          } >> "$GITHUB_OUTPUT"
+
+      # The workflow's own commit (main), which has the script, not necessarily the deployed one.
+      - uses: actions/checkout@v4
+        if: steps.record.outputs.found == 'true'
+        with:
+          # This job holds contents: write; gh reads GH_TOKEN, so nothing needs the token in .git/config.
+          persist-credentials: false
+
+      - name: Install Phala CLI
+        if: steps.record.outputs.found == 'true'
+        run: npm install -g phala@1.1.22
+
+      - name: Setup Bun
+        if: steps.record.outputs.found == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      # A deploy that started after this one finished makes the CVM measure a different image; the
+      # script then fails after its retries, and that deploy's own run publishes its compose.
+      - name: Read the measured app-compose
+        if: steps.record.outputs.found == 'true'
+        id: measured
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          EXPECTED_API_IMAGE: ${{ steps.record.outputs.image }}
+        run: bun scripts/measured-app-compose.ts "$RUNNER_TEMP/app-compose.json"
+
+      - name: Publish it beside the release
+        if: steps.record.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.record.outputs.commit }}
+          IMAGE: ${{ steps.record.outputs.image }}
+          COMPOSE_HASH: ${{ steps.measured.outputs.compose_hash }}
+          DEPLOY_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full SHA" >&2; exit 1; }
+          tag="openkey-api-${COMMIT}"
+          # One asset per measured compose: a re-run of the same commit builds a new digest, so a new compose.
+          asset="$RUNNER_TEMP/app-compose.${COMPOSE_HASH}.json"
+          mv "$RUNNER_TEMP/app-compose.json" "$asset"
+          echo "${COMPOSE_HASH}  ${asset}" | sha256sum -c -
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            notes=$(cat <<EOF
+          The OpenKey API (api.openkey.so) as deployed to its Phala dstack CVM from ${COMMIT}.
+
+          Each \`app-compose.<compose_hash>.json\` asset is the exact app-compose the CVM measured for one deploy of this commit:
+          - \`sha256sum app-compose.<compose_hash>.json\` equals the \`compose_hash\` in the CVM's attestation (the \`compose-hash\` event in RTMR3);
+          - every \`image:\` in its \`docker_compose_file\` is pinned by \`@sha256:\` digest;
+          - \`gh attestation verify oci://docker.io/<repository>@<digest> --repo ${GITHUB_REPOSITORY}\` shows which workflow run built the API image. Its source commit is the commit that workflow ran from: for a Deploy API run, the commit above; for a TC-492 cutover, \`main\` at dispatch, while the image was built from the candidate commit above.
+          EOF
+            )
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --latest=false \
+              --title "openkey-api ${COMMIT::12}" --notes "$notes"
+          fi
+          gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          {
+            echo "### Measured app-compose published"
+            echo
+            echo "Image: \`${IMAGE}\`"
+            echo "compose_hash: \`${COMPOSE_HASH}\`"
+            echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${tag}"
+            echo "Deploy run: ${DEPLOY_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"

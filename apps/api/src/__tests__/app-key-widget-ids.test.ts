@@ -486,20 +486,19 @@ describe('key.block and key.unblock are admitted only on the requesting app\'s o
     expect(body.error).toBe(NOT_DECLARED);
   });
 
-  test('block or unblock on a prefix that is not under apps/ is refused', async () => {
+  test('block or unblock outside apps/ gets a context for the warning screen, and nothing is signed', async () => {
     for (const ability of [BLOCK, UNBLOCK]) {
       for (const resource of [urn('/secrets/'), urn('/secrets/k'), urn('/'), urn('')]) {
-        const { res, body } = await fromA({ [resource]: ability }, ownBlock);
-        expect(res.status).toBe(403);
-        expect(body.code).toBe('app_key_grant_refused');
+        const { res } = await fromA({ [resource]: ability }, ownBlock);
+        expect(res.status).toBe(200);
       }
     }
+    expect(signed).toEqual([]);
   });
 
-  test('block on a key outside apps/ is refused beside an app key that is listed, and the whole request is refused', async () => {
-    const { res, body } = await fromA({ [urn(`/apps/${A_ID}/`)]: BLOCK, [urn('/secrets/')]: BLOCK }, ownBlock);
-    expect(res.status).toBe(403);
-    expect(body.code).toBe('app_key_grant_refused');
+  test('block on a key outside apps/ beside an app key that is listed: the app key is admitted and the block waits for the owner', async () => {
+    const { res } = await fromA({ [urn(`/apps/${A_ID}/`)]: BLOCK, [urn('/secrets/')]: BLOCK }, ownBlock);
+    expect(res.status).toBe(200);
     expect(signed).toEqual([]);
   });
 

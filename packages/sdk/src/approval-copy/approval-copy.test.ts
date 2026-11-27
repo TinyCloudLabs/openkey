@@ -85,47 +85,47 @@ describe('STOPS', () => {
 describe('stopForReply', () => {
   test('every known code maps to a reason that is not the catch-all', () => {
     for (const code of KNOWN_REPLY_CODES) {
-      const id = stopForReply({ status: 400, code, permissionsEditable: true, expiryChangeable: true });
+      const { id } = stopForReply({ status: 400, code, permissionsEditable: true, expiryChangeable: true });
       expect(id).not.toBe('S26');
       expect(STOPS[id]).toBeDefined();
     }
   });
 
   test('status alone decides 401, 409, 410 and 429', () => {
-    expect(stopForReply({ status: 401 })).toBe('S22');
-    expect(stopForReply({ status: 409 })).toBe('S24');
-    expect(stopForReply({ status: 410 })).toBe('S13');
-    expect(stopForReply({ status: 429 })).toBe('S23');
+    expect(stopForReply({ status: 401 }).id).toBe('S22');
+    expect(stopForReply({ status: 409 }).id).toBe('S24');
+    expect(stopForReply({ status: 410 }).id).toBe('S13');
+    expect(stopForReply({ status: 429 }).id).toBe('S23');
   });
 
   test('a code of its own wins over a plain status', () => {
-    expect(stopForReply({ status: 410, code: 'expired_request' })).toBe('S4');
-    expect(stopForReply({ status: 400, code: 'key-mismatch' })).toBe('S16');
-    expect(stopForReply({ status: 403, code: 'user-mismatch' })).toBe('S15');
-    expect(stopForReply({ status: 403, code: 'key_delete_not_grantable' })).toBe('S21');
-    expect(stopForReply({ status: 400, code: 'invalid_siwe_recap' })).toBe('S11');
-    expect(stopForReply({ status: 400, code: 'delegation_prepare_failed' })).toBe('S19');
-    expect(stopForReply({ status: 404, code: 'key_not_found' })).toBe('S25');
+    expect(stopForReply({ status: 410, code: 'expired_request' }).id).toBe('S4');
+    expect(stopForReply({ status: 400, code: 'key-mismatch' }).id).toBe('S16');
+    expect(stopForReply({ status: 403, code: 'user-mismatch' }).id).toBe('S15');
+    expect(stopForReply({ status: 403, code: 'key_delete_not_grantable' }).id).toBe('S21');
+    expect(stopForReply({ status: 400, code: 'invalid_siwe_recap' }).id).toBe('S11');
+    expect(stopForReply({ status: 400, code: 'delegation_prepare_failed' }).id).toBe('S19');
+    expect(stopForReply({ status: 404, code: 'key_not_found' }).id).toBe('S25');
   });
 
   test('permission and length codes stay beside the control only when the person can change them', () => {
-    expect(stopForReply({ status: 400, code: 'empty_selection', permissionsEditable: true })).toBe('permissions');
-    expect(stopForReply({ status: 400, code: 'empty_selection' })).toBe('S14');
-    expect(stopForReply({ status: 400, code: 'invalid_expiry', expiryChangeable: true })).toBe('length');
-    expect(stopForReply({ status: 400, code: 'invalid_expiry' })).toBe('lengthFixed');
+    expect(stopForReply({ status: 400, code: 'empty_selection', permissionsEditable: true }).id).toBe('permissions');
+    expect(stopForReply({ status: 400, code: 'empty_selection' }).id).toBe('S14');
+    expect(stopForReply({ status: 400, code: 'invalid_expiry', expiryChangeable: true }).id).toBe('length');
+    expect(stopForReply({ status: 400, code: 'invalid_expiry' }).id).toBe('lengthFixed');
   });
 
   test('anything else is S26, and an unsafe code is ignored', () => {
-    expect(stopForReply({ status: 500, code: 'internal_error' })).toBe('S26');
-    expect(stopForReply({ status: 500 })).toBe('S26');
-    expect(stopForReply({ status: 400, code: 'key-mismatch<script>' })).toBe('S26');
+    expect(stopForReply({ status: 500, code: 'internal_error' }).id).toBe('S26');
+    expect(stopForReply({ status: 500 }).id).toBe('S26');
+    expect(stopForReply({ status: 400, code: 'key-mismatch<script>' }).id).toBe('S26');
   });
 
   test('opening a link: 404 is S5, 410 is S4, a server failure is S6, the rest S7', () => {
-    expect(stopForReply({ status: 404, phase: 'load' })).toBe('S5');
-    expect(stopForReply({ status: 410, phase: 'load' })).toBe('S4');
-    expect(stopForReply({ status: 503, phase: 'load' })).toBe('S6');
-    expect(stopForReply({ status: 400, code: 'binding_mismatch', phase: 'load' })).toBe('S7');
+    expect(stopForReply({ status: 404, phase: 'load' }).id).toBe('S5');
+    expect(stopForReply({ status: 410, phase: 'load' }).id).toBe('S4');
+    expect(stopForReply({ status: 503, phase: 'load' }).id).toBe('S6');
+    expect(stopForReply({ status: 400, code: 'binding_mismatch', phase: 'load' }).id).toBe('S7');
   });
 });
 

@@ -4,34 +4,53 @@
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
+  } from '$lib/approval-passkey';
   import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
   import { parseSIWE } from '$lib/siwe-parser';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { clearSessionToken, getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE, isTermsRequired } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
+  import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
+  import {
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
+  import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
-  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { expiryAt, renewalWindowExpiryAt } from '$lib/approval-expiry';
   import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
-  import { renewalStartsTicked } from '$lib/renewal-default';
+  import { isOnceTier, renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
+    RENEWAL_ONLY_COPY,
     parseSiweChainId,
     defaultSelection,
     annotateAppScopedGrants,
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    REGISTRY_RECORD_SIGN_REFUSED,
+    registryRecordSignRefusal,
     isSiweShaped,
+    siweExpirationTime,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
+  import AccountSetupCard from '$lib/components/signing/account-setup-card.svelte';
+  import { ACCOUNT_SETUP_COMPLETED, hostSigningRefusal } from '$lib/account-setup';
   import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
@@ -60,6 +79,10 @@
   let keyChoices = $state<EthereumKey[]>([]);
   let keyChoicesLoaded = $state(false);
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
+  const claimedView = $derived.by(() => {
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
+    return claimed ? claimedPresentationView(claimed) : null;
+  });
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -74,7 +97,10 @@
   // is told USER_CANCELLED, so it keeps its connection).
   let keyProblem = $state<'missing' | 'transient' | null>(null);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let signInNote = $state<string | null>(null);
   let reviewModel = $state<CapabilityReviewModel | null>(null);
   let reviewSourceMessage = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
@@ -99,6 +125,9 @@
   // Presentation envelope forwarded by the SDK. Display-only. Trust is
   // set only from the server prepare response (see below).
   let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // The `presentation` of a plain signMessage() request: what the app says about itself. Display-only; read only by
+  // `claimedView`, which decides what may be shown. It is not sent to the API, the signer or the host page.
+  let plainPresentation = $state<unknown>(null);
   let serverMetadataTrust = $state<
     { status: 'verified' | 'origin-bound' | 'unsigned'; reason: string } | null
   >(null);
@@ -121,8 +150,12 @@
   // must NOT overwrite an in-flight one — the response would escape to
   // the wrong parent.
   let requestSealed = $state(false);
-  // Background previews seal the current selection and exact bytes before Approve is enabled.
-  let heldPreview = $state<SigningPreview | null>(null);
+  // Background previews seal the current selection and exact bytes before Approve is enabled. TC-3442: each carries
+  // the API's passkey offer for those bytes (null when the reply had none: Approve then goes without an assertion).
+  type HeldPreview = SigningPreview & { passkey: ApprovalPasskeyNeed | null };
+  let heldPreview = $state<HeldPreview | null>(null);
+  // TC-3442: a passkey refusal's text stays on screen while the next preview fetches a new offer.
+  let keepPasskeyRefusal = false;
   const previewSignedMessage = $derived(heldPreview?.signedMessage ?? null);
   let previewToken = $state<string | null>(null);
   let contextDeadline = 0;
@@ -134,16 +167,24 @@
   // TC-2933: the app's renewal ask (only ever with expiryChangeable), sent at prepare. The box shows only where the
   // prepare answer offers it (`renewalMaxLeaseMs`); `renewalLeaseMs` is the owner's lease, null while unticked.
   let renewalAsk: WidgetRenewalAsk | null = null;
+  let renewalOnlyResources: string[] | undefined;
+  let renewalTurnedOff = $state(false);
   let renewalMaxLeaseMs = $state<number | null>(null);
   let renewalLeaseMs = $state<number | null>(null);
+  // The app asked for renewal and the prepare answer has not arrived: the face holds its access line until it does.
+  let renewalAnswerPending = $state(false);
+  // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
+  let renewalConfirmed = $state(false);
   let renewalDefaulted = false;
   // The owner's choice as the preview seals it; null when the box is not offered.
   function renewalChoiceBody() {
     if (renewalMaxLeaseMs === null) return null;
-    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+    if (renewalLeaseMs === null) return { choice: 'finite' };
+    return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
   }
   // Adopt the prepare answer's offer. The first offer sets the default tick (spec D11/D12, never the Once tier).
   function adoptRenewalOffer(offer: unknown) {
+    renewalAnswerPending = false;
     const seconds = renewalAsk && offer && typeof offer === 'object' && 'leaseLifetimeSeconds' in offer
       ? offer.leaseLifetimeSeconds
       : undefined;
@@ -160,21 +201,75 @@
     if (reviewModel && renewalStartsTicked(renewalAsk?.purpose, reviewModel.permissions)) renewalLeaseMs = defaultLeaseMs(maxLeaseMs);
   }
   // A changed lease (and, from the sensitive-access step, the window) is a new preview carrying both.
-  function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+  function changeRenewal(leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) {
+    renewalTurnedOff = leaseMs === null;
     renewalLeaseMs = leaseMs;
+    renewalConfirmed = leaseMs !== null && (sensitiveConfirmed === true || renewalConfirmed);
     if (windowMs !== undefined) expiryChoiceMs = windowMs;
     invalidatePreviewForSelectionEdit();
   }
-  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
-  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  // TC-2927: the extra permissions (decrypt, key creation, or blocking and unblocking keys on the encryption network
+  // or on keys outside the app's own area) the owner allowed on the warning screen. The preview records them and
+  // signing refuses an undecided one.
   let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
 
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // A request in the one-hour tier (a grant that reaches all secrets or all encrypted data) offers the lifetime
+  // control whatever the app sent: the server treats it as expiry-changeable and defaults the signature to one
+  // hour when the owner picks nothing.
+  const onceTierRequest = $derived(reviewModel !== null && isOnceTier(reviewModel.permissions));
+
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // In the frame the request is read only once the account is known to have agreed to the Terms (a window's layout
+  // holds its pages the same way).
+  const isAuthenticated = $derived(signedIn && (!inIframe || $termsGate.phase === 'open'));
+  // A step the person acts on before the review: sign in, the Terms, or a Terms check that failed. While the Terms are
+  // only being read the frame is not ready to show, so the host never sizes to the passing check.
+  const personStep = $derived(
+    !signedIn || (inIframe && ($termsGate.phase === 'required' || $termsGate.phase === 'failed')),
+  );
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  // Key selection that ran into a fresh Terms check (a refused call) starts again once the account has agreed.
+  let wasAuthenticated = false;
+  $effect(() => {
+    const now = isAuthenticated;
+    if (wasAuthenticated && !now && signedIn) untrack(retryKey);
+    wasAuthenticated = now;
+  });
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+    retryKey();
+  }
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request.
+  const webFlowId = newWebSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap reached a covered offer before it counted.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  // Set while the offer is fetched again without the flow id, so a second tap cannot start a second approval.
+  let coverRefetch = $state<'preview' | 'exact' | null>(null);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
+  let coverShown: ReviewSnapshot | null = null;
+  function withdrawCover(approved: HeldPreview | null) {
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
+    coverWithdrawn = true;
+    error = '';
+    coverRefetch = approved ? 'preview' : 'exact';
+    if (approved) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
@@ -184,6 +279,17 @@
       schedule: (run, ms) => {
         const id = setTimeout(run, ms);
         return () => clearTimeout(id);
+      },
+      nextFrame: (run) => {
+        const id = requestAnimationFrame(run);
+        return () => cancelAnimationFrame(id);
+      },
+      // The frame size and Approve's box (the window size alone while Approve is not in the DOM yet).
+      sample: () => {
+        const approve = document.querySelector('button.approve');
+        if (!approve) return [window.innerWidth, window.innerHeight];
+        const box = approve.getBoundingClientRect();
+        return [window.innerWidth, window.innerHeight, box.top, box.left, box.width, box.height];
       },
       onChange: (settled) => { frameSettled = settled; },
     });
@@ -235,6 +341,7 @@
           transport = createWidgetTransport({
             origin,
             container: 'iframe',
+            showsPresentation: true,
             protocolVersion: v2 ? 2 : 1,
             requestId: phaseRequestId ?? undefined,
             onRequest: handleTransportRequest,
@@ -350,16 +457,25 @@
     // approval shows no expiry control and the app's own expiry is signed.
     expiryChangeable = data.expiryChangeable === true;
     renewalAsk = data.renewal && typeof data.renewal === 'object' ? (data.renewal as WidgetRenewalAsk) : null;
+    renewalOnlyResources = Array.isArray(data.renewalOnlyResources) ? data.renewalOnlyResources : undefined;
+    renewalTurnedOff = false;
     renewalMaxLeaseMs = null;
     renewalLeaseMs = null;
+    renewalConfirmed = false;
     renewalDefaulted = false;
+    renewalAnswerPending = renewalAsk !== null;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
-    // prepare and populated into serverMetadataTrust below.
+    // prepare and populated into serverMetadataTrust below. A plain signMessage()
+    // (no authorization protocol) carries the app's own words in `presentation`
+    // instead: shown only after `claimedPresentation` has judged them, never read
+    // as a manifest envelope and never sent anywhere.
+    const plain = authorizationProtocolVersion === null;
     requestPresentation =
-      data.presentation && typeof data.presentation === 'object'
+      !plain && data.presentation && typeof data.presentation === 'object'
         ? (data.presentation as Record<string, unknown>)
         : null;
+    plainPresentation = plain ? data.presentation ?? null : null;
     serverMetadataTrust = null;
     serverVerifiedManifest = null;
     reviewModel = null;
@@ -397,7 +513,7 @@
         layoutGate?.measure(
           height,
           (!!review && review.getClientRects().length > 0 && getComputedStyle(review).visibility === 'visible') ||
-          ((!isAuthenticated || !!keyError) && content.getClientRects().length > 0),
+          ((personStep || !!keyError) && content.getClientRects().length > 0),
         );
         return;
       }
@@ -463,9 +579,9 @@
   // binds its request ID. Measure the current step after that binding so
   // the hidden host frame always exposes Sign In or Cancel.
   $effect(() => {
-    if (!v2 || !requestSealed || (isAuthenticated && !keyError)) return;
+    if (!v2 || !requestSealed || !(personStep || keyError)) return;
     void tick().then(() => {
-      if ((isAuthenticated && !keyError) || !contentEl) return;
+      if (!(personStep || keyError) || !contentEl) return;
       layoutGate?.measure(
         Math.max(contentEl.scrollHeight, Math.ceil(contentEl.getBoundingClientRect().height)),
         true,
@@ -571,6 +687,7 @@
 
   /** A key read the server refused (404/403): the key is not this account's, so reading again cannot help. */
   function keyNotInAccount(failure: unknown): boolean {
+    if (failure instanceof Error && isTermsRequired(403, { error: failure.message })) return false;
     return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
   }
 
@@ -656,10 +773,14 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
+      // A plain signMessage() carries the app's own words in `presentation`; they are shown only after
+      // `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = authorizationProtocolVersion === null;
       requestPresentation =
-        event.data.presentation && typeof event.data.presentation === 'object'
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
           : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false;
@@ -777,6 +898,7 @@
           provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
         },
         editable: canEdit,
+        renewalOnlyResources,
         metadataTrust: effectiveTrust,
         reason: envelopeReasonText
           ? { text: envelopeReasonText, source: 'caller' }
@@ -813,7 +935,7 @@
       );
       // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpirationTime(previewSignedMessage) ?? nextReviewModel.expiry }
         : expiryChoiceMs !== null
           ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
           : nextReviewModel;
@@ -835,14 +957,14 @@
     );
   }
 
-  function currentSelectedActionIds(): string[] {
-    return requestedActionIds(reviewModel, reviewSelection);
-  }
+  const renewalOnlyNeedsPreview = $derived(
+    reviewModel?.permissions.some((grant) => grant.renewalOnly) === true && !canUseAuthorizeSignFn(),
+  );
 
   const previewInput = $derived.by(() =>
     key && canUseAuthorizeSignFn() && !siweRefusal
       ? JSON.stringify([currentRequestId, key.id, message,
-          [...currentSelectedActionIds()].sort(), expiryChoiceMs, elevatedAllowed])
+          requestedActionIds(reviewModel, reviewSelection).sort(), expiryChoiceMs, elevatedAllowed])
       : null,
   );
 
@@ -861,7 +983,46 @@
     return () => clearTimeout(timer);
   });
 
-  function currentPreview(): SigningPreview | null {
+  // TC-3442: the exact-byte path asks whether Approve needs the passkey for exactly this key, message and site. An
+  // external key never gets an offer; a passkey refusal spends the challenge, so the revision fetches a new one.
+  // Approve sends nothing until the offer for the current input has landed: it waits while the fetch is in flight and
+  // fetches again after a failure.
+  const exactBytePasskeyInput = $derived.by(() =>
+    key && key.keyType === 'MANAGED' && !externalSignMode && message && reviewModel && !siweRefusal && !canUseAuthorizeSignFn()
+      ? JSON.stringify([key.id, message, origin === '*' ? null : origin])
+      : null,
+  );
+  let exactBytePasskey = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let exactBytePasskeyRevision = $state(0);
+  let exactBytePasskeyFetch = $state<PasskeyOfferFetch>('idle');
+  const exactByteGate = $derived(approvalPasskeyGate({
+    input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
+  }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
+  $effect(() => {
+    const input = exactBytePasskeyInput;
+    void exactBytePasskeyRevision;
+    if (input === null) {
+      exactBytePasskeyFetch = 'idle';
+      return;
+    }
+    const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
+    let current = true;
+    exactBytePasskeyFetch = 'pending';
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
+      (need) => {
+        if (!current) return;
+        exactBytePasskey = { input, need };
+        exactBytePasskeyFetch = 'idle';
+      },
+      () => { if (current) exactBytePasskeyFetch = 'failed'; },
+    );
+    return () => { current = false; };
+  });
+  const offerFailure = $derived(exactBytePasskeyFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
+
+  function currentPreview(): HeldPreview | null {
     const preview = heldPreview;
     return !previewStopped && !signing && !previewing && preview &&
       preview.input === previewInput && preview.revision === previewRevision &&
@@ -894,10 +1055,9 @@
     if (!currentKeyBelongsToSession()) return;
     if (signing || previewStopped) return;
     const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
-    const selectedIds = currentSelectedActionIds();
-    const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
     previewing = true;
-    error = '';
+    if (keepPasskeyRefusal) keepPasskeyRefusal = false;
+    else error = '';
     try {
       let token = performance.now() < contextDeadline ? previewToken : null;
       if (!token) {
@@ -1018,12 +1178,18 @@
         }
       }
       if (!isCurrent()) return;
+      // Resolve the renewal offer before narrowing the selection for this preview.
+      const selectedIds = requestedActionIds(reviewModel, reviewSelection, renewalLeaseMs !== null);
+      // TC-3821: a confirmed sensitive renewal counts the window from the message's own start, as the node renews it.
+      const requestedExpiry = expiryChoiceMs === null
+        ? null
+        : renewalConfirmed && renewalLeaseMs !== null ? renewalWindowExpiryAt(expiryChoiceMs, message) : expiryAt(expiryChoiceMs);
       const previewStarted = performance.now();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         withSessionCredential({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1058,10 +1224,16 @@
         input, revision, authorizationContextToken: token,
         previewApprovalToken: previewResult.previewApprovalToken,
         signedMessage: previewResult.signedMessage, selectedActionIds: selectedIds, deadline,
+        // TC-3442: the API's passkey offer for these bytes; a reply without one leaves it unknown (null).
+        passkey: typeof (previewResult.passkey as { required?: unknown } | null | undefined)?.required === 'boolean'
+          ? previewResult.passkey as ApprovalPasskeyNeed
+          : null,
       };
     } catch (e: any) {
       if (!isCurrent()) return;
-      if (e instanceof ServerRefusalError) refuse(e);
+      renewalAnswerPending = false;
+      if (accountSetupRefusal(e)) { /* the card or the refusal is on screen */ }
+      else if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Preview failed';
       previewToken = null;
@@ -1073,9 +1245,9 @@
   }
 
   async function approveAndSign() {
-    if (refused) return;
+    if (refused || renewalOnlyNeedsPreview) return;
     if (!key || !message) return;
-    if (signing || previewStopped) return;
+    if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -1095,8 +1267,35 @@
       if (!previewing) invalidatePreviewForSelectionEdit();
       return;
     }
+    // Without the offer for these bytes nothing is sent: Approve waits for the fetch in flight, or fetches again.
+    let passkeyNeed: ApprovalPasskeyNeed | null = null;
+    if (!externalSignMode) {
+      if (approved) passkeyNeed = approved.passkey;
+      else if (exactByteGate.action === 'send') passkeyNeed = exactByteGate.need;
+      else {
+        if (exactByteGate.action === 'retry') exactBytePasskeyRevision++;
+        return;
+      }
+    }
+    // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
+    // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved);
+      return;
+    }
     signing = true;
     error = '';
+    // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
+    // offer (and preview) stays for the next tap.
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
+    try {
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e: unknown) {
+      error = (e as Error).message;
+      signing = false;
+      return;
+    }
+    let passkeyRefused = false;
     try {
       if (approved) {
         const { authorizationContextToken, previewApprovalToken, signedMessage } = approved;
@@ -1121,7 +1320,7 @@
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           withSessionCredential({
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: /authorize-sign requires the preview
@@ -1130,6 +1329,7 @@
               previewApprovalToken,
               selectedActionIds,
               protocolVersion: 1,
+              passkeyAssertion,
             }),
           }),
         );
@@ -1158,7 +1358,9 @@
 
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
-      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0);
+      const result = await api.signMessage(
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
+      );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -1180,15 +1382,26 @@
       });
       sendClose();
     } catch (e: any) {
-      if (e instanceof ServerRefusalError) refuse(e);
+      if (accountSetupRefusal(e)) { /* the card or the refusal is on screen */ }
+      else if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Signing failed';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced below.
+      passkeyRefused = isPasskeyApprovalRefusal(e);
     } finally {
       signing = false;
       if (approved && !previewStopped) {
         previewToken = null;
         contextDeadline = 0;
         heldPreview = null;
+        if (passkeyRefused) {
+          keepPasskeyRefusal = true;
+          invalidatePreviewForSelectionEdit();
+        }
+      }
+      if (!approved && passkeyRefused) {
+        exactBytePasskey = null;
+        exactBytePasskeyRevision++;
       }
     }
   }
@@ -1198,6 +1411,30 @@
     previewRevision++;
   }
 
+  // The fresh offer a withdrawn cover waits for. When it lands for exactly the request the owner saw at the tap, and
+  // the host has applied the review's layout, that tap goes on to the passkey prompt. A request that differs stays on
+  // screen for a new tap, and a failed fetch shows the failure so that the next tap tries again.
+  $effect(() => {
+    const waiting = coverRefetch;
+    if (waiting === null) return;
+    const preview = waiting === 'preview' ? currentPreview() : null;
+    const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
+    const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
+    if (!landed && !failed) return;
+    if (landed) {
+      const fresh = preview
+        ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+        : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
+      if (!sameReview(coverShown, fresh)) {
+        coverRefetch = null;
+        return;
+      }
+      if (v2 && !layoutReady) return;
+    }
+    coverRefetch = null;
+    if (landed) untrack(() => { void approveAndSign(); });
+  });
+
   function retryPreview() {
     if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
     invalidatePreviewForSelectionEdit();
@@ -1205,11 +1442,14 @@
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
   // origin (or arrives unattributed) is never signed and has no override.
+  // Hardening: registry record signing is refused the same way, unless the requester is TinyCloud One / Home.
   // Every signing path re-checks this; the server enforces it too.
   const siweRefusal = $derived.by(() => {
     if (!message) return null;
+    const registry = registryRecordSignRefusal(message, origin);
+    if (registry) return { registry: true as const, code: REGISTRY_RECORD_SIGN_REFUSED.code, message: registry.message };
     const check = checkSiweOrigin(message, origin);
-    return check.siwe && !check.ok ? check : null;
+    return check.siwe && !check.ok ? { registry: false as const, code: check.code, message: check.message } : null;
   });
   let refusalReported = false;
   $effect(() => {
@@ -1218,7 +1458,10 @@
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
-      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+      error: {
+        code: 'UNKNOWN',
+        message: siweRefusal.registry ? 'REGISTRY_RECORD_SIGN_REFUSED' : `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}`,
+      },
     });
   });
 
@@ -1226,6 +1469,41 @@
   // tell the host once, without any reply content.
 
   let refusalMessage = $state<string | null>(null);
+
+  // A host message refused because the owner's TinyCloud account is not set up shows the account setup card. Once the
+  // owner has set the account up, the widget asks the API once more; a second host-signing refusal tells the app the
+  // account is set up (ACCOUNT_SETUP_COMPLETED), so it repeats its request without hosting the account's spaces.
+  let accountSetupNeeded = $state(false);
+  let accountSetupDone = false;
+
+  function accountSetupRefusal(failure: unknown): boolean {
+    const refusal = hostSigningRefusal(failure, origin);
+    if (!refusal) return false;
+    if (accountSetupDone) {
+      accountSetupNeeded = false;
+      refusalMessage = 'Your TinyCloud account is set up. Return to the app to continue.';
+      refused = true;
+      error = refusalMessage;
+      if (!refusalSent) {
+        refusalSent = true;
+        sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: ACCOUNT_SETUP_COMPLETED } });
+      }
+      return true;
+    }
+    if (refusal !== 'setup') return false;
+    accountSetupNeeded = true;
+    error = '';
+    return true;
+  }
+
+  function accountSetupFinished() {
+    accountSetupNeeded = false;
+    accountSetupDone = true;
+    previewToken = null;
+    heldPreview = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
 
   function unreadableReply(status: number) {
     replyFailureStatus = status;
@@ -1255,12 +1533,19 @@
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if (isAuthenticated) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
     keyReadGeneration++;
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1274,6 +1559,7 @@
 
   function cancel() {
     keyReadGeneration++;
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1363,15 +1649,25 @@
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
     {#if siweRefusal}
-      <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+      {#if siweRefusal.registry}
+        <RegistryRecordRefusal variant="embed" onclose={closeRefused} />
+      {:else}
+        <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+      {/if}
     {:else if replyFailureStatus !== null}
       <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
-    {:else if !isAuthenticated}
+    {:else if accountSetupNeeded && key}
+      <AccountSetupCard keyId={key.id} requestOrigin={origin} ondone={accountSetupFinished} oncancel={cancel} />
+    {:else if !signedIn}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
-        onauthenticated={() => { embedAuthenticated = true; }}
+        note={signInNote}
+        onauthenticated={() => { signInNote = null; embedAuthenticated = true; }}
         {passkeysSupported}
+        flowId={webFlowId}
       />
+    {:else if !isAuthenticated}
+      <TermsGate surface="embed" layoutReady={v2 ? layoutReady : true} onsignedout={termsSignedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
@@ -1423,9 +1719,13 @@
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing,
+          approveVisibility: coverOffered ? approveVisibility : undefined,
+          passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,
-          error: error || layoutError,
-          approveBlockedReason: refusalMessage,
+          error: error || layoutError || offerFailure,
+          approveBlockedReason: refusalMessage ?? (renewalOnlyNeedsPreview
+            ? RENEWAL_ONLY_COPY.previewRequired(originAuthority(origin) ?? RENEWAL_ONLY_COPY.appFallback)
+            : null),
           refused,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: currentPreview() !== null,
@@ -1435,10 +1735,11 @@
           onSelectionEdited: (next) => {
             reviewSelection = next;
           },
-          expiry: canUseAuthorizeSignFn() && expiryChangeable
+          expiry: canUseAuthorizeSignFn() && (expiryChangeable || onceTierRequest)
             ? {
                 chosenMs: expiryChoiceMs,
                 onceDefault: true,
+                oncePickCapped: true,
                 onChange: (ms) => {
                   expiryChoiceMs = ms;
                   invalidatePreviewForSelectionEdit();
@@ -1446,8 +1747,9 @@
               }
             : undefined,
           renewal: canUseAuthorizeSignFn() && renewalMaxLeaseMs !== null
-            ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, onChange: changeRenewal }
+            ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, turnedOff: renewalTurnedOff, onChange: changeRenewal }
             : undefined,
+          renewalPending: renewalAnswerPending && !refused && !siweRefusal && !error,
           // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
           // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the
           // next preview (or the exact-byte sign) and the server refuses to sign an extra permission that is not among them.
@@ -1459,6 +1761,7 @@
             },
           },
           invalidatePreview: invalidatePreviewForSelectionEdit,
+          claimedPresentation: claimedView,
         }}
       />
     {:else}

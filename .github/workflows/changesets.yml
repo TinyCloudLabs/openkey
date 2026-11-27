@@ -19,6 +19,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
 
+      # Pre-release security check: neither publish to npm nor open a version PR unless every
+      # check in .github/required-checks.json passed on this exact SHA (waits up to 40 min).
+      - name: Require green checks on the released commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -60,6 +67,15 @@ jobs:
           else
             echo "has_changesets=true" >> "$GITHUB_OUTPUT"
             echo "Found publishable changesets — will create version PR"
+          fi
+
+      - name: Check major release authorization
+        run: |
+          if [ -f .changeset/pre.json ]; then
+            node .github/scripts/check-major-release-signoff.mjs beta
+            node .github/scripts/check-major-release-signoff.mjs stable
+          else
+            node .github/scripts/check-major-release-signoff.mjs release
           fi
 
       # changesets/action v1 treated every directory in .changeset/ as a

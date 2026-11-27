@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   api-tests:
     name: API test suite
@@ -38,6 +42,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      # Mirror the Dockerfile check so a migration PR missing the schema
+      # contract fails during review rather than the deploy image build.
+      - name: DB schema contract
+        run: bun test packages/db/src/schema-contract.test.ts
+
       # The API imports @openkey/db and @openkey/tee from their built dist/,
       # and @openkey/db needs the generated Prisma client. The tests that drive
       # the signing pages' own code load @openkey/capability-review from its dist/,
@@ -48,7 +57,13 @@ jobs:
           bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
-        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts
+        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/oauth-client-website.test.ts scripts/step-up-ceiling-parity.test.ts scripts/compose-image-digests.test.ts scripts/measured-app-compose.test.ts
+
+      # TC-3569: OpenKey's step-up ceilings against the ones TinyCloud One's framed apps ask for, entry for entry.
+      # Reads One's file at the commit pinned in scripts/step-up-ceilings/one.pin.json from the public tinychat
+      # repository (no secret). A null pin fails the step (--require-pin): the step-up flag waits for the pin.
+      - name: Step-up ceiling parity with TinyCloud One
+        run: bun scripts/step-up-ceiling-parity.ts --require-pin
 
       - name: Migration deploy and schema contract tests
         run: bun test scripts/deploy-production-migrations.test.ts packages/db/src/schema-contract.test.ts
@@ -152,10 +167,17 @@ jobs:
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       # Each run creates and drops its own database on this throwaway server.
       - name: Renewal lease tests (PGlite and Postgres)
         env:
           OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: bun test apps/api/src/__tests__/renewal-lease-stop.integration.test.ts
+
+      # One email code must sign in exactly once and every wrong guess must cost an attempt when the
+      # verifications arrive together on separate connections, which PGlite cannot show.
+      - name: Email code verification race (PGlite and Postgres)
+        env:
+          OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: bun test apps/api/src/__tests__/email-otp-verify-race.integration.test.ts
