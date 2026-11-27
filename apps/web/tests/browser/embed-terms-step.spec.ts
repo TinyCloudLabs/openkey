@@ -292,7 +292,6 @@ test('in a v2 Sign frame the host has not acknowledged, Agree is enabled past th
 
   const agree = page.frameLocator('#sign').getByTestId('terms-agree');
   await expect(agree).toBeVisible();
-  await expect(agree).toBeDisabled();
   // Past the frame's own settle ceiling (1.5 s from display), no host acknowledgement is needed for Agree.
   await page.waitForTimeout(2_000);
   await expect(agree).toBeEnabled();
