@@ -257,6 +257,7 @@ test('a newly navigated v2 fragment replaces the previous pending request', asyn
 
 test('a failed new-fragment storage write cannot resume the previous request', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   const previous = await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey);
   expect(previous).not.toBeNull();
   const replacement = JSON.parse(Buffer.from(previous!.slice(5), 'base64url').toString('utf8'));
