@@ -281,6 +281,7 @@ test('the embedded hand-off opens the setup window and relays its answer', async
     host.setupWindow = iframe.contentWindow!;
     window.addEventListener('message', (event) => {
       if (event.origin !== location.origin || event.source !== host.setupWindow) return;
+      if (event.data?.type === 'openkey:loading') return; // TC-4438: the page-load signal, not an answer
       if (event.data?.type === 'openkey:ready') {
         host.setupWindow.postMessage({ type: 'openkey:account-setup:request', requestId: 'r-embed', protocolVersion: 1, keyId: 'selected-key' }, location.origin);
         return;
