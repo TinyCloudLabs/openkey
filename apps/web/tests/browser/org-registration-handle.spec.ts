@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const consentPath = '/org-registration/consent';
 const storageKey = 'openkey.org-registration.intent.v1';
@@ -28,6 +29,7 @@ async function fixture(page: Page, initiallySignedIn: boolean, code = 'registrat
       if (url.pathname === '/api/auth/email-otp/send-verification-otp') { await respond({ success: true }); return; }
       if (url.pathname === '/api/auth/sign-in/email-otp') { state.signedIn = true; await respond({ user, token: session.token }); return; }
       if (url.pathname === '/api/auth/passkey/list-user-passkeys') { await respond([{ id: 'ui-passkey' }]); return; }
+      if (url.pathname === '/api/account/terms') { await respond(TERMS_ACCEPTED); return; }
       if (url.pathname === '/api/keys') { await respond({ keys: [{ id: 'ui-personal-key' }] }); return; }
       if (url.pathname === '/api/org-keys') {
         state.attempts += 1;
