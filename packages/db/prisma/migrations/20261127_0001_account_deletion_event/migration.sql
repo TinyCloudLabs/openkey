@@ -4,7 +4,7 @@
 -- A new table: no existing row is read or locked.
 CREATE TABLE "account_deletion_event" (
     "id" BIGSERIAL NOT NULL,
-    "addresses" TEXT[],
+    "addresses" TEXT[] NOT NULL,
     "deletedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "account_deletion_event_pkey" PRIMARY KEY ("id"),

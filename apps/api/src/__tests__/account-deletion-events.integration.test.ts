@@ -19,7 +19,7 @@ const API = 'https://api.openkey.test';
 const postgresUrl = process.env.OPENKEY_TEST_POSTGRES_URL;
 const backend = process.env.OPENKEY_ACCOUNT_DELETION_EVENTS_BACKEND === 'postgres' ? 'postgres' : 'pglite';
 // Built at runtime: a fixed credential-shaped literal does not belong in a fixture.
-const FEED_BEARER = 'tb' + 'ab'.repeat(8);
+const FEED_BEARER = 'tb' + 'ab'.repeat(16); // 34 characters: the feed needs at least 32
 
 if (process.env.OPENKEY_ACCOUNT_DELETION_EVENTS_CHILD !== '1') {
   for (const engine of ['pglite', 'postgres'] as const) {
@@ -231,6 +231,12 @@ if (process.env.OPENKEY_ACCOUNT_DELETION_EVENTS_CHILD !== '1') {
     expect((await allIds()).filter((id) => id > before)).toEqual([]);
     // The table itself refuses an empty address list.
     await expect(Promise.resolve(prisma.accountDeletionEvent.create({ data: { addresses: [], deletedAt: new Date() } }))).rejects.toThrow();
+  });
+
+  test('the table refuses a NULL address list', async () => {
+    const before = await maxId();
+    await expect(Promise.resolve(prisma.$executeRaw`INSERT INTO account_deletion_event ("addresses", "deletedAt") VALUES (NULL, now())`)).rejects.toThrow();
+    expect((await allIds()).filter((id) => id > before)).toEqual([]);
   });
 
   test('the advisory lock is taken before the event row is inserted', async () => {

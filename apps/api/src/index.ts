@@ -6,7 +6,7 @@ import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
-import { apiErrorHandler, log, logConfigInvalid, logError, logLegacyResealFailed, requestLogger, type ApiEnv } from './log';
+import { apiErrorHandler, log, logConfigInvalid, logError, logLegacyResealFailed, logMetric, requestLogger, type ApiEnv } from './log';
 import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
@@ -70,6 +70,7 @@ import {
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
 import { startAccountDeletionEventSweep } from './services/account-deletion-event-sweep';
+import { accountDeletionFeedTokenTooShort } from './services/account-deletion-event';
 import { startRevokePendingSweep } from './services/native-delegation/revoke-pending';
 
 
@@ -87,6 +88,11 @@ try {
 } catch {
   logConfigInvalid('TERMS_RELEASE');
   throw new Error('Invalid API configuration');
+}
+// A deletion-feed token shorter than 32 characters is refused by the feed (503); say so once at boot, never the value or its length.
+// An unset token is the normal state and logs nothing.
+if (process.env.NODE_ENV !== 'test' && accountDeletionFeedTokenTooShort(process.env.OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN)) {
+  logMetric('warn', 'account_deletion_feed_token_short', {});
 }
 
 // Create Hono app

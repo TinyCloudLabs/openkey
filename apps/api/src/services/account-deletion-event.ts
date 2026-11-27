@@ -3,8 +3,15 @@ import type { Prisma } from '@openkey/db';
 
 // The account-deletion event feed (GET /api/internal/account-deletions). One row per deleted account, written in the
 // deletion's own transaction; a consumer reads the rows in id order and keeps its own cursor. OpenKey keeps no
-// delivery state. Configuration: the feed reads OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN (a read-only bearer; the feed
-// answers 503 while it is unset) and names its environment by the origin of BETTER_AUTH_URL.
+// delivery state. Configuration: the feed reads OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN (a read-only bearer that must be
+// at least 32 characters; the feed answers 503 while it is unset or shorter) and names its environment by the origin
+// of BETTER_AUTH_URL.
+
+/** A token shorter than this is refused: the feed answers 503 and boot logs one warning. */
+export const ACCOUNT_DELETION_FEED_TOKEN_MIN_LENGTH = 32;
+/** True for a token that is set but too short to serve behind. Unset or empty is a separate, silent state. */
+export const accountDeletionFeedTokenTooShort = (token: string | undefined): boolean =>
+  !!token && token.length < ACCOUNT_DELETION_FEED_TOKEN_MIN_LENGTH;
 
 /** Rows older than this are deleted by the retention sweep: they hold addresses. */
 export const ACCOUNT_DELETION_EVENT_RETENTION_DAYS = 60;

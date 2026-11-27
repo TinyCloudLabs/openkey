@@ -2,13 +2,17 @@ import { timingSafeEqual } from 'crypto';
 import { Hono, type Context } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { logMetric } from '../log';
-import { ACCOUNT_DELETION_EVENT_PAGE_DEFAULT, ACCOUNT_DELETION_EVENT_PAGE_MAX } from '../services/account-deletion-event';
+import {
+  ACCOUNT_DELETION_EVENT_PAGE_DEFAULT,
+  ACCOUNT_DELETION_EVENT_PAGE_MAX,
+  ACCOUNT_DELETION_FEED_TOKEN_MIN_LENGTH,
+} from '../services/account-deletion-event';
 
 // GET /api/internal/account-deletions?after=<id>&limit=<n>: the account-deletion events in id order, for one
-// consumer that keeps its own cursor. Read-only, behind its own bearer (OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN; unset or
-// empty answers 503). Every response names its environment (the origin of BETTER_AUTH_URL) so a consumer can refuse a
-// feed from the wrong deployment. Each event carries every key address of the deleted account and nothing else.
-// Addresses, the bearer and the Authorization header are never logged.
+// consumer that keeps its own cursor. Read-only, behind its own bearer (OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN, at least
+// 32 characters; unset, empty or shorter answers 503). Every response names its environment (the origin of
+// BETTER_AUTH_URL) so a consumer can refuse a feed from the wrong deployment. Each event carries every key address of
+// the deleted account and nothing else. Addresses, the bearer and the Authorization header are never logged.
 
 const prisma = createPrismaClient();
 
@@ -62,7 +66,8 @@ accountDeletionFeedRouter.all('*', async (c, next) => {
 
 accountDeletionFeedRouter.get('/', async (c: Context) => {
   const token = process.env.OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN;
-  if (!token) return c.body(null, 503);
+  // Unset, empty or shorter than the minimum: not served, whatever bearer arrives, and checked before any comparison.
+  if (!token || token.length < ACCOUNT_DELETION_FEED_TOKEN_MIN_LENGTH) return c.body(null, 503);
   if (!authorized(c.req.header('Authorization'), token)) return c.json({ error: 'Unauthorized' }, 401);
   const environment = environmentId();
   if (!environment) return c.body(null, 503);
@@ -71,7 +76,7 @@ accountDeletionFeedRouter.get('/', async (c: Context) => {
   const limitValues = c.req.queries('limit') ?? [];
   const after = afterValues.length === 0 ? 0n : afterValues.length === 1 ? parseId(afterValues[0]) : null;
   const limit = limitValues.length > 1 ? null : parseLimit(limitValues[0]);
-  if (after === null || limit === null) return c.json({ error: 'Invalid after or limit' }, 400);
+  if (after === null || limit === null) return c.json({ error: 'Invalid after or limit parameter' }, 400);
 
   let rows: Awaited<ReturnType<AccountDeletionFeedDatabase['accountDeletionEvent']['findMany']>>;
   try {

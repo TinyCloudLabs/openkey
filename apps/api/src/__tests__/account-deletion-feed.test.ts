@@ -20,7 +20,7 @@ await mockModules({ '@openkey/db': () => ({ createPrismaClient: () => routeDatab
 const { accountDeletionFeedRouter } = await import('../routes/account-deletion-feed?tc4416' as string);
 
 // Built at runtime: a fixed credential-shaped literal does not belong in a fixture.
-const BEARER = 'tb' + 'ab'.repeat(8);
+const BEARER = 'tb' + 'ab'.repeat(16); // 34 characters: the feed needs at least 32
 const ENVIRONMENT = 'https://api.openkey.test';
 const envKeys = ['OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN', 'BETTER_AUTH_URL'] as const;
 const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
@@ -59,7 +59,7 @@ test('503 with no body while the token is unset or empty; 401 for a missing or w
   expect((await get('', { Authorization: BEARER })).status).toBe(401);
   expect((await get('', { Authorization: `Bearer ${BEARER}x` })).status).toBe(401);
   expect((await get('', { Authorization: `Bearer ${BEARER.slice(0, -1)}` })).status).toBe(401);
-  expect((await get('', { Authorization: `Bearer ${'tb' + 'cd'.repeat(8)}` })).status).toBe(401);
+  expect((await get('', { Authorization: `Bearer ${'tb' + 'cd'.repeat(16)}` })).status).toBe(401);
   for (const refused of [await get('', {}), await get('', { Authorization: 'Bearer nope' })]) {
     expect(refused.headers.get('cache-control')).toBe('no-store');
     expect(await refused.json()).toEqual({ error: 'Unauthorized' });
@@ -127,7 +127,7 @@ test('400 for a bad after or limit, with the environment unnamed and nothing rea
     const response = await get(`?${query}`);
     expect(response.status, query).toBe(400);
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await response.json()).toEqual({ error: 'Invalid after or limit' });
+    expect(await response.json()).toEqual({ error: 'Invalid after or limit parameter' });
   }
   expect(queries).toEqual([]);
   expect((await get('?after=9223372036854775807')).status).toBe(200);
@@ -178,4 +178,23 @@ test('the log carries counts only: no address, bearer or Authorization header', 
   expect(output).not.toContain(BEARER);
   expect(output).not.toContain('Bearer');
   expect(output).not.toMatch(/0x[0-9a-f]{40}/i);
+});
+
+test('a token shorter than 32 characters is not served, even with the matching bearer; 32 characters is', async () => {
+  seed(1);
+  const token = (length: number) => 'tb'.padEnd(length, 'ab');
+  const short = token(31);
+  expect(short).toHaveLength(31);
+  process.env.OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN = short;
+  const refused = await get('', { Authorization: `Bearer ${short}` });
+  expect(refused.status).toBe(503);
+  expect(await refused.text()).toBe('');
+  expect(refused.headers.get('cache-control')).toBe('no-store');
+  expect(queries).toEqual([]);
+  const enough = token(32);
+  expect(enough).toHaveLength(32);
+  process.env.OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN = enough;
+  const served = await get('', { Authorization: `Bearer ${enough}` });
+  expect(served.status).toBe(200);
+  expect(((await served.json()) as { events: unknown[] }).events).toHaveLength(1);
 });
