@@ -192,10 +192,10 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_ROUTES_CHILD !== '1') {
   }
 
   describe('who may ask', () => {
-    test('a bearer token or another site is refused before anything is read', async () => {
+    test('a bad bearer token or another site is refused before anything is read', async () => {
       const owner = await account();
       const bearer = await post('/api/account-setup/prepare', { cookie: owner.cookie, authorization: 'Bearer x' }, { keyId: owner.keyId });
-      expect(bearer.status).toBe(403);
+      expect(bearer.status).toBe(401);
       const foreign = await app.fetch(new Request(`${api}/api/account-setup/prepare`, {
         method: 'POST',
         headers: { origin: 'https://app.example', cookie: owner.cookie, 'content-type': 'application/json' },

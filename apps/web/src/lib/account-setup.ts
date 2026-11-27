@@ -13,6 +13,7 @@
 import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
 // Relative, not `$lib/`: the mounted widget-page tests stub `$lib/widget-transport` with the transport alone.
 import { resolveWidgetOrigin } from './widget-transport';
+import { getSessionToken, isEmbedContext } from './embed-passkey';
 
 export const ACCOUNT_SETUP_REQUEST = 'openkey:account-setup:request';
 export const ACCOUNT_SETUP_RESPONSE = 'openkey:account-setup:response';
@@ -20,6 +21,10 @@ export const ACCOUNT_SETUP_PROTOCOL_VERSION = 1;
 
 /** Where an owner finishes a setup OpenKey cannot do here: a wallet key, or a location of their own. First-party. */
 export const TINYCLOUD_ONE_SETUP_URL = 'https://tinycloud.one/?finish-setup=registry';
+
+/** What the owner reads when the account's hourly limit of codes or approval attempts is spent (API code `account_setup_rate_limited`). */
+export const ACCOUNT_SETUP_RATE_LIMITED_CODE = 'account_setup_rate_limited';
+export const ACCOUNT_SETUP_RATE_LIMITED_MESSAGE = 'Too many attempts in the last hour. Wait an hour, then try once more.';
 
 export type AccountSetupErrorCode = 'USER_CANCELLED' | 'ACCOUNT_SETUP_FAILED' | 'ACCOUNT_SETUP_UNAVAILABLE';
 
@@ -86,6 +91,26 @@ export function readAccountSetupRequest(
   };
 }
 
+const SESSION_TOKEN = /^[\x21-\x7e]{1,4096}$/;
+
+/**
+ * The session token an OpenKey hand-off put in its request, or null. Only a valid request from the hand-off window of
+ * the OpenKey origin counts (`relayed`); an app's own message never carries one. The reader returns the string and
+ * touches no storage: the caller holds it in memory (`setup-bearer.ts`).
+ */
+export function readAccountSetupBearer(
+  event: Pick<MessageEvent, 'origin' | 'source' | 'data'>,
+  counterpartyOrigin: string | null,
+  counterparty: MessageEventSource | null,
+  relayed: boolean,
+): string | null {
+  const data: unknown = event.data;
+  if (readAccountSetupRequest(event, counterpartyOrigin, counterparty, relayed) === null || !relayed) return null;
+  if (!data || typeof data !== 'object' || !('sessionToken' in data)) return null;
+  const token = data.sessionToken;
+  return typeof token === 'string' && SESSION_TOKEN.test(token) ? token : null;
+}
+
 export function accountSetupSuccess(request: AccountSetupRequest, outcome: 'published' | 'present'): AccountSetupResponse {
   return {
     type: ACCOUNT_SETUP_RESPONSE,
@@ -137,6 +162,16 @@ export type AccountSetupHandoffResult =
 
 const POPUP_FEATURES = 'popup=true,width=440,height=720';
 
+/** The token of the session this embedded frame holds, or null (a top-level page uses its cookie). */
+function embedSessionToken(): string | null {
+  if (!isEmbedContext()) return null;
+  try {
+    return getSessionToken();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Opens OpenKey's own account setup window for an OpenKey page (the embedded hand-off, a sign widget's card) and relays
  * its answer. Call it straight from the owner's tap: the browser opens a window only from a user gesture.
@@ -167,12 +202,15 @@ export function openAccountSetupWindow(input: { keyId: string | null; requestOri
       if (!data || typeof data !== 'object') return;
       // The window asks on each load (a sign-in in between reloads it): the same request each time.
       if (data.type === 'openkey:ready') {
+        const sessionToken = embedSessionToken();
         popup!.postMessage({
           type: ACCOUNT_SETUP_REQUEST,
           requestId,
           protocolVersion: ACCOUNT_SETUP_PROTOCOL_VERSION,
           keyId: input.keyId,
           requestOrigin: input.requestOrigin,
+          // The embed's own session, for the setup window to call the setup routes with (never in the URL).
+          ...(sessionToken ? { sessionToken } : {}),
         }, own);
         return;
       }

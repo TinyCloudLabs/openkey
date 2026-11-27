@@ -386,7 +386,7 @@ app.route('/api/keys/nostr', nostrKeysRouter);
 // that has not accepted them.
 app.route('/api/account/terms', createAccountTermsRouter(authPrisma));
 app.route('/api/account', accountRouter);
-// OpenKey's own account setup page: cookie session from an OpenKey origin only.
+// OpenKey's own account setup page: a session from an OpenKey origin only (a bearer token on its five setup routes).
 app.route('/api/account-setup', accountSetupRouter);
 
 // Passkey proxy routes (for iframe embed mode)

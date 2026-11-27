@@ -5,6 +5,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { mockModules, replaceModules } from './mock-module';
+import { routePath } from 'hono/route';
+import type { Context } from 'hono';
 
 const OPENKEY_ORIGIN = 'https://openkey.test';
 const SESSION_TOKEN = 'leaked-session-token';
@@ -269,5 +271,151 @@ describe('account controls (TC-689)', () => {
   test('the unimplemented email deletion request says so', async () => {
     const response = await call('POST', '/api/account/delete/request', { origin: OPENKEY_ORIGIN });
     expect(response.status).toBe(501);
+  });
+});
+
+// TC-4402: the account setup page reaches its five setup routes with the bearer token of an embedded OpenKey
+// session. Every other browser-control route keeps refusing an Authorization header.
+const guardedRoutes = new Set<string>();
+await mockModules({
+  '../middleware/browser-control': (actual) => ({
+    // Records every route that asks the browser-control question, then answers it as the real guard does.
+    rejectNonBrowserControlRequest: (c: Context) => {
+      guardedRoutes.add(`${c.req.method} ${routePath(c, -1)}`);
+      return actual.rejectNonBrowserControlRequest(c);
+    },
+  }),
+});
+
+const SETUP = '/api/account-setup';
+const setupRoutes = [
+  `POST ${SETUP}/prepare`,
+  `POST ${SETUP}/:id/passkey`,
+  `POST ${SETUP}/:id/email-code`,
+  `POST ${SETUP}/:id/approve`,
+  `POST ${SETUP}/:id/finish`,
+];
+const BEARER_REFUSED = { error: 'Bearer tokens cannot change TinyCloud signing controls' };
+const bearer = { authorization: `Bearer ${SESSION_TOKEN}` };
+
+async function setupApi(query = 'session-bearer-boundary-setup', extend?: (router: Hono) => void) {
+  const { accountSetupRouter, ACCOUNT_SETUP_BEARER_ROUTES } =
+    await import(`../routes/account-setup?${query}` as string);
+  extend?.(accountSetupRouter);
+  const app = new Hono();
+  app.route(SETUP, accountSetupRouter);
+  return { app, accountSetupRouter, allowed: ACCOUNT_SETUP_BEARER_ROUTES as string[] };
+}
+
+function concrete(path: string) {
+  return path.replace(/:[A-Za-z]+/g, 'x');
+}
+
+function bodyOf(method: string) {
+  return method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify({});
+}
+
+describe('the account setup routes and a bearer token (TC-4402)', () => {
+  beforeAll(() => {
+    // What the setup handlers read after the guard: no request row exists.
+    Object.assign(prisma, { accountSetupRequest: { findFirst: async () => null, updateMany: async () => ({ count: 0 }) } });
+  });
+
+  test('the bearer routes are exactly the five setup routes', async () => {
+    const { allowed } = await setupApi();
+    expect([...allowed].sort()).toEqual(setupRoutes.map((route) => route.replace(SETUP, '')).sort());
+  });
+
+  test.each(setupRoutes)('%s accepts the bearer of an OpenKey session sent with the OpenKey Origin', async (route) => {
+    const [method, path] = route.split(' ') as [string, string];
+    const { app } = await setupApi();
+    const response = await app.request(concrete(path), {
+      method, headers: { 'content-type': 'application/json', ...bearer, origin: OPENKEY_ORIGIN }, body: bodyOf(method),
+    });
+    expect(sessionResolutions).toBe(1);
+    expect(response.status).not.toBe(403);
+  });
+
+  test.each(setupRoutes)('%s refuses a bearer sent without an Origin', async (route) => {
+    const [method, path] = route.split(' ') as [string, string];
+    const { app } = await setupApi();
+    const response = await app.request(concrete(path), {
+      method, headers: { 'content-type': 'application/json', ...bearer }, body: bodyOf(method),
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
+    expect(sessionResolutions).toBe(0);
+  });
+
+  test.each(setupRoutes)('%s refuses a bearer sent from an embedding site', async (route) => {
+    const [method, path] = route.split(' ') as [string, string];
+    const { app } = await setupApi();
+    const response = await app.request(concrete(path), {
+      method, headers: { 'content-type': 'application/json', ...bearer, origin: 'https://embedder.example' }, body: bodyOf(method),
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
+    expect(sessionResolutions).toBe(0);
+  });
+
+  test('a route added to the setup router refuses a bearer until it is listed', async () => {
+    const { app } = await setupApi('session-bearer-boundary-setup-probe', (router) => {
+      router.post('/:id/added-later', (c: Context) => c.json({ reached: true }));
+      router.get('/prepare', (c: Context) => c.json({ reached: true }));
+    });
+    for (const [method, path] of [['POST', `${SETUP}/x/added-later`], ['GET', `${SETUP}/prepare`]]) {
+      const refused = await app.request(path!, { method, headers: { ...bearer, origin: OPENKEY_ORIGIN } });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toEqual(BEARER_REFUSED);
+      // The same route with a cookie session reaches its handler.
+      const reached = await app.request(path!, { method, headers: { origin: OPENKEY_ORIGIN } });
+      expect(reached.status).toBe(200);
+    }
+    expect(sessionResolutions).toBe(2);
+  });
+
+  test('every browser-control route outside the setup routes refuses a bearer, found from the route tables', async () => {
+    const { accountSetupRouter } = await setupApi();
+    const { keysRouter } = await import('../routes/keys?session-bearer-boundary' as string);
+    const { nostrKeysRouter } = await import('../routes/nostr-keys?session-bearer-boundary' as string);
+    const { accountRouter } = await import('../routes/account?session-bearer-boundary' as string);
+    const app = new Hono();
+    app.route('/api/keys', keysRouter);
+    app.route('/api/keys/nostr', nostrKeysRouter);
+    app.route('/api/account', accountRouter);
+    app.route(SETUP, accountSetupRouter);
+
+    // The route table, middleware entries left out. Each route is asked once, as a bearer from the OpenKey origin;
+    // the routes that ask the browser-control question while it is handled are the browser-control routes.
+    const routes = app.routes.filter((route) => route.method !== 'ALL');
+    expect(routes.length).toBeGreaterThan(40);
+    const guarded = new Map<string, Response>();
+    for (const route of routes) {
+      const key = `${route.method} ${route.path}`;
+      guardedRoutes.delete(key);
+      const response = await app.request(concrete(route.path), {
+        method: route.method,
+        headers: { 'content-type': 'application/json', ...bearer, origin: OPENKEY_ORIGIN },
+        body: bodyOf(route.method),
+      });
+      if (guardedRoutes.has(key)) guarded.set(key, response);
+    }
+
+    // The routes the dashboard uses are among them. The five setup routes are not: they have their own rule.
+    for (const known of [
+      'PATCH /api/account/auto-sign', 'POST /api/account/delete', 'POST /api/keys/:keyId/primary',
+      'POST /api/account/renewal-leases/:leaseCid/stop',
+    ]) expect(guarded.has(known), known).toBe(true);
+    for (const route of setupRoutes) expect(guarded.has(route), route).toBe(false);
+
+    for (const [key, response] of guarded) {
+      expect(response.status, key).toBe(403);
+      expect(await response.json(), key).toEqual(BEARER_REFUSED);
+    }
+    // No other route of the setup router lets a bearer through.
+    for (const route of routes.filter((candidate) => candidate.path.startsWith(`${SETUP}/`))) {
+      const key = `${route.method} ${route.path}`;
+      expect(setupRoutes.includes(key) || guarded.has(key), key).toBe(true);
+    }
   });
 });

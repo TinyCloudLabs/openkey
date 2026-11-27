@@ -13,6 +13,9 @@
   import {
     accountSetupFailure,
     accountSetupSuccess,
+    ACCOUNT_SETUP_RATE_LIMITED_CODE,
+    ACCOUNT_SETUP_RATE_LIMITED_MESSAGE,
+    readAccountSetupBearer,
     readAccountSetupRequest,
     TINYCLOUD_ONE_SETUP_URL,
     type AccountSetupPrepared,
@@ -20,6 +23,7 @@
     type AccountSetupResponse,
     type AccountSetupState,
   } from '$lib/account-setup';
+  import { holdSetupBearer, onSetupBearerDropped } from '$lib/setup-bearer';
 
   type Phase =
     | 'waiting' | 'ready' | 'preparing' | 'confirm' | 'approving' | 'working'
@@ -36,6 +40,10 @@
   const standalone = counterparty === null || origin === null;
 
   let request = $state<AccountSetupRequest | null>(null);
+  // The session token the embed that opened this window handed over, in memory only (`setup-bearer.ts`). A cookie
+  // session wins over it. The sign-in screen shows when the API rejects the token or none came.
+  let bearer = $state<string | null>(null);
+  const signedIn = $derived(Boolean($session.data) || (bearer !== null && !$session.isPending));
   let answered = false;
   let phase = $state<Phase>('waiting');
   let key = $state<EthereumKey | null>(null);
@@ -56,9 +64,26 @@
   $effect(() => {
     if (standalone) return;
     window.addEventListener('message', onMessage);
+    window.addEventListener('pagehide', forgetBearer);
+    const stopWatching = onSetupBearerDropped(() => { bearer = null; });
     counterparty!.postMessage({ type: 'openkey:ready' }, origin!);
-    return () => window.removeEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      window.removeEventListener('pagehide', forgetBearer);
+      stopWatching();
+      forgetBearer();
+    };
   });
+
+  // The calls (`api.accountSetup`) read the held token: it is the signed-in session only without a cookie session.
+  $effect.pre(() => {
+    holdSetupBearer($session.data ? null : bearer);
+  });
+
+  function forgetBearer() {
+    bearer = null;
+    holdSetupBearer(null);
+  }
 
   $effect(() => () => {
     if (pollTimer) clearTimeout(pollTimer);
@@ -67,14 +92,19 @@
   function onMessage(event: MessageEvent) {
     if (request) return;
     if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
-    request = readAccountSetupRequest(event, origin, counterparty, relayed);
+    const read = readAccountSetupRequest(event, origin, counterparty, relayed);
+    // The token counts only from the window that opened this one, at this page's own origin.
+    bearer = read && event.origin === window.location.origin && event.source === window.opener
+      ? readAccountSetupBearer(event, origin, counterparty, relayed)
+      : null;
+    request = read;
   }
 
   // The key to set up: the one the app named, else the account's primary key.
   $effect(() => {
-    if (!$session.data || key || (!standalone && !request)) return;
+    if (!signedIn || key || (!standalone && !request)) return;
     const wanted = request?.keyId ?? null;
-    api.listKeys().then(({ keys }) => {
+    api.accountSetup.keys().then(({ keys }) => {
       const live = keys.filter((candidate) => !candidate.archivedAt);
       const chosen = wanted
         ? live.find((candidate) => candidate.id === wanted)
@@ -117,6 +147,11 @@
 
   function errorMessage(error: unknown): string {
     return error instanceof Error && error.message ? error.message : "Setup didn't finish.";
+  }
+
+  /** What a refused step-up shows: the account's hourly limit always reads the same, whatever text came back. */
+  function stepUpNotice(error: unknown): string {
+    return errorCode(error) === ACCOUNT_SETUP_RATE_LIMITED_CODE ? ACCOUNT_SETUP_RATE_LIMITED_MESSAGE : errorMessage(error);
   }
 
   function errorCode(error: unknown): string | undefined {
@@ -194,7 +229,7 @@
       if (!sent.sent) notice = 'A code is on its way. Check your email.';
     } catch (error) {
       if (errorCode(error) === 'ACCOUNT_SETUP_UNAVAILABLE') showUnavailable(errorMessage(error));
-      else notice = errorMessage(error);
+      else notice = stepUpNotice(error);
     }
   }
 
@@ -213,8 +248,8 @@
     const codeName = errorCode(error);
     if (codeName === 'account_setup_code_invalid' || codeName === 'account_setup_code_ended' ||
         codeName === 'passkey_approval_invalid' || codeName === 'passkey_approval_not_step_up' ||
-        codeName === 'passkey_approval_required') {
-      notice = errorMessage(error);
+        codeName === 'passkey_approval_required' || codeName === ACCOUNT_SETUP_RATE_LIMITED_CODE) {
+      notice = stepUpNotice(error);
       code = '';
       phase = 'confirm';
       if (prepared?.stepUp === 'passkey') loadStepUp().catch((reload) => { notice = errorMessage(reload); });
@@ -296,7 +331,7 @@
   <Card class="w-full max-w-[440px]" data-testid="account-setup-card" data-phase={phase}>
     {#if $session.isPending}
       <p class="text-sm text-surface-500">Loading…</p>
-    {:else if !$session.data}
+    {:else if !signedIn}
       <h1 class="text-lg font-semibold text-surface-900">Set up your TinyCloud account</h1>
       <p class="mt-3 text-sm text-surface-600">Sign in to OpenKey to set up your account.</p>
       <div class="mt-5 flex flex-col gap-3">

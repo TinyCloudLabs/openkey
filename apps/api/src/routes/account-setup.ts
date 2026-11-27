@@ -1,9 +1,11 @@
 // OpenKey's own account setup page (/widget/account-setup): the owner sets their account up on TinyCloud hosting.
 //
-// Every route is for a cookie session from an OpenKey browser origin: a bearer token or another site's Origin is
-// refused before anything is read. A request row belongs to one user and one session, and every route finds it by
-// `{ id, userId, sessionId }`. The record text, the chain and the node are the server's; a request field never
-// changes them.
+// Every route is for a session from an OpenKey browser origin: a cookie session, or on the five setup routes below
+// the bearer token of an embedded OpenKey session. A missing or foreign Origin is refused before anything is read, and
+// so is an Authorization header on any other route. A bearer changes nothing by itself: approve needs the owner's
+// step-up (a passkey assertion for this request or the emailed code). A request row belongs to one user and one
+// session, and every route finds it by `{ id, userId, sessionId }`. The record text, the chain and the node are the
+// server's; a request field never changes them.
 //
 // prepare   the owner tapped "Set up": the request row (created on this tap) with the exact record text, or `present`.
 // passkey   a passkey challenge bound to the row id and the stored record digest; without a step-up passkey, the
@@ -14,8 +16,9 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
+import { routePath } from 'hono/route';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { rejectNonAccountOriginRequest, rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import {
   PASSKEY_APPROVAL_INVALID,
   PASSKEY_APPROVAL_NOT_STEP_UP,
@@ -38,6 +41,7 @@ import {
   runAccountSetup,
 } from '../services/account-setup';
 import { gradeAccountSetupCode, sendAccountSetupCode } from '../services/account-setup-step-up';
+import { refundAccountSetupBudget, spendAccountSetupBudget } from '../services/account-setup-budget';
 import { trustedTinyCloudBootstrapHost } from '../services/tinycloud-bootstrap';
 
 export const ACCOUNT_SETUP_UNAVAILABLE = {
@@ -63,15 +67,47 @@ const WINDOW_PASSED = {
   error: 'The record OpenKey built has run out of time. Start setup over.',
   code: 'account_setup_record_window_passed',
 } as const;
+const TOO_MANY_ATTEMPTS = { error: 'Too many attempts in the last hour. Wait an hour, then try once more.', code: 'account_setup_rate_limited' } as const;
 
 let prisma: PrismaClient | undefined;
 const db = () => prisma ??= createPrismaClient();
 
 export const accountSetupRouter = new Hono<SessionContext>();
 
+/**
+ * The only routes that accept an Authorization header: the setup routes the page calls with the bearer token of an
+ * embedded OpenKey session. Any other route on this router (a route added later included) refuses it. Paths are
+ * relative to where the router is mounted.
+ */
+export const ACCOUNT_SETUP_BEARER_ROUTES: readonly string[] = [
+  'POST /prepare',
+  'POST /:id/passkey',
+  'POST /:id/email-code',
+  'POST /:id/approve',
+  'POST /:id/finish',
+];
+const bearerRoutePatterns = ACCOUNT_SETUP_BEARER_ROUTES.map((route) => {
+  const [method, path] = route.split(' ') as [string, string];
+  return { method, pattern: new RegExp(`^${path.replace(':id', '[^/]+')}$`) };
+});
+
+/** Is this request one of the bearer routes? `routePath(c)` is this router's own `<mount>/*`. */
+function isBearerRoute(c: Context): boolean {
+  const mount = routePath(c).replace(/\/?\*$/, '');
+  const path = c.req.path.startsWith(mount) ? c.req.path.slice(mount.length) : null;
+  return path !== null && bearerRoutePatterns.some((route) => route.method === c.req.method && route.pattern.test(path));
+}
+
 accountSetupRouter.use('*', async (c, next) => {
-  const rejected = rejectNonBrowserControlRequest(c);
+  const rejected = isBearerRoute(c) ? rejectNonAccountOriginRequest(c) : rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
+  // A request that carries an Authorization header is the bearer session or it is refused: the cookie that may ride
+  // along is dropped, so a bad token never falls back to it and a good token is never overridden by it.
+  if (c.req.header('authorization')) {
+    const headers = new Headers(c.req.raw.headers);
+    headers.delete('cookie');
+    c.req.raw = new Request(c.req.raw, { headers });
+  }
   await next();
 });
 accountSetupRouter.use('*', requireSession);
@@ -219,13 +255,23 @@ accountSetupRouter.post('/:id/email-code', async (c) => {
   // The email code is for an account with no step-up passkey only: it never stands in for one.
   if (await hasStepUpPasskey(user.id)) return c.json(PASSKEY_APPROVAL_REQUIRED, 403);
   if (!await emailVerified(user.id, user.email)) return c.json(NO_STEP_UP, 403);
-  const sent = await sendAccountSetupCode(db(), { sessionId: session.id, requestId: row.id, email: user.email });
+  // Codes mailed are limited per user across all requests and sessions; a call that mails nothing costs nothing.
+  if (!await spendAccountSetupBudget(db(), user.id, 'send', session.id)) return c.json(TOO_MANY_ATTEMPTS, 429);
+  const sent = await sendAccountSetupCode(db(), {
+    sessionId: session.id, requestId: row.id, email: user.email, requestOrigin: row.requestOrigin, nodeUrl: row.nodeUrl,
+  });
+  if (sent !== 'sent') await refundAccountSetupBudget(db(), user.id, 'send', session.id);
   if (sent === 'unavailable') return c.json(ACCOUNT_SETUP_UNAVAILABLE, 503);
   return c.json({ sent: sent === 'sent', email: maskEmail(user.email) });
 });
 
-type StepUpRefusal = { body: { error: string; code: string }; status: 403 };
+type StepUpRefusal = { body: { error: string; code: string }; status: 403 | 429 };
 
+/**
+ * The owner's step-up for this row. Each attempt with a proof spends one unit of the user's hourly `verify` budget
+ * (account-setup-budget.ts) before it is graded: the user's total, and the share one session may take of it. A confirmed
+ * attempt refunds the unit, so only attempts that did not confirm count, whatever the row.
+ */
 async function stepUpRefusal(
   c: Context<SessionContext>, row: { id: string; payloadDigest: string }, input: Record<string, unknown>,
 ): Promise<StepUpRefusal | null> {
@@ -233,16 +279,24 @@ async function stepUpRefusal(
   const session = c.get('session');
   const subject = { sessionId: session.id, userId: user.id };
   if (input.passkeyAssertion !== undefined) {
+    if (!await spendAccountSetupBudget(db(), user.id, 'verify', session.id)) return { body: TOO_MANY_ATTEMPTS, status: 429 };
     const result = await verifyApprovalPasskey(db(), subject, {
       purpose: 'account_setup', requestDigest: approvalRequestDigest(row.id, row.payloadDigest),
     }, input.passkeyAssertion);
-    if (result === 'verified') return null;
+    if (result === 'verified') {
+      await refundAccountSetupBudget(db(), user.id, 'verify', session.id);
+      return null;
+    }
     return { body: result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID, status: 403 };
   }
   if (input.emailCode !== undefined) {
     if (await hasStepUpPasskey(user.id)) return { body: PASSKEY_APPROVAL_REQUIRED, status: 403 };
+    if (!await spendAccountSetupBudget(db(), user.id, 'verify', session.id)) return { body: TOO_MANY_ATTEMPTS, status: 429 };
     const grade = await gradeAccountSetupCode(db(), { sessionId: session.id, requestId: row.id, code: input.emailCode });
-    if (grade === 'match') return null;
+    if (grade === 'match') {
+      await refundAccountSetupBudget(db(), user.id, 'verify', session.id);
+      return null;
+    }
     return { body: grade === 'missing' ? CODE_ENDED : CODE_INVALID, status: 403 };
   }
   return { body: PASSKEY_APPROVAL_REQUIRED, status: 403 };
