@@ -91,7 +91,7 @@ export async function provisionReviewer(
     const held = await holdReviewer(transaction, before);
     if (before.userId) {
       if (store === 'apple') await retireReviewerOwner(transaction, before);
-      await transaction.ethereumKey.deleteMany({ where: { userId: before.userId } });
+      await transaction.ethereumKey.deleteMany({ where: { custody: 'PERSONAL', userId: before.userId } });
       await transaction.user.delete({ where: { id: before.userId } });
       wasReset = true;
     }
@@ -100,6 +100,7 @@ export async function provisionReviewer(
       name: 'App review', autoSignEnabled: false, tinyCloudManageKeyEnabled: false,
     } });
     const key = await transaction.ethereumKey.create({ data: {
+      custody: 'PERSONAL',
       id: randomUUID(), userId: user.id, address, publicKey: address, sealedBlob, sealingContext,
       isCanonicalTinyCloud: true, keyIndex: 0, label: 'App review',
     } });

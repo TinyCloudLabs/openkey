@@ -317,6 +317,49 @@ describe('production migration deployment mode', () => {
     })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
   });
 
+  test('permits the reviewed org custody migration while TC-488 remains parked', async () => {
+    const name = '20261021_0001_org_key_custody';
+    const directories = [baseline.migration_name, ...tc492, device, signinPolish, name];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, device, signinPolish, name])).toEqual({
+      apply: [...tc492.filter((entry) => entry !== tc488), device, signinPolish, name],
+      park: [tc488],
+    });
+    const checksum = createHash('sha256').update(await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
+    )).digest('hex');
+    expect(checksum).toBe('902d5c9c93913bfa55ed6eed1aae59ea386161b3ab53035c1b33844c97fb6e80');
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, { migration_name: name, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null }],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
+  });
+
+  test('permits registration receipts before TC-488 and refuses changed applied bytes', async () => {
+    const name = '20261029_0001_org_registration_proofs';
+    const checksum = createHash('sha256').update(await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
+    )).digest('hex');
+    expect(checksum).toBe('993884374d0c7b95f50edcff1b683aa9f5ba9fde236e4bdef862b34a25fc9081');
+    expect(requiredRuntimeMigrationChecksums.get(name)).toBe(checksum);
+    const directories = [baseline.migration_name, ...tc492, device, name];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline], migrationDirectories: directories, managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations(directories)).toEqual({
+      apply: directories.filter((entry) => entry !== tc488), park: [tc488],
+    });
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, { migration_name: name, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null }],
+      migrationDirectories: directories, managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
+  });
+
   test('accepts the real sign-in polish migration in the branch migration list before TC-488', async () => {
     const migrationsRoot = join(import.meta.dir, '../packages/db/prisma/migrations');
     const directories = (await readdir(migrationsRoot, { withFileTypes: true }))

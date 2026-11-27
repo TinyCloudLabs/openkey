@@ -557,7 +557,7 @@ async function acquireBootstrapLock(
         authority: { in: retryableStoredAuthorities() },
         ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
         user: { is: { autoSignEnabled: true } },
-        key: { is: { keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
+        key: { is: { custody: 'PERSONAL', keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
       },
       data: {
         status: 'in_progress',

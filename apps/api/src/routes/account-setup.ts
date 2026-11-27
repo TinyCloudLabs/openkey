@@ -124,7 +124,7 @@ accountSetupRouter.post('/prepare', async (c) => {
     return c.json(ACCOUNT_SETUP_UNAVAILABLE, 400);
   }
   const key = await db().ethereumKey.findFirst({
-    where: { id: input.keyId, userId: user.id, archivedAt: null }, select: SETUP_KEY_SELECT,
+    where: { id: input.keyId, custody: 'PERSONAL', userId: user.id, archivedAt: null }, select: SETUP_KEY_SELECT,
   });
   if (!key) return c.json(KEY_NOT_FOUND, 404);
   if (key.keyType !== 'MANAGED' || !key.sealedBlob) return c.json(WALLET_KEY_UNAVAILABLE, 403);
@@ -315,7 +315,7 @@ async function advance(id: string, userId: string, sessionId: string): Promise<S
     data: { publishingAt: lease },
   });
   if (claimed.count !== 1) return { state: 'working' };
-  const key = await db().ethereumKey.findFirst({ where: { id: row.keyId, userId, archivedAt: null }, select: SETUP_KEY_SELECT });
+  const key = await db().ethereumKey.findFirst({ where: { id: row.keyId, custody: 'PERSONAL', userId, archivedAt: null }, select: SETUP_KEY_SELECT });
   const result = key
     ? await runAccountSetup(db(), row, key)
     : { state: 'failed' as const, code: 'account_setup_key_not_found', message: KEY_NOT_FOUND.error };

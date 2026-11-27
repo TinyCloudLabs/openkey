@@ -139,7 +139,7 @@ export async function installReviewer(database: PrismaClient, store: string, cod
     }
     if (store === 'apple') {
       const [key, hosted, client] = await Promise.all([
-        transaction.ethereumKey.findFirst({ where: { id: before.keyId!, userId: before.userId!, isCanonicalTinyCloud: true, archivedAt: null } }),
+        transaction.ethereumKey.findFirst({ where: { custody: 'PERSONAL', id: before.keyId!, userId: before.userId!, isCanonicalTinyCloud: true, archivedAt: null } }),
         transaction.tinyCloudBootstrapState.findFirst({ where: { keyId: before.keyId!, tinycloudHost: before.nodeHost!, chainId: 1, status: 'complete' } }),
         transaction.oauthClient.findUnique({ where: { clientId: before.clientId! } }),
       ]);

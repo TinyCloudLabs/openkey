@@ -25,7 +25,7 @@ jobs:
   api-tests:
     name: API test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -57,13 +57,16 @@ jobs:
           bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
-        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/oauth-client-website.test.ts scripts/step-up-ceiling-parity.test.ts scripts/compose-image-digests.test.ts scripts/measured-app-compose.test.ts
+        run: bun test --timeout 30000 apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/oauth-client-website.test.ts scripts/step-up-ceiling-parity.test.ts scripts/compose-image-digests.test.ts scripts/measured-app-compose.test.ts
 
       # TC-3569: OpenKey's step-up ceilings against the ones TinyCloud One's framed apps ask for, entry for entry.
       # Reads One's file at the commit pinned in scripts/step-up-ceilings/one.pin.json from the public tinychat
       # repository (no secret). A null pin fails the step (--require-pin): the step-up flag waits for the pin.
       - name: Step-up ceiling parity with TinyCloud One
         run: bun scripts/step-up-ceiling-parity.ts --require-pin
+
+      - name: Migration deploy and schema contract tests
+        run: bun test scripts/deploy-production-migrations.test.ts packages/db/src/schema-contract.test.ts
 
       # The capability review and web lib tests use the package built above.
       - name: Capability review and web lib tests
@@ -74,6 +77,60 @@ jobs:
         run: |
           bun run build --filter @openkey/core --filter @openkey/types
           bun test packages/sdk
+
+      - name: Personal-key custody access checks
+        run: |
+          bun scripts/lint-ethereum-key-access.ts
+          bun test scripts/lint-ethereum-key-access.test.ts
+
+  org-registration-postgres:
+    name: Organization registration PostgreSQL race
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: s1b_fixture
+          POSTGRES_PASSWORD: s1b_fixture
+          POSTGRES_DB: s1b_fixture
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U s1b_fixture -d s1b_fixture"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      TEE_MODE: development
+      DATABASE_URL: postgresql://s1b_fixture:s1b_fixture@127.0.0.1:5432/s1b_fixture
+      BETTER_AUTH_URL: https://api.openkey.test
+      BETTER_AUTH_SECRET: org-registration-postgres-fixture-secret
+      CORS_ORIGIN: https://openkey.so
+      HOME: ${{ github.workspace }}/.ci/org-registration/home
+      TC_HOME: ${{ github.workspace }}/.ci/org-registration/tc
+      COURIER_HOME: ${{ github.workspace }}/.ci/org-registration/courier
+      TMPDIR: ${{ github.workspace }}/.ci/org-registration/tmp
+      XDG_CACHE_HOME: ${{ github.workspace }}/.ci/org-registration/cache
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.ci/org-registration/bun-cache
+      npm_config_cache: ${{ github.workspace }}/.ci/org-registration/npm-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare private fixture roots
+        run: mkdir -p "$HOME" "$TC_HOME" "$COURIER_HOME" "$TMPDIR" "$XDG_CACHE_HOME" "$BUN_INSTALL_CACHE_DIR" "$npm_config_cache"
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Build packages
+        run: |
+          bun run db:generate
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+      - name: PostgreSQL registration interleaving
+        run: bun test apps/api/integration/org-registration-postgres.test.ts
 
   renewal-lease-postgres:
     name: Renewal lease tests on Postgres

@@ -1,3 +1,4 @@
+import { personalKeyWhere } from '../services/primary-key';
 // Account management routes
 import { Hono, type Context } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
@@ -713,15 +714,17 @@ accountRouter.post('/delete', async (c) => {
 
   // Count and delete every user key. TC-488 removed tenant-managed keys.
   const keyCount = await prisma.ethereumKey.count({
-    where: { userId: user.id },
+    where: personalKeyWhere(user.id),
   });
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES';
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES' | 'OWNER';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // A lease approved since the revocations above would outlive the keys; a retry stops it first.
     if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all', includeNativeStops: true }, new Date()) }) > 0) return 'LEASES';
+    const activeOwnerGrants = await tx.keyGrant.count({ where: { granteeUserId: user.id, role: 'OWNER', revokedAt: null } });
+    if (activeOwnerGrants > 0) return 'OWNER';
     if (!passkeyStepUp) {
       // A passkey that counts, enrolled since the check, needs the passkey
       // step-up instead; the deletion code is spent only by a deletion that commits.
@@ -735,8 +738,17 @@ accountRouter.post('/delete', async (c) => {
       select: { refreshToken: true, appleClientId: true },
     });
 
+    // Organisation ownership blocks deletion; ADMIN grants are revoked and detached.
+    await tx.keyGrant.updateMany({
+      where: { granteeUserId: user.id, role: 'ADMIN', revokedAt: null },
+      data: { revokedAt: new Date(), revokedByUserId: user.id, granteeUserId: null },
+    });
+    await tx.keyGrant.updateMany({
+      where: { granteeUserId: user.id, revokedAt: { not: null } }, data: { granteeUserId: null },
+    });
+
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
-    await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
+    await tx.ethereumKey.deleteMany({ where: personalKeyWhere(user.id) });
 
     // Delete all passkeys
     await tx.passkey.deleteMany({ where: { userId: user.id } });
@@ -758,6 +770,7 @@ accountRouter.post('/delete', async (c) => {
     if (unavailable) return unavailable;
     throw error;
   }
+  if (appleTokens === 'OWNER') return c.json({ error: 'Account owns an organization key', message: 'Accounts holding an active organization key grant cannot be deleted' }, 409);
   if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);

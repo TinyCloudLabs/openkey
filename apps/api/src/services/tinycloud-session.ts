@@ -3,6 +3,7 @@
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { createTeeClient, unseal, type TeeClient } from '@openkey/tee';
 import { deriveKeyForRecord } from './key-sealing';
+import { personalKeyWhere } from './primary-key';
 import { tinyCloudService } from './tinycloud-service';
 
 let prisma: PrismaClient | undefined;
@@ -10,7 +11,7 @@ let tee: TeeClient | undefined;
 
 export async function getUserPrivateKey(userId: string): Promise<string | null> {
   const key = await (prisma ??= createPrismaClient()).ethereumKey.findFirst({
-    where: { userId, keyIndex: 0, keyType: 'MANAGED', archivedAt: null },
+    where: { ...personalKeyWhere(userId), keyIndex: 0, keyType: 'MANAGED', archivedAt: null },
   });
 
   if (!key || !key.sealedBlob) {

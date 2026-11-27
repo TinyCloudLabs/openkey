@@ -180,6 +180,20 @@ Users authenticate once with OpenKey, then your app receives:
 | `POST /api/keys/:id/sign-typed-data` | Sign EIP-712 typed data |
 | `GET /api/keys/:id/quote` | Get TEE attestation |
 
+### Organization registration
+
+Organization key custody is off by default (`ORG_KEY_CUSTODY_ENABLED`); its routes return `404` while off. Organization message signing remains unavailable.
+Credentials hands its signed intent to `/org-registration/consent` in a URL fragment, which OpenKey removes before hydration and keeps only in that tab.
+A verified OpenKey session and a fresh passkey approval bind the exact organization name and handle.
+Names containing controls, invisible formatting, or line/paragraph separators are refused; visible Unicode is preserved.
+`POST /api/org-keys` requires `{intentJws, registrationId, orgId, nonce, handle, orgName}`, matching the signed intent.
+The first request returns `200 {registrationChallenge}` without a key; approval repeats the fields with `{challengeNonce, assertion}`.
+After completion, the response is `{key, registration}` (`201` new, `200` retry), never the owner-proof JWT.
+OpenKey sends that proof server-side to the fixed OpenCredentials completion endpoint and shows only its confirmed registration result.
+Identical owner/tuple retries reuse the key and immutable proof; OC returns its stored result after completion.
+Temporary completion failures and future-dated intents can be retried in OpenKey. A `409` or `410` requires a new intent from Credentials.
+An already-created OpenKey key is retained if OC completion fails; the two systems do not perform distributed rollback.
+
 ## Environment Variables
 
 ```env
