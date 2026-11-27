@@ -179,6 +179,7 @@
     error = '';
     step = 'email';
     passkeySignedIn = false;
+    oauthRedirectUrl = undefined;
   }
 
   function getOAuthQuery(): string | undefined {
@@ -235,17 +236,18 @@
       if (enabled && native?.method === 'email' && native.hint === 'appreview@tinycloud.xyz') step = 'reviewer';
     }).catch((): SocialProviderId[] => []);
     providersLoaded.then((loaded) => { providers = loaded; });
-    if (native) {
-      // Coming back from the provider via the browser's back button restores
-      // this page mid-redirect; clear the busy state.
-      window.addEventListener('pageshow', (event) => {
-        if (!event.persisted) return;
-        loading = false;
-        loadingProvider = null;
-        if (step === 'social') step = 'email';
-      });
-      startNative(native, providersLoaded);
-    }
+    // A page restored from the back-forward cache (Back from the authorize URL, or from the provider
+    // mid-redirect) is a fresh sign-in, possibly by another account: clear the busy state and everything the
+    // finished sign-in left (the passkey flag, the Terms state, the held OAuth redirect).
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      loading = false;
+      loadingProvider = null;
+      signInAgain();
+    };
+    window.addEventListener('pageshow', onPageShow);
+    if (native) startNative(native, providersLoaded);
+    return () => window.removeEventListener('pageshow', onPageShow);
   });
 
   // Automatic first action for the requested login method. It runs once per
