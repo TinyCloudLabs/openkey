@@ -11,6 +11,8 @@ import {
 } from './deploy-production-migrations';
 
 const lockOption = 'options=-c%20lock_timeout%3D5000';
+const limitOptions =
+  'options=-c%20lock_timeout%3D5000%20-c%20statement_timeout%3D60000%20-c%20idle_in_transaction_session_timeout%3D10000';
 const url = 'postgresql://deploy:s3cret%40pw@db.internal:5432/openkey';
 
 describe('withMigrationLockTimeout', () => {
@@ -69,7 +71,7 @@ describe('migrationChildEnv', () => {
   test('puts the timeout on DATABASE_URL, keeps every other variable and does not mutate its input', () => {
     const input = { DATABASE_URL: url, PATH: '/usr/bin', OTHER: 'x' } as NodeJS.ProcessEnv;
     const child = migrationChildEnv(input);
-    expect(child.DATABASE_URL).toBe(`${url}?${lockOption}`);
+    expect(child.DATABASE_URL).toBe(`${url}?${limitOptions}`);
     expect(child.PATH).toBe('/usr/bin');
     expect(child.OTHER).toBe('x');
     expect(input.DATABASE_URL).toBe(url);
