@@ -1,0 +1,47 @@
+{
+  "_about": "The embed gate's expected screens. A sign review is approved only on an exact match with one entry of signFaces (judge.mjs). A change to what TinyCloud One asks for, or to OpenKey's review copy, makes the gate fail closed until this file is updated in a reviewed change. Sources: the TinyCloud One sign-in face observed 2026-11-22 (QA fixture p2/x12, renewal and 30-day forms), OpenKey apps/web signing-approval.svelte, terms-accept.svelte (embed branch, kind first; release 2026-11-22). A title line given as an array accepts any one of its strings: the headline is \"Authorize capabilities\" on a released OpenKey web and \"Sign in to <host>\" on a web with the named sign-in heading (capability-review protocolHeadline; no signed manifest, so the host page's hostname).",
+  "host": {
+    "signInButton": "Sign in",
+    "signedInMarkers": ["Home", "Chat", "You"]
+  },
+  "terms": {
+    "embedCard": {
+      "text": "Accept the Terms and Privacy Policy OpenKey and TinyCloud are run by TinyCloud, Inc. To use your account, agree to our Terms of Service. Our Privacy Policy explains what we collect, why, and your rights. Terms of Service, effective Nov 22, 2026 Privacy Policy: what we collect, why, and your rights Agree and continue By selecting Agree and continue, you agree to the Terms of Service and acknowledge the Privacy Policy. Sign out",
+      "hrefs": ["https://tinycloud.xyz/terms", "https://tinycloud.xyz/privacy"]
+    }
+  },
+  "popup": {
+    "passkeyButton": "Use a passkey instead"
+  },
+  "deleteConfirmation": "DELETE MY ACCOUNT",
+  "signFaces": [
+    {
+      "name": "tinycloud-one-sign-in",
+      "title": ["Sign Message", ["Authorize capabilities", "Sign in to tinycloud.one"]],
+      "intro": "Review the access this app is asking for.",
+      "until": "Advanced details",
+      "notes": [
+        "^These permissions expire in \\d+ (days?|hours?), on [A-Z][a-z]{2} \\d{1,2}$",
+        "^These permissions renew automatically for up to \\d+ days$"
+      ],
+      "permissions": [
+        "See which permissions are already granted",
+        "Get notified of changes in your TinyCloud One Feed",
+        "Get notified when data in this space changes",
+        "Read, change and delete your data",
+        "Read and update application data",
+        "Delete data associated with xyz.tinycloud.tinychat",
+        "Read application data",
+        "See this space's storage usage and plan",
+        "Read, change or delete any row in the xyz.tinycloud.sample.healthlog database",
+        "Edit and delete this app's tables",
+        "Read, change or delete any row in the xyz.tinycloud.sample.recipes database",
+        "Read, change or delete any row in the xyz.tinycloud.tinychat database",
+        "Set up and use all cards and answers in your Feed",
+        "Set up and use the agent list in your Feed",
+        "Read your data"
+      ],
+      "forbidden": ["Unlock all your encrypted data", "This approval needs your passkey"]
+    }
+  ]
+}
