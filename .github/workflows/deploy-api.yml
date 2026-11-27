@@ -19,7 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DOCKER_IMAGE: skgbafa/openkey-api
+  # Public GHCR package. The CVM pulls it without credentials; the deploy checks that before deploying.
+  DOCKER_IMAGE: ghcr.io/tinycloudlabs/openkey-api
   # Production dstack OS the openkey-api CVM must run (the Phala KMS only releases app keys to this image).
   PHALA_OS_IMAGE: dstack-0.5.15
   PHALA_OS_IMAGE_HASH: 4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca
@@ -30,17 +31,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Phala CLI
         run: npm install -g phala@1.1.22
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
       - name: Restore Bun dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -64,7 +63,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Require a green smoke on the serving API
@@ -99,16 +98,18 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: production
-    # Listed because the provenance attestation needs id-token and attestations; the rest is what
-    # the default read-only token gave this job (checkout, and check runs for require-green).
+    # Listed because the provenance attestation needs id-token and attestations and the GHCR push needs
+    # packages; the rest is what the default read-only token gave this job (checkout, and check runs for
+    # require-green).
     permissions:
       contents: read
       actions: read
       checks: read
       id-token: write
       attestations: write
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Record the smoke override
         if: inputs.override_reason != ''
@@ -147,24 +148,28 @@ jobs:
             exit 1
           fi
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
-          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       # Build, scan the exact image, then push it: an image with a new fixable CRITICAL/HIGH
       # finding (one not in .trivyignore.yaml) never reaches the registry or the CVM.
       - name: Build Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           load: true
           push: false
           build-args: |
             GIT_SHA=${{ github.sha }}
+          # Links the GHCR package to this repository.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=openkey-api-image
           cache-to: type=gha,mode=max,scope=openkey-api-image
           tags: |
@@ -190,10 +195,31 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "image=${DOCKER_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
 
+      # The CVM pulls without registry credentials. A private package would stop the CVM at pull, after the
+      # migrations, so first fetch the exact digest's manifest as an anonymous client: GHCR's anonymous pull
+      # token, no login.
+      - name: Check the image pulls without credentials
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repository=${DOCKER_IMAGE#ghcr.io/}
+          refuse() {
+            echo "::error::${DOCKER_IMAGE}@${DIGEST} does not pull without credentials. Make the GHCR package public (package settings, Change visibility), then re-run." >&2
+            exit 1
+          }
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:${repository}:pull" | jq -r '.token // empty') || refuse
+          [ -n "$token" ] || refuse
+          served=$(curl -fsS -o /dev/null -D - -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${repository}/manifests/${DIGEST}" | tr -d '\r' | sed -n -E 's/^docker-content-digest: (sha256:[0-9a-f]{64})$/\1/ip') || refuse
+          [ "$served" = "$DIGEST" ] || refuse
+          echo "Anonymous pull of ${DOCKER_IMAGE}@${DIGEST} resolves"
+
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: docker.io/${{ env.DOCKER_IMAGE }}
+          subject-name: ${{ env.DOCKER_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
 
       - name: Pin the compose to the pushed digest
@@ -221,12 +247,12 @@ jobs:
       # installs custody and tenant-boundary guards that `prisma db push` omits.
       # The API container intentionally does not contain or run the schema engine.
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
 
       - name: Restore Bun dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}

@@ -211,7 +211,7 @@ Jobs that read deploy tokens:
 
 | job | secrets | environment today |
 |---|---|---|
-| deploy-api.yml `preflight`, `deploy`; tc-492-production-cutover.yml; baseline/backfill/drop/inspect/provision/register workflows | `DATABASE_URL`, `PHALA_CLOUD_API_KEY`, `DOCKER_REGISTRY_*` | `production` |
+| deploy-api.yml `preflight`, `deploy`; tc-492-production-cutover.yml `preflight`, `cutover`; baseline/backfill/drop/inspect/provision/register workflows | `DATABASE_URL`, `PHALA_CLOUD_API_KEY` | `production` |
 | changesets.yml `release`, republish.yml `republish` | `NPM_TOKEN`, `GH_TOKEN` | **none** |
 
 The gap: the repo-level `DATABASE_URL`, `PHALA_CLOUD_API_KEY` and `DOCKER_REGISTRY_*` copies, and

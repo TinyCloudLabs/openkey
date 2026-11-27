@@ -10,6 +10,7 @@ import {
   selectProductionMigrationMode,
   type MigrationRow,
 } from './deploy-production-migrations';
+import { checkMeasurement } from './measured-app-compose';
 
 const repoRoot = resolve(import.meta.dir, '..');
 
@@ -84,17 +85,19 @@ async function main() {
     throw new Error('The serving CVM is not on the pinned production OS');
   }
 
-  const manifest = record(phala(`/cvms/${encodeURIComponent(text(info.vm_uuid))}/compose_file`));
+  const cvmPath = `/cvms/${encodeURIComponent(text(info.vm_uuid))}`;
+  const manifest = record(phala(`${cvmPath}/compose_file`));
   const composeText = text(manifest.docker_compose_file);
   const live = apiService(Bun.YAML.parse(composeText));
   const candidate = apiService(Bun.YAML.parse(await readFile(resolve(repoRoot, 'docker-compose.prod.yml'), 'utf8')));
   const image = text(live.image);
-  if (!/^skgbafa\/openkey-api(?::[A-Za-z0-9_.-]+|@sha256:[a-f0-9]{64})$/.test(image)) {
-    throw new Error('Unexpected production API image repository');
+  // The API image moved from Docker Hub to GHCR (TC-3837); a rollback target can be on either.
+  if (!/^(skgbafa\/openkey-api|ghcr\.io\/tinycloudlabs\/openkey-api)@sha256:[a-f0-9]{64}$/.test(image)
+    || 'problem' in checkMeasurement(info, record(phala(`${cvmPath}/attestation`)), image)) {
+    console.error('Rollback digest unverified. The serving API image must match the digest-pinned measured compose.');
+    process.exitCode = 1;
+    return;
   }
-  const inspection = command('docker', ['buildx', 'imagetools', 'inspect', image]);
-  const digest = /^Digest:\s+(sha256:[a-f0-9]{64})\s*$/m.exec(inspection)?.[1];
-  if (!digest) throw new Error('Could not resolve the immutable rollback image digest');
   const liveEnvironment = environment(live);
   const candidateEnvironment = environment(candidate);
   const changedEnvironmentKeys = [...new Set([...liveEnvironment.keys(), ...candidateEnvironment.keys()])]
@@ -107,7 +110,7 @@ async function main() {
   console.log(JSON.stringify({
     observed_at: new Date().toISOString(),
     image,
-    rollback_image: `skgbafa/openkey-api@${digest}`,
+    rollback_image: image,
     compose_sha256: createHash('sha256').update(composeText).digest('hex'),
     changed_environment_keys: changedEnvironmentKeys,
     live_audience_expression: publicAudience(liveEnvironment.get('OAUTH_VALID_AUDIENCES')),

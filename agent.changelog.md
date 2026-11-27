@@ -8,6 +8,9 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 - API deploys (deploy-api.yml, tc-492-production-cutover.yml) write the image into the compose only
   by digest, fail on any tag-only or `${VAR}` image, attest build provenance, and publish the
   measured app-compose on the release `openkey-api-<commit>` (TC-3837).
+- The API image is the public GHCR package `ghcr.io/tinycloudlabs/openkey-api`, pushed with
+  `GITHUB_TOKEN`; deploys stop before migrations unless the pushed digest pulls without credentials
+  (TC-3837).
 
 ## 2026-11-21
 
