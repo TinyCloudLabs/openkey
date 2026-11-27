@@ -3,6 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <script>
+      // Embedded widget: tell the SDK the frame was not blocked, before the page's scripts load. A slow load then
+      // gets the SDK's longer ready wait instead of a popup (TC-4438). Same exact-origin rule as the widget: never '*'.
+      if (location.pathname.startsWith('/widget/embed/') && window.parent !== window) {
+        try {
+          const origin = new URLSearchParams(location.search).get('origin');
+          if (origin && new URL(origin).origin === origin) window.parent.postMessage({ type: 'openkey:loading' }, origin);
+        } catch { /* No valid origin: the widget posts nothing either. */ }
+      }
+    </script>
+    <script>
       // Native sign-in sheets: paint dark from the first byte so no white frame shows before the client's branding loads.
       if (new URLSearchParams(location.search).has('tinycloud_request')) {
         document.documentElement.setAttribute('data-native-preload', '');

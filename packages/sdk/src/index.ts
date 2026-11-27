@@ -449,6 +449,8 @@ type MessageType =
   | { type: 'openkey:layout-ready'; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:layout-invalidated'; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:ready'; requestId?: string; protocolVersion?: number; presentation?: 1 }
+  /** Posted by the embedded widget's page as soon as its HTML runs, before its scripts load: the frame is not blocked. */
+  | { type: 'openkey:loading' }
   | { type: 'openkey:close'; requestId?: string; protocolVersion?: number };
 
 type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
@@ -464,7 +466,10 @@ interface ReservedPopup {
 const POPUP_WIDTH = 400;
 const POPUP_HEIGHT = 600;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-const IFRAME_READY_TIMEOUT = 3000; // 3 seconds
+/** With no sign of the embedded widget by then, the frame is taken as blocked and the flow opens a popup. */
+const IFRAME_READY_TIMEOUT = 3000;
+/** A widget that said `openkey:loading` gets this long, from opening the frame, to post `openkey:ready`. */
+const IFRAME_LOADING_TIMEOUT = 15000;
 const OAUTH_STORAGE_KEY = 'openkey_oauth';
 
 /**
@@ -2047,6 +2052,9 @@ export class OpenKey {
       outgoingProtocolVersion >= 1;
     return new Promise((resolve, reject) => {
       let readyReceived = false;
+      let loadingReceived = false;
+      // The directive of a CSP violation that blocked this host's frame, if the page reported one.
+      let blockedByDirective: string | null = null;
       let settled = false;
       let modal: IframeModal | null = null;
       let cancel: () => void;
@@ -2057,9 +2065,19 @@ export class OpenKey {
         fn();
       };
 
+      const onSecurityPolicyViolation = (event: SecurityPolicyViolationEvent) => {
+        if (event.effectiveDirective !== 'frame-src' && event.effectiveDirective !== 'child-src') return;
+        try {
+          if (new URL(event.blockedURI).origin === this.host) blockedByDirective = event.effectiveDirective;
+        } catch { /* blockedURI is not a URL (e.g. 'inline'): not this frame. */ }
+      };
+      window.addEventListener('securitypolicyviolation', onSecurityPolicyViolation);
+
       const cleanup = () => {
         clearTimeout(readyTimeout);
+        clearTimeout(loadingTimeout);
         clearTimeout(overallTimeout);
+        window.removeEventListener('securitypolicyviolation', onSecurityPolicyViolation);
         modal?.destroy();
         modal = null;
         this.activeFlowCancellations.delete(cancel);
@@ -2077,6 +2095,10 @@ export class OpenKey {
         },
         onMessage: (data: MessageType) => {
           if (settled) return;
+          if (data.type === 'openkey:loading') {
+            loadingReceived = true;
+            return;
+          }
           if (data.type === 'openkey:ready') {
             if (readyReceived) return;
             if (phase && data.protocolVersion === 2) {
@@ -2192,20 +2214,30 @@ export class OpenKey {
         );
       }
 
-      // Auto-fallback: if no openkey:ready within 3s, fall back to popup
-      const readyTimeout = setTimeout(() => {
+      // Auto-fallback: a frame with no sign of life after IFRAME_READY_TIMEOUT is taken as blocked; one that said it
+      // is loading gets until IFRAME_LOADING_TIMEOUT to become ready. Either way the flow then opens a popup.
+      const fallBackToPopup = () => {
         if (readyReceived || settled) return;
         cleanup();
+        const cause = blockedByDirective
+          ? `the page's Content Security Policy blocked the OpenKey frame (${blockedByDirective}). Add frame-src ${this.host} to your CSP.`
+          : loadingReceived
+            ? `the OpenKey frame started loading but was not ready within ${IFRAME_LOADING_TIMEOUT} ms (slow network).`
+            : `no message from the OpenKey frame within ${IFRAME_READY_TIMEOUT} ms (frame blocked or slow to load). If the page sets a CSP, it must allow frame-src ${this.host}.`;
         if (isEmbeddedAppWebView()) {
-          console.warn('OpenKey: iframe did not load in an embedded app WebView, which cannot open a popup. Add frame-src https://openkey.so to your CSP.');
+          console.warn(`OpenKey: ${cause} An embedded app WebView cannot open a popup instead.`);
           settle(() => reject(popupUnavailableError(true)));
           return;
         }
-        console.warn('OpenKey: iframe blocked by CSP, falling back to popup. Add frame-src https://openkey.so to your CSP.');
+        console.warn(`OpenKey: falling back to popup: ${cause}`);
         showToast();
         const popupUrl = `${this.host}/widget/${action}?origin=${origin}${passkeysQueryFlag(this.passkeysSupported)}`;
         this.openPopup(action, popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
+      };
+      const readyTimeout = setTimeout(() => {
+        if (!loadingReceived) fallBackToPopup();
       }, IFRAME_READY_TIMEOUT);
+      const loadingTimeout = setTimeout(fallBackToPopup, IFRAME_LOADING_TIMEOUT);
 
       // Overall 5-minute timeout
       const overallTimeout = setTimeout(() => {

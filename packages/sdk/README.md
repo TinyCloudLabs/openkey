@@ -64,7 +64,7 @@ await openkey.connect({ mode: 'popup' });
 
 ### Auto-fallback
 
-When using `'iframe'` mode, the SDK automatically falls back to `'popup'` if the iframe is blocked by the app's CSP. A brief toast notification ("Opening in new window...") is shown. To avoid the fallback, add to your CSP:
+When using `'iframe'` mode, the SDK automatically falls back to `'popup'` if the iframe is blocked, for example by the app's CSP. A frame that sends no message within 3 seconds is treated as blocked; a frame whose page reports it is loading gets up to 15 seconds to become ready. A brief toast notification ("Opening in new window...") is shown, and a console warning names the cause (a CSP violation the page reported, a slow load, or no answer). To avoid the fallback, add to your CSP:
 
 ```
 frame-src https://openkey.so;
