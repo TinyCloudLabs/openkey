@@ -112,7 +112,6 @@ export function parseRenewalChoice(
   return confirmed ? { choice: 'leased', leaseLifetimeSeconds: seconds, sensitiveConfirmed: true } : { choice: 'leased', leaseLifetimeSeconds: seconds };
 }
 
-/** Spec D6/D7 (TC-3821): the longest each renewed window of a grant that reaches secrets may last. */
 export const SENSITIVE_RENEWAL_WINDOW_SECONDS = 7 * 86_400;
 
 function unreadableGrant(): RenewalLeaseError {
@@ -120,13 +119,10 @@ function unreadableGrant(): RenewalLeaseError {
 }
 
 /**
- * Whether a lease on this grant needs the owner's confirm (TC-3821), by the rule the approval screen shares
- * (`renewalEntryVerdict` in @openkey/capability-review): an encryption permission on a `secrets/` key or prefix, or
- * decrypt on a whole encryption network. Fails closed: a message the node's reader (`parseSiweFields`) rejects, a ReCap
- * that does not parse, or an encryption permission whose resource is not a valid encryption URN, refuses the lease
- * outright. A SIWE with no ReCap grants nothing and needs no confirm.
+ * Whether a lease on this grant needs the owner's confirmation under the shared renewal rule. An unknown
+ * encryption verb returns null, so native consent can offer finite approval alone. An unreadable grant throws.
  */
-export function leaseReachesSecrets(siwe: string): boolean {
+export function renewalGrantSensitivity(siwe: string): boolean | null {
   if (!parseSiweFields(siwe).ok) throw unreadableGrant();
   let entries: Array<{ service?: string; space: string; path: string; actions: string[] }>;
   try {
@@ -136,6 +132,7 @@ export function leaseReachesSecrets(siwe: string): boolean {
   }
   if (!Array.isArray(entries)) throw unreadableGrant();
   let reaches = false;
+  let unknownVerb = false;
   for (const entry of entries) {
     if (!entry || typeof entry.space !== 'string' || typeof entry.path !== 'string' || !Array.isArray(entry.actions) ||
       entry.actions.some((action) => typeof action !== 'string')) {
@@ -143,9 +140,16 @@ export function leaseReachesSecrets(siwe: string): boolean {
     }
     const verdict = renewalEntryVerdict(entry);
     if (verdict === 'unreadable') throw unreadableGrant();
+    if (verdict === 'unknown-verb') unknownVerb = true;
     if (verdict === 'confirm') reaches = true;
   }
-  return reaches;
+  return unknownVerb ? null : reaches;
+}
+
+export function leaseReachesSecrets(siwe: string): boolean {
+  const sensitivity = renewalGrantSensitivity(siwe);
+  if (sensitivity === null) throw unreadableGrant();
+  return sensitivity;
 }
 
 /**
@@ -355,6 +359,10 @@ export async function prepareRenewalStage(input: {
 
 /** Puts the owner's signature on the saved lease message; the message is rebuilt and must match byte for byte. */
 export function signLease(stage: RenewalStage, signature: string): RenewalStage {
+  // An approval stage can survive a rollout that tightens the lease eligibility rules.
+  const grantSiwe = stage.delegation.siwe;
+  if (typeof grantSiwe !== 'string') throw unreadableGrant();
+  leaseReachesSecrets(grantSiwe);
   const prepared = leaseSiwe(stage);
   if (prepared.siwe !== stage.leaseSiwe) throw new RenewalLeaseError('lease_mismatch', 'Saved renewal lease changed', 409);
   const session = completeSessionSetup({ ...prepared, signature });
