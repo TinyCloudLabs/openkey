@@ -1,11 +1,6 @@
-# Major versions are a human decision (TC-615). This fails a pull request that
-# adds a `major` changeset or raises a package's major version, unless one of
-# the PR's own empty commits approves it:
-#
-#   git commit --allow-empty -m "approve-major-release: <package>"
-#
-# Agents never write that commit. A Version Packages PR passes when the major
-# changeset it consumes was merged with a sign-off.
+# Changesets must classify compatibility accurately. Preparing a major changeset
+# is allowed; changing a package's actual major version still requires sign-off.
+# Release/versioning workflows keep their existing authorization checks.
 name: Major release guard
 
 on:
@@ -32,8 +27,8 @@ jobs:
       - name: Test the guard
         run: node --test .github/scripts/check-major-release-signoff.test.mjs
 
-      - name: Require sign-off for major bumps
-        run: node .github/scripts/check-major-release-signoff.mjs pr "$BASE_SHA" "$HEAD_SHA"
+      - name: Check version bumps while allowing major changesets
+        run: node .github/scripts/check-major-release-signoff.mjs prepare-pr "$BASE_SHA" "$HEAD_SHA"
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

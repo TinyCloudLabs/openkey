@@ -69,6 +69,15 @@ jobs:
             echo "Found publishable changesets — will create version PR"
           fi
 
+      - name: Check major release authorization
+        run: |
+          if [ -f .changeset/pre.json ]; then
+            node .github/scripts/check-major-release-signoff.mjs beta
+            node .github/scripts/check-major-release-signoff.mjs stable
+          else
+            node .github/scripts/check-major-release-signoff.mjs release
+          fi
+
       # changesets/action v1 treated every directory in .changeset/ as a
       # version-1 changeset and opened <dir>/changes.md. Changesets 3 keeps
       # the changesets it has already versioned in .changeset/pre/, so v1

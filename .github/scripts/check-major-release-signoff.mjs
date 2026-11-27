@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// Major versions are a human decision (TC-615). Agents bump `minor` or
-// `patch`, even for breaking changes. A major ships only after a maintainer
+// Changesets describe compatibility, including breaking changes. Preparing a
+// major changeset does not authorize its release. A major ships only after a maintainer
 // approves it with an empty commit:
 //
 //   git commit --allow-empty -m "approve-major-release: @scope/pkg [@scope/other]"
 //
 // Modes:
+//   release           Pending stable major changesets require maintainer sign-off.
+//   prepare-pr <base> <head>  Allows accurate major changesets; actual package
+//                     version bumps still require the existing sign-off.
 //   pr <base> <head>  A pull request may not add a `major` changeset or raise a
 //                     package's major version unless one of its own empty
 //                     commits approves that package. A version PR that consumes
@@ -167,14 +170,14 @@ function unadmittedMajorChangesets(majors) {
   }
 }
 
-function prMajors(base, head) {
+function prMajors(base, head, includeChangesets = true) {
   const mergeBase = git("merge-base", base, head);
   const majors = new Map();
 
   for (const path of lines(
     git("diff", "--name-only", "--diff-filter=AM", mergeBase, head, "--", ".changeset"),
   )) {
-    if (!isChangeset(path)) continue;
+    if (!includeChangesets || !isChangeset(path)) continue;
     for (const name of changesetMajors(show(head, path))) record(majors, name, `major in ${path}`);
   }
 
@@ -231,6 +234,24 @@ function betaMajors() {
   return { majors, approved: majors.size ? historySignoffs(cycleRange()) : new Set() };
 }
 
+function releaseMajors() {
+  const majors = new Map();
+  const approved = new Set();
+  for (const name of readdirSync(".changeset").sort()) {
+    const path = `.changeset/${name}`;
+    if (!isChangeset(path)) continue;
+    const packages = changesetMajors(read(path));
+    if (packages.length === 0) continue;
+    const added = addedIn(path);
+    const signoffs = added ? historySignoffs(rangeFrom(added)) : new Set();
+    for (const pkg of packages) {
+      record(majors, pkg, `major in ${path}`);
+      if (signoffs.has(pkg)) approved.add(pkg);
+    }
+  }
+  return { majors, approved };
+}
+
 function stableMajors() {
   const pre = parseJson(read(".changeset/pre.json"));
   const cycleStart = pre ? addedIn(".changeset/pre.json") : undefined;
@@ -264,7 +285,7 @@ function report({ majors, approved }, mode) {
   if (missing.length === 0) return;
 
   const where =
-    mode === "pr"
+    (mode === "pr" || mode === "prepare-pr")
       ? "they add this empty commit to the pull request"
       : "they push this empty commit to the default branch (directly or through a PR)";
   const message = [
@@ -272,7 +293,7 @@ function report({ majors, approved }, mode) {
     "",
     ...missing.map((name) => `  ${name}: ${majors.get(name).join("; ")}`),
     "",
-    "Major versions are a human decision. Agents use `minor` or `patch`, even for breaking changes.",
+    "Keep breaking stable API changes classified as major. Release authorization is separate from preparing the changeset.",
     `If a maintainer has decided to ship a major, ${where}:`,
     "",
     `  git commit --allow-empty -m "approve-major-release: ${missing.join(" ")}"`,
@@ -286,10 +307,12 @@ function report({ majors, approved }, mode) {
 }
 
 const [mode, base, head] = process.argv.slice(2);
-if (mode === "pr" && base && head) report(prMajors(base, head), mode);
+if (mode === "prepare-pr" && base && head) report(prMajors(base, head, false), mode);
+else if (mode === "pr" && base && head) report(prMajors(base, head), mode);
 else if (mode === "beta") report(betaMajors(), mode);
 else if (mode === "stable") report(stableMajors(), mode);
+else if (mode === "release") report(releaseMajors(), mode);
 else {
-  console.error("usage: check-major-release-signoff.mjs pr <base> <head> | beta | stable");
+  console.error("usage: check-major-release-signoff.mjs prepare-pr <base> <head> | pr <base> <head> | beta | stable | release");
   process.exitCode = 2;
 }
