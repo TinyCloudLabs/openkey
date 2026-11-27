@@ -80,6 +80,7 @@
     elevatedKindOf,
     elevatedNotApprovedRow,
     elevatedRejectedCountAnnouncement,
+    elevatedExactKey,
     elevatedWhere,
     elevatedWhereText,
     allSecretsAbility,
@@ -806,6 +807,8 @@
     block: boolean;
     unblock: boolean;
     where: string | null;
+    /** The one key the grant covers, when it is provably exactly one key. */
+    exactKey: string | null;
     /** The all-secrets card: decrypt on a whole network, decrypt or key creation on `secrets/`. */
     allSecrets: boolean;
   }
@@ -842,6 +845,7 @@
           block: has("key.block"),
           unblock: has("key.unblock"),
           where: elevatedWhere(entry),
+          exactKey: elevatedExactKey(entry),
           allSecrets: false,
         },
       ];
@@ -857,6 +861,7 @@
         block: false,
         unblock: false,
         where: null,
+        exactKey: null,
         allSecrets: true,
       },
       ...groups,
@@ -885,6 +890,7 @@
           { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
           elevatedSite,
           elevatedWhereText(group.where),
+          group.exactKey,
         ),
       };
     }),

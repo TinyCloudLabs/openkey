@@ -65,17 +65,27 @@ export function elevatedWhereText(lastSegment: string | null): string {
 }
 
 /**
- * The heading and sentence of one card. `where` is `elevatedWhereText(...)`. A grant that includes blocking or
- * unblocking gets the "Control access" card, which names every action the grant carries.
+ * The heading and sentence of one card. `where` is `elevatedWhereText(...)`. `exactKey` is `elevatedExactKey(...)`: the
+ * name of the one key the grant covers, or null for a folder, a whole network or anything not proven to be one key.
+ * Only a grant that unlocks and creates, and covers one proven key, reads as one key; the other shapes read as they
+ * do for a folder. A grant that includes blocking or unblocking gets the "Control access" card, which names every
+ * action the grant carries.
  */
 export function elevatedCard(
   kind: ElevatedKind,
   abilities: { decrypt: boolean; create: boolean; block?: boolean; unblock?: boolean },
   site: string | null,
   where: string,
+  exactKey: string | null = null,
 ): { heading: string; body: string } {
   const who = elevatedSubject(site);
   if (abilities.block || abilities.unblock) return elevatedControlCard(kind, abilities, who, where);
+  if (kind === "encryption-keys" && exactKey !== null && abilities.decrypt && abilities.create) {
+    return {
+      heading: `Create and use one encryption key: ${exactKey}`,
+      body: `${who} could create the encryption key named ${exactKey} and unlock the items encrypted with it, ${LAST_FOR_AS_LONG}. This permission covers only that key.`,
+    };
+  }
   if (kind === "encryption-network") {
     if (abilities.decrypt) {
       const card = masterKeyDecryptCard(site, abilities.create);
