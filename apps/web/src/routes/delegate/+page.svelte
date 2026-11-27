@@ -427,7 +427,7 @@
     if (forceFinite || renewalLeaseMs === null) return { choice: 'finite' };
     return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
   }
-  const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
+  const RENEWAL_NOT_SET_UP = "OpenKey couldn't set up renewal. Nothing was approved. Try again.";
   // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
   let renewalSigningMs = $state<number | null>(null);
   // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.

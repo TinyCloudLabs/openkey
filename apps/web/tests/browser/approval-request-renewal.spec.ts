@@ -208,7 +208,7 @@ test('declining the second signature approves nothing', async ({ page }) => {
   await approve(page).click();
   await expect(page.getByText('Sign once more to turn on renewal for up to 90 days')).toBeVisible();
   await page.evaluate(() => (window as unknown as { qaReleaseSecond: () => void }).qaReleaseSecond());
-  await expect(page.getByText("Renewal wasn't set up, so nothing was approved. Try again.")).toBeVisible();
+  await expect(page.getByText("OpenKey couldn't set up renewal. Nothing was approved. Try again.")).toBeVisible();
   expect(calls.filter((call) => call.path === `/api/approval-requests/${id}/renewal-signature`)).toEqual([]);
 });
 
