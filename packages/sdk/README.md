@@ -68,6 +68,8 @@ When using `'iframe'` mode, the SDK falls back to `'popup'` by itself only when 
 
 A frame that is silent or slow never falls back by itself, because the popup holds a different OpenKey session than the frame. If it is not ready after 15 seconds, the card offers "Open in a new window" ("You may need to sign in again there."), and the user chooses. A block the page does not report, such as one from a browser extension, also gets this offer.
 
+The embedded page posts `{ type: 'openkey:loading' }` to the app as soon as it starts loading, before `openkey:ready`. A host that talks to OpenKey's embed frames without this SDK must ignore message types it does not know.
+
 One mode per `OpenKey` instance: once a flow on an instance has run in a popup (a fallback, the user's choice, or `mode: 'popup'`), later `'iframe'` flows on it open a popup directly, inside the app's call. `setupAccount()` is the exception: it is a popup by design and does not switch the instance. A page reload creates a new instance, which starts embedded again.
 
 To avoid the CSP fallback, add to your CSP:
