@@ -82,6 +82,8 @@
     elevatedRejectedCountAnnouncement,
     elevatedWhere,
     elevatedWhereText,
+    masterKeyRejectNote,
+    MASTER_KEY_TITLE,
     allSecretsAbility,
     allSecretsCard,
     allSecretsReach,
@@ -109,6 +111,8 @@
     SECRET_BLOCK_COPY,
     splitAroundName,
     accessLastsLine,
+    cappedAskMs,
+    formatDurationWithEnd,
     onceCautionLine,
     onceDefaultExpiryMs,
     onceLongerChoice,
@@ -467,11 +471,18 @@
   // An app's longer time on secret keys starts at the 7 days the server allows (the one-hour start, where it applies,
   // is shorter and goes first).
   let secretCapSent = $state(false);
+  // The length this screen sends as the owner's pick when the app asked for more than the cap allows; null sends the
+  // app's own Expiration Time. The master-key hint reads this same value.
+  const secretCapPickMs = $derived(
+    secretCapMs !== null && requestedExpiry !== null && cappedAskMs(requestedExpiry, secretCapMs) !== requestedExpiry
+      ? cappedAskMs(requestedExpiry, secretCapMs)
+      : null,
+  );
   $effect(() => {
     if (secretCapSent || approving || previewPending || !onExpiryChange || ownerChoseExpiry || onceDefaultMs !== null) return;
-    if (secretCapMs !== null && expiryMs === null && requestedExpiry !== null && requestedExpiry > secretCapMs) {
+    if (secretCapPickMs !== null && expiryMs === null) {
       secretCapSent = true;
-      onExpiryChange(secretCapMs);
+      onExpiryChange(secretCapPickMs);
     }
   });
   function chooseExpiry(ms: number | null) {
@@ -889,6 +900,37 @@
       };
     }),
   );
+  // The master-key card's hint names the length the approval is signed for after the owner rejects it, or it does not
+  // show. It shows only when the page can prove that length: no owner pick, no renewal, only the one-hour start or
+  // nothing chosen. The length is the expiry this screen then sends (`secretCapPickMs`, else the app's Expiration Time
+  // counted from now), held to the cap the server takes from the original request (`secretCapMs` reads every grant,
+  // ticked or not). It stays out where the length depends on more than the card: the request without the card is still
+  // in the one-hour tier, nothing else is left to approve, or several cards stand for the master key.
+  const masterKeyLasts = $derived.by((): string | null => {
+    if (shortenOnlyExpiry !== null || ownerChoseExpiry || renewal?.leaseMs != null) return null;
+    if (expiryMs !== null && expiryMs !== ONCE_DEFAULT_EXPIRY_MS) return null;
+    const sent = secretCapPickMs ?? signedAsWrittenMs;
+    if (sent === null || !isOnceTier(selectedGrants)) return null;
+    const headings = new Map(elevatedCards.map((card) => [card.id, card.heading]));
+    const masterGroups = pendingElevatedGroups.filter((group) => headings.get(group.id) === MASTER_KEY_TITLE);
+    if (masterGroups.length !== 1) return null;
+    const masterIds = new Set(masterGroups[0]!.actionIds);
+    const elevatedIds = new Set(pendingElevatedGroups.flatMap((group) => group.actionIds));
+    const left = (drop: Set<string>) =>
+      selectedGrants
+        .map((grant) => ({ ...grant, actions: grant.actions.filter((action) => !drop.has(action.id)) }))
+        .filter((grant) => grant.actions.length > 0);
+    if (left(elevatedIds).length === 0) return null;
+    if (isOnceTier(left(masterIds))) return null;
+    const ms = cappedAskMs(sent, secretCapMs);
+    return ms <= ONCE_DEFAULT_EXPIRY_MS ? null : formatDurationWithEnd(ms);
+  });
+  const elevatedCardsShown = $derived(
+    elevatedCards.map((card) => ({
+      ...card,
+      rejectNote: card.heading === MASTER_KEY_TITLE && masterKeyLasts !== null ? masterKeyRejectNote(elevatedSite, masterKeyLasts) : null,
+    })),
+  );
   const allSecretsSummaryCard = $derived(!elevated && allSecrets !== null ? allSecretsCard(allSecrets, originHost ?? null) : null);
   const notApprovedRows = $derived(
     rejectedCards.filter((card) => card.actionIds.every((id) => !selection.has(id))).map((card) => elevatedNotApprovedRow(card.heading)),
@@ -966,7 +1008,7 @@
 
 {#if warningOpen && elevated}
   <ElevatedWarning
-    cards={elevatedCards}
+    cards={elevatedCardsShown}
     site={elevatedSite}
     splittable={elevated.splittable}
     onResolve={resolveElevated}

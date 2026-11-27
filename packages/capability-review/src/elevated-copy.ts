@@ -36,6 +36,15 @@ export function elevatedRejectNote(site: string | null): string {
   return `If you reject it, the rest of the request is still approved. ${who} may not work fully.`;
 }
 
+/**
+ * The hint on the master-key card when rejecting it changes how long the approval lasts: access that can open
+ * encrypted data is held to one hour, and without it the approval lasts what the app asked. `lasts` is that length
+ * with its end day, as the access line says it ("7 days, until Dec 1").
+ */
+export function masterKeyRejectNote(site: string | null, lasts: string): string {
+  return `If you reject it, the rest of the request is approved for ${lasts}. ${elevatedSubject(site)} may not work fully.`;
+}
+
 export function elevatedWholeNote(site: string | null): string {
   return `${elevatedSubject(site)} sent this as one request, so you can approve all of it or none of it.`;
 }

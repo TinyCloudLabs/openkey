@@ -27,6 +27,8 @@
     id: string;
     heading: string;
     body: string;
+    /** The hint under the Reject and Allow buttons where it differs from the shared one; null for the shared hint. */
+    rejectNote?: string | null;
   }
 
   interface Props {
@@ -110,7 +112,7 @@
             </button>
             <button type="button" class="allow" onclick={() => decide(card, "allow")}>{ELEVATED_ALLOW}</button>
           </div>
-          <p class="note">{note}</p>
+          <p class="note">{card.rejectNote ?? note}</p>
         {:else}
           <p class="status">
             <span>{choice === "reject" ? ELEVATED_REJECTED_STATUS : ELEVATED_ALLOWED_STATUS}</span>
