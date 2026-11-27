@@ -449,6 +449,8 @@ type MessageType =
   | { type: 'openkey:layout-ready'; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:layout-invalidated'; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:ready'; requestId?: string; protocolVersion?: number; presentation?: 1 }
+  /** Posted by the embedded widget's page as soon as its HTML runs, before its scripts load: the frame is not blocked. */
+  | { type: 'openkey:loading' }
   | { type: 'openkey:close'; requestId?: string; protocolVersion?: number };
 
 type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
@@ -464,7 +466,10 @@ interface ReservedPopup {
 const POPUP_WIDTH = 400;
 const POPUP_HEIGHT = 600;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-const IFRAME_READY_TIMEOUT = 3000; // 3 seconds
+/** With no sign of the embedded widget by then, the frame is taken as blocked and the flow opens a popup. */
+const IFRAME_READY_TIMEOUT = 3000;
+/** A widget that said `openkey:loading` gets this long, from opening the frame, to post `openkey:ready`. */
+const IFRAME_LOADING_TIMEOUT = 15000;
 const OAUTH_STORAGE_KEY = 'openkey_oauth';
 
 /**
@@ -700,6 +705,7 @@ class IframeModal {
   private displayedHeight = 0;
   private hasDisplayedLayout = false;
   private revealTimer?: ReturnType<typeof setTimeout>;
+  private newWindowOffer: HTMLDivElement | null = null;
 
   constructor(opts: { url: string; host: string; hideUntilLayout?: boolean; onClose: () => void; onMessage: (data: MessageType) => void }) {
     this.host = opts.host;
@@ -719,6 +725,9 @@ class IframeModal {
       .ok-close{position:absolute;top:8px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#6b7280;font-size:18px;cursor:pointer;z-index:1;display:flex;align-items:center;justify-content:center;border-radius:4px}
       .ok-close:hover{color:#111827}
       .ok-handle{width:40px;height:4px;background:#d4d4d4;border-radius:2px;margin:8px auto 0}
+      .ok-new-window{padding:12px 16px 16px;text-align:center;font:14px/1.4 system-ui,sans-serif;color:#4b5563}
+      .ok-new-window button{border:none;background:none;padding:0;color:#2563eb;font:inherit;text-decoration:underline;cursor:pointer}
+      .ok-new-window p{margin:4px 0 0;font-size:13px}
       iframe{border:none;width:100%;height:400px;display:block;transition:height 200ms ease}
       .ok-backdrop.ok-exit{animation:ok-fade-out 150ms ease-in}
       .ok-backdrop.ok-exit .ok-card{animation:${isMobile ? 'ok-slide-down 200ms ease-in' : 'ok-scale-out 150ms ease-in'}}
@@ -857,6 +866,34 @@ class IframeModal {
 
   revealLegacy(): void {
     this.revealFrame();
+  }
+
+  /**
+   * Offer the user a popup instead of a frame that is still not ready (TC-4438). Only the user's click opens it. If
+   * the card is hidden until the widget's layout, this reveals the card (not the frame) so the offer can be seen.
+   */
+  offerNewWindow(onOpen: () => void): void {
+    if (this.newWindowOffer) return;
+    const offer = document.createElement('div');
+    offer.className = 'ok-new-window';
+    const open = document.createElement('button');
+    open.textContent = 'Open in a new window';
+    open.addEventListener('click', onOpen);
+    const note = document.createElement('p');
+    note.textContent = 'You may need to sign in again there.';
+    offer.appendChild(open);
+    offer.appendChild(note);
+    this.card.appendChild(offer);
+    this.newWindowOffer = offer;
+    this.card.inert = false;
+    this.card.style.opacity = '1';
+    this.card.style.pointerEvents = 'auto';
+    this.card.style.visibility = 'visible';
+  }
+
+  withdrawNewWindowOffer(): void {
+    this.newWindowOffer?.remove();
+    this.newWindowOffer = null;
   }
   hasDisplayedCurrentPhase(): boolean {
     return this.hasDisplayedLayout;
@@ -1023,6 +1060,11 @@ export class OpenKey {
   private discoveredProviders: EIP6963ProviderDetail[] = [];
   /** Cancels widget flows that could outlive a sign-out on this instance. */
   private activeFlowCancellations = new Set<() => void>();
+  /**
+   * Set once an embedded frame on this instance said `openkey:loading` or `openkey:ready`. From then on a slow frame
+   * never falls back to a popup by itself: the popup holds a different OpenKey session than the frame (TC-4438).
+   */
+  private embeddedFrameSeen = false;
   /**
    * Nostr identity custody + signing (secp256k1 Schnorr / BIP-340). Kept
    * fully separate from the Ethereum flows above: it never reuses
@@ -2047,6 +2089,11 @@ export class OpenKey {
       outgoingProtocolVersion >= 1;
     return new Promise((resolve, reject) => {
       let readyReceived = false;
+      let loadingReceived = false;
+      // An earlier flow on this instance ran embedded: its session is the frame's, so never switch to a popup unasked.
+      const embeddedBefore = this.embeddedFrameSeen;
+      // The directive of a CSP violation that blocked this host's frame, if the page reported one.
+      let blockedByDirective: string | null = null;
       let settled = false;
       let modal: IframeModal | null = null;
       let cancel: () => void;
@@ -2057,9 +2104,19 @@ export class OpenKey {
         fn();
       };
 
+      const onSecurityPolicyViolation = (event: SecurityPolicyViolationEvent) => {
+        if (event.effectiveDirective !== 'frame-src' && event.effectiveDirective !== 'child-src') return;
+        try {
+          if (new URL(event.blockedURI).origin === this.host) blockedByDirective = event.effectiveDirective;
+        } catch { /* blockedURI is not a URL (e.g. 'inline'): not this frame. */ }
+      };
+      window.addEventListener('securitypolicyviolation', onSecurityPolicyViolation);
+
       const cleanup = () => {
         clearTimeout(readyTimeout);
+        clearTimeout(loadingTimeout);
         clearTimeout(overallTimeout);
+        window.removeEventListener('securitypolicyviolation', onSecurityPolicyViolation);
         modal?.destroy();
         modal = null;
         this.activeFlowCancellations.delete(cancel);
@@ -2077,6 +2134,11 @@ export class OpenKey {
         },
         onMessage: (data: MessageType) => {
           if (settled) return;
+          if (data.type === 'openkey:loading') {
+            loadingReceived = true;
+            this.embeddedFrameSeen = true;
+            return;
+          }
           if (data.type === 'openkey:ready') {
             if (readyReceived) return;
             if (phase && data.protocolVersion === 2) {
@@ -2100,6 +2162,8 @@ export class OpenKey {
               modal?.postMessage(messageForWidget(message, data));
             }
             readyReceived = true;
+            this.embeddedFrameSeen = true;
+            modal?.withdrawNewWindowOffer();
             if (action === 'sign-out') this.signOutProgress?.get(outgoingRequestId as string)?.('ready');
             return;
           }
@@ -2192,20 +2256,50 @@ export class OpenKey {
         );
       }
 
-      // Auto-fallback: if no openkey:ready within 3s, fall back to popup
-      const readyTimeout = setTimeout(() => {
-        if (readyReceived || settled) return;
+      const popupUrl = `${this.host}/widget/${action}?origin=${origin}${passkeysQueryFlag(this.passkeysSupported)}`;
+      const openInPopup = () => {
         cleanup();
+        this.openPopup(action, popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
+      };
+      // Why the frame is not ready after `ms`, for the console warning.
+      const causeAfter = (ms: number) => blockedByDirective
+        ? `the page's Content Security Policy blocked the OpenKey frame (${blockedByDirective}). Add frame-src ${this.host} to your CSP.`
+        : loadingReceived
+          ? `the OpenKey frame started loading but was not ready within ${ms} ms (slow network).`
+          : `no message from the OpenKey frame within ${ms} ms (frame blocked or slow to load). If the page sets a CSP, it must allow frame-src ${this.host}.`;
+
+      // A frame silent for IFRAME_READY_TIMEOUT on an instance that never ran embedded is taken as blocked: the flow
+      // falls back to a popup by itself.
+      const readyTimeout = setTimeout(() => {
+        if (loadingReceived || embeddedBefore || readyReceived || settled) return;
+        cleanup();
+        const cause = causeAfter(IFRAME_READY_TIMEOUT);
         if (isEmbeddedAppWebView()) {
-          console.warn('OpenKey: iframe did not load in an embedded app WebView, which cannot open a popup. Add frame-src https://openkey.so to your CSP.');
+          console.warn(`OpenKey: ${cause} An embedded app WebView cannot open a popup instead.`);
           settle(() => reject(popupUnavailableError(true)));
           return;
         }
-        console.warn('OpenKey: iframe blocked by CSP, falling back to popup. Add frame-src https://openkey.so to your CSP.');
+        console.warn(`OpenKey: falling back to popup: ${cause}`);
         showToast();
-        const popupUrl = `${this.host}/widget/${action}?origin=${origin}${passkeysQueryFlag(this.passkeysSupported)}`;
-        this.openPopup(action, popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
+        openInPopup();
       }, IFRAME_READY_TIMEOUT);
+
+      // Otherwise the frame is loading, or ran here before: the popup would hold a different session (TC-4438). Not
+      // ready after IFRAME_LOADING_TIMEOUT, the card offers a new window and the user decides; the card stays until
+      // ready, close or the overall timeout. An app WebView cannot open one, so it gets no offer.
+      const loadingTimeout = setTimeout(() => {
+        if (readyReceived || settled) return;
+        const cause = causeAfter(IFRAME_LOADING_TIMEOUT);
+        if (isEmbeddedAppWebView()) {
+          console.warn(`OpenKey: ${cause} Still waiting; an embedded app WebView cannot open a new window.`);
+          return;
+        }
+        console.warn(`OpenKey: ${cause} The card offers to open it in a new window.`);
+        modal?.offerNewWindow(() => {
+          if (readyReceived || settled) return;
+          openInPopup();
+        });
+      }, IFRAME_LOADING_TIMEOUT);
 
       // Overall 5-minute timeout
       const overallTimeout = setTimeout(() => {
