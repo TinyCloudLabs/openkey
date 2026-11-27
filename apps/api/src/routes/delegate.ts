@@ -62,7 +62,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { countPrivateSessionJwk, log, logError, logManifestOriginBindFailed, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { countPrivateSessionJwk, log, logError, logManifestOriginBindFailed, logMetric, logSessionJwk, logSiweSigned, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -97,7 +97,7 @@ import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, siweBroadOnceTier, va
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
-import { invalidSiweMessage } from '../services/siwe-message-refusal';
+import { invalidSiweMessage, signedSiweFacts } from '../services/siwe-message-refusal';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
   APP_KEY_GROUP_PARTIAL_MESSAGE,
@@ -1243,6 +1243,8 @@ delegateRouter.post('/sign', async (c) => {
               : 'TinyCloud signing is disabled for this OpenKey account.';
         return c.json({ approved: false, code, reason }, 403);
       }
+      const manageKeySiweFacts = signedSiweFacts(candidate.message as string);
+      if (manageKeySiweFacts) logSiweSigned('/api/delegate/sign', manageKeySiweFacts, c.req.header('origin'));
       return c.json({ approved: true, signature: result.value.signature, canonicalIdentity: result.value.identity });
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
@@ -1403,6 +1405,8 @@ delegateRouter.post('/sign', async (c) => {
         privateKey,
         candidate.message as string,
       );
+      const coordinationSiweFacts = signedSiweFacts(candidate.message as string);
+      if (coordinationSiweFacts) logSiweSigned('/api/delegate/sign', coordinationSiweFacts, c.req.header('origin'));
       return c.json({
         approved: true,
         signature,
@@ -1549,9 +1553,20 @@ delegateRouter.post('/sign', async (c) => {
     return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
   }
 
+  // TC-3844: Auto-Sign never signs a sign-in message with no Expiration Time; such a grant never ends, so the owner
+  // decides on the approval screen, which says so.
+  const siweFacts = signedSiweFacts(body.message);
+  if (!siweFacts?.expiry) {
+    return c.json(openKeyApprovalRequired(
+      "Auto-Sign signs only sign-in messages that have an expiration time. This message has none, so it needs the owner's approval.",
+      'auto_sign_needs_expiry',
+    ));
+  }
+
   const signature = await signManagedKey(key, key.sealedBlob, body.message);
   // The route is called from the app's own page, so Origin is the app origin.
   recordAppSignIn(prisma, user.id, c.req.header('origin'));
+  logSiweSigned('/api/delegate/sign', siweFacts, c.req.header('origin'));
   return c.json({
     approved: true,
     signature,

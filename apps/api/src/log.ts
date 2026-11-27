@@ -84,7 +84,7 @@ const EVENTS = {
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   account_origin_refused: true,
   legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
-  sign_origin_refused: true,
+  sign_origin_refused: true, siwe_signed: true,
   approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
@@ -209,6 +209,36 @@ export function logMetric(
 /** One line on a refused managed-key signing request: route template and why, never the origin value. */
 export function logSignOriginRefused(route: string | undefined, reason: 'missing' | 'foreign'): void {
   emit('warn', 'sign_origin_refused', { route: routeTemplate(route), reason });
+}
+
+export type SiweSignRoute = '/api/keys/:keyId/sign' | '/api/delegate/sign';
+
+/**
+ * TC-3844: one line per sign-in message a sign route signed: the route, whether it had an `Expiration Time`
+ * (`siwe_expiry`), whether it carries a ReCap, and `claimed_origin` (scheme, host and port only; `none` when absent,
+ * `other` when it is not an http(s) origin). Never the message, address, nonce, key or user.
+ *
+ * `claimed_origin` is what the client says, not a verified origin: `body.requestOrigin` on `/api/keys/:keyId/sign`
+ * (the widget's claim) and the `Origin` header on `/api/delegate/sign` (any non-browser caller can set it). It is for
+ * counting only: never use it for a security decision or an alert.
+ */
+export function logSiweSigned(route: SiweSignRoute, facts: { expiry: boolean; recap: boolean }, claimedOrigin: string | null | undefined): void {
+  emit('info', 'siwe_signed', {
+    route,
+    siwe_expiry: facts.expiry ? 'present' : 'absent',
+    recap: facts.recap,
+    claimed_origin: httpOrigin(claimedOrigin),
+  });
+}
+
+function httpOrigin(value: string | null | undefined): string {
+  if (typeof value !== 'string') return 'none';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : 'other';
+  } catch {
+    return 'other';
+  }
 }
 const PROCESS_STARTED_AT = new Date(performance.timeOrigin).toISOString();
 const ORIGIN_REFUSAL_KEY_CAP = 200;

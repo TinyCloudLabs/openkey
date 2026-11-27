@@ -55,3 +55,28 @@ export function invalidSiweMessage(message: string, rule: SiweMessageRule = 'gra
       }
     : null;
 }
+
+/** What the sign-route event records about a signed sign-in message: never its text. */
+export interface SignedSiweFacts {
+  expiry: boolean;
+  recap: boolean;
+}
+
+/**
+ * TC-3844: whether `message`, as written or as the UTF-8 its `0x` hex covers, is a sign-in message the node can read,
+ * and if so whether it has an `Expiration Time` and a ReCap resource; null for any other message.
+ */
+export function signedSiweFacts(message: string): SignedSiweFacts | null {
+  const hex = hexText(message);
+  for (const text of [message, hex?.utf8 ? hex.text : null]) {
+    if (text === null) continue;
+    const parsed = parseSiweFields(text);
+    if (parsed.ok) {
+      return {
+        expiry: parsed.fields.expirationTime !== undefined,
+        recap: (parsed.fields.resources ?? []).some((resource) => resource.startsWith('urn:recap:')),
+      };
+    }
+  }
+  return null;
+}

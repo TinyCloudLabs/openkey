@@ -7,7 +7,7 @@
 //    to the client, which is not TinyCloud's own.
 //  - OAuth tinycloud:session token: the session policy signs only a kv ReCap, so a host message is refused there.
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { generateHostSIWEMessage } from '@tinycloud/node-sdk-wasm';
@@ -142,15 +142,21 @@ describe('the cookie session, from OpenKey\'s own browser origin', () => {
       row = hosted;
       for (const { label, json } of escapedHostSpellings(`${spaceId('default')}/space`)) {
         signedMessages = [];
-        const message = withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`);
         if (hosted) {
-          // The hex form is not signed on this route, so it gets no signature whichever way the host rule decides.
-          expectNoSignature(await signAsSession(asHex(message), OPENKEY_ORIGIN));
-          const plain = await signAsSession(message, OPENKEY_ORIGIN);
-          expect([label, plain.status, plain.body.approved]).toEqual([label, 200, true]);
-          expect(plain.body.signature).toMatch(/^0x[0-9a-f]+$/i);
-          expect(signedMessages).toEqual([message]);
+          setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+          try {
+            const message = withExpiry(withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`));
+            // The hex form is not signed on this route, so it gets no signature whichever way the host rule decides.
+            expectNoSignature(await signAsSession(asHex(message), OPENKEY_ORIGIN));
+            const plain = await signAsSession(message, OPENKEY_ORIGIN);
+            expect([label, plain.status, plain.body.approved]).toEqual([label, 200, true]);
+            expect(plain.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+            expect(signedMessages).toEqual([message]);
+          } finally {
+            setSystemTime();
+          }
         } else {
+          const message = withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`);
           expectRefusedByRule(await signAsSession(message, OPENKEY_ORIGIN));
           expectNoSignature(await signAsSession(asHex(message), OPENKEY_ORIGIN));
         }
@@ -167,13 +173,18 @@ describe('the cookie session, from OpenKey\'s own browser origin', () => {
 
   test('is signed for a non-primary space once the primary space is hosted', async () => {
     row = { status: 'complete' };
-    const message = hostSiwe('public');
-    const signed = await signAsSession(message, OPENKEY_ORIGIN);
+    setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    try {
+      const message = withExpiry(hostSiwe('public'));
+      const signed = await signAsSession(message, OPENKEY_ORIGIN);
 
-    expect(signed.status).toBe(200);
-    expect(signed.body.approved).toBe(true);
-    expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
-    expect(signedMessages).toEqual([message]);
+      expect(signed.status).toBe(200);
+      expect(signed.body.approved).toBe(true);
+      expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+      expect(signedMessages).toEqual([message]);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test('gets no signature when it names the primary space with another', async () => {
