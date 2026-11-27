@@ -197,8 +197,8 @@ describe('reviewedMigrationObjects against the migration SQL', () => {
       expect([...objects.types].sort()).toEqual(names(/CREATE TYPE "([^"]+)"/g));
       expect([...objects.tables].sort()).toEqual(names(/CREATE TABLE "([^"]+)"/g));
       expect([...objects.constraints].sort()).toEqual(names(/(?:ADD )?CONSTRAINT "([^"]+)"/g));
-      const columns = [...sql.matchAll(/ALTER TABLE "([^"]+)" ADD COLUMN "([^"]+)"(?:,\s*ADD COLUMN "([^"]+)")?/g)]
-        .flatMap((match) => [`${match[1]}.${match[2]}`, ...(match[3] ? [`${match[1]}.${match[3]}`] : [])])
+      const columns = [...sql.matchAll(/ALTER TABLE "([^"]+)"([^;]*);/g)]
+        .flatMap((statement) => [...statement[2]!.matchAll(/ADD COLUMN "([^"]+)"/g)].map((column) => `${statement[1]}.${column[1]}`))
         .sort();
       expect([...objects.columns].sort()).toEqual(columns);
       const primaryKeys = [...sql.matchAll(/CONSTRAINT "([^"]+)" PRIMARY KEY/g)].map((match) => match[1]!);
