@@ -199,6 +199,19 @@ describe('the expiry line', () => {
     cleanup();
   });
 
+  test('the closed "How long it lasts" fold names the selected length beside its label', () => {
+    const asked = render({ onExpiryChange() {} });
+    const fold = asked.target.querySelector<HTMLDetailsElement>('.expiry-fold')!;
+    const current = (t: HTMLElement) => t.querySelector('.expiry-fold > summary [data-testid="approval-expiry-fold-current"]')?.textContent?.trim();
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('summary > span')?.textContent).toBe('How long it lasts');
+    expect(current(asked.target)).toBe('7 days');
+    asked.cleanup();
+    const chosen = render({ onExpiryChange() {}, expiryMs: 5600 * S });
+    expect(current(chosen.target)).toBe('5600 seconds');
+    chosen.cleanup();
+  });
+
   test('a preset reports its time', () => {
     const chosen: Array<number | null> = [];
     const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms) });

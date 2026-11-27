@@ -67,7 +67,7 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
       await expect(line(page)).toContainText('7 days');
       await shot(page, `${viewport.name}-line`);
 
-      await fold(page).focus();
+      await page.locator('.expiry-fold > summary').focus();
       await page.keyboard.press('Enter');
       await expect(page.getByRole('button', { name: '1 hour' })).toBeVisible();
       expect(await noSidewaysScroll(page)).toBe(true);

@@ -190,7 +190,7 @@ describe('where the requester cannot use renewal', () => {
     const { target, cleanup } = render({ renewal: false });
     expect(box(target)).toBeNull();
     expect(line(target)).toMatch(EXPIRES_IN_30_DAYS);
-    expect(text(target.querySelector('.expiry-fold > summary'))).toBe('How long it lasts');
+    expect(text(target.querySelector('.expiry-fold > summary'))).toBe('How long it lasts 30 days');
     expect(target.querySelector('#approval-lease-custom')).toBeNull();
     cleanup();
   });

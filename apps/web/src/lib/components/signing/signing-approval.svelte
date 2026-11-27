@@ -106,6 +106,7 @@
   import type { ApproveVisibility } from "$lib/approve-visibility";
   import {
     ONCE_DEFAULT_EXPIRY_MS,
+    formatDuration,
     SECRET_BLOCK_COPY,
     splitAroundName,
     accessLastsLine,
@@ -429,6 +430,8 @@
     const bounded = expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null;
     return secretCapMs === null ? bounded : Math.min(bounded ?? secretCapMs, secretCapMs);
   });
+  // The length the closed "How long it lasts" fold shows: the one the chooser inside it has selected.
+  const expiryFoldShownMs = $derived(expiryMs ?? shortenOnlyExpiry?.startMs ?? requestedExpiry);
   // A signed request may be made longer than its start, up to the maximum its requester signed, unless it
   // can open all secrets or all encrypted data: then the start (the requester's own suggestion) stays the most.
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
@@ -1395,7 +1398,7 @@
 
     {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending && (expiryMs ?? requestedExpiry) !== null}
       <details class="request-details expiry-fold">
-        <summary class="request-details-summary">How long it lasts</summary>
+        <summary class="request-details-summary"><span>How long it lasts</span> <span class="fold-current" data-testid="approval-expiry-fold-current">{formatDuration(expiryFoldShownMs!)}</span></summary>
         <ApprovalExpiryChooser
           requestedMs={shortenOnlyExpiry?.startMs ?? requestedExpiry}
           chosenMs={expiryMs}
@@ -2059,6 +2062,10 @@
     color: #475569;
     font-size: 12px;
     font-weight: 600;
+  }
+  .request-details-summary .fold-current {
+    margin-left: auto;
+    font-weight: 400;
   }
   .request-details-summary::-webkit-details-marker {
     display: none;
