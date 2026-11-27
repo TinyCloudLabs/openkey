@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { canonicalSiweFields, strictSessionDid } from './device-authorization';
 import { digestJwk } from './authorization-signing';
 import { appKeyRefusalCode, appKeyRefusalForSiwe, appKeyRefusalMessage, appKeyRefusalStatus } from './app-key-refusal';
+import { appKeyHandoffRefusal, checkAppKeyHandoffSiwe, parseAppKeyHandoff, type AppKeyHandoffReason, type AppKeyHandoffRequest } from './app-key-handoff';
 import { parseOwnerRevocationRequest, type OwnerRevocationRequest } from '@openkey/capability-review';
 
 export type PreparedHandoffRequest = {
@@ -11,13 +12,15 @@ export type PreparedHandoffRequest = {
   host: string;
   keyId?: string;
   presentation?: Record<string, unknown>;
+  /** One exact app key (`apps/<appId>/<key>`) the command line asks for; the key is relative to `apps/<appId>/`. */
+  appKey?: AppKeyHandoffRequest;
   sessionDid: string;
 } | OwnerRevocationRequest;
 
 type Delivery = { handoffId: string; callback?: string; state: string; cancelSecret: string };
 const REQUEST_FIELDS: Record<keyof Exclude<PreparedHandoffRequest, OwnerRevocationRequest>, true> = {
   protocolVersion: true, siwe: true, jwk: true, host: true,
-  keyId: true, presentation: true, sessionDid: true,
+  keyId: true, presentation: true, appKey: true, sessionDid: true,
 };
 const DELIVERY_FIELDS: Record<keyof Delivery, true> = { handoffId: true, callback: true, state: true, cancelSecret: true };
 
@@ -49,7 +52,12 @@ export interface PreparedHandoffStore {
 }
 
 export class PreparedHandoffError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status: 400 | 403 | 404 | 409 | 410 | 429) {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: 400 | 403 | 404 | 409 | 410 | 429,
+    public readonly reason?: AppKeyHandoffReason,
+  ) {
     super(message);
   }
 }
@@ -58,6 +66,11 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value) && Buffer.from(value, 'base64url').length === 32 && Buffer.from(value, 'base64url').toString('base64url') === value;
 function fail(code: string, message: string, status: 400 | 403 | 404 | 409 | 410 | 429): never {
   throw new PreparedHandoffError(code, message, status);
+}
+
+function failAppKeyClaim(reason: AppKeyHandoffReason): never {
+  const { body, status } = appKeyHandoffRefusal(reason);
+  throw new PreparedHandoffError(body.code, body.error, status, reason);
 }
 
 function validateRequest(input: unknown, now: Date): { request: PreparedHandoffRequest; delivery: Delivery; issuedAt?: string; expirationTime: string; nonce: string } {
@@ -115,9 +128,23 @@ function validateRequest(input: unknown, now: Date): { request: PreparedHandoffR
   const legacy = request as Exclude<PreparedHandoffRequest, OwnerRevocationRequest>;
   const fields = canonicalSiweFields(legacy.siwe);
   if (!fields) fail('invalid_request', 'Invalid canonical prepared SIWE', 400);
-  const appKeyRefusal = appKeyRefusalForSiwe(legacy.siwe);
-  if (appKeyRefusal) {
-    fail(appKeyRefusalCode(appKeyRefusal), appKeyRefusalMessage(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
+  if (legacy.appKey !== undefined) {
+    // A request for one exact app key: the shape and the exact ReCap are checked here; the app's own file is
+    // fetched when the owner's page prepares the sign-in.
+    const appKey = parseAppKeyHandoff(legacy.appKey);
+    if (!appKey || legacy.presentation !== undefined) {
+      failAppKeyClaim('request_invalid');
+    }
+    const checked = checkAppKeyHandoffSiwe({ siwe: legacy.siwe, appKey, now: now.getTime() });
+    if (!checked.ok) failAppKeyClaim(checked.reason);
+    if (appKeyRefusalForSiwe(legacy.siwe, undefined, [checked.grant.admitted])) {
+      failAppKeyClaim('recap');
+    }
+  } else {
+    const appKeyRefusal = appKeyRefusalForSiwe(legacy.siwe);
+    if (appKeyRefusal) {
+      fail(appKeyRefusalCode(appKeyRefusal), appKeyRefusalMessage(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
+    }
   }
   try {
     const did = strictSessionDid(legacy.jwk);
@@ -207,7 +234,7 @@ export class PreparedHandoffService {
 
 
   async assertRequest(ticket: string, userId: string, input: {
-    keyId: string; siwe: string; jwk: unknown; host: string; presentation?: unknown; reportedOrigin?: unknown;
+    keyId: string; siwe: string; jwk: unknown; host: string; presentation?: unknown; reportedOrigin?: unknown; appKey?: unknown;
   }): Promise<string> {
     const record = await this.active(ticket);
     if (record.ownerId !== userId) fail('handoff_claimed', 'Handoff not claimed by this user', 403);
@@ -218,6 +245,7 @@ export class PreparedHandoffService {
     if (!input || typeof input.keyId !== 'string' || !input.keyId ||
       input.siwe !== record.request.siwe || input.host !== record.request.host ||
       digestJwk(input.jwk) !== digestJwk(record.request.jwk) ||
+      digestJwk(input.appKey ?? null) !== digestJwk(record.request.appKey ?? null) ||
       digestJwk(input.presentation ?? null) !== digestJwk(record.request.presentation ?? null) ||
       input.reportedOrigin !== undefined ||
       (record.request.keyId && input.keyId !== record.request.keyId)) {

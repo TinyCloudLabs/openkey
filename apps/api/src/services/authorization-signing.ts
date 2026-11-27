@@ -133,6 +133,10 @@ export interface AuthorizationContextIssueInput {
    * time: the resources as written and the abilities admitted on each.
    */
   admittedAppKeys?: AdmittedAppKey[];
+  /** Exact default end shown at prepare for a command-line app-key ticket. */
+  appKeyDefaultExpiresAt?: string;
+  /** Host of the exact app-key listing that admitted this ticket at prepare. */
+  appKeyHost?: string;
   /** The app's `expiryChangeable: true` opt-in, bound at prepare time (TC-2272). */
   expiryChangeable?: boolean;
   /**
@@ -173,6 +177,8 @@ interface StoredContext {
   requestOrigin?: string;
   linkDelivery?: DelegateLinkDelivery;
   admittedAppKeys?: AdmittedAppKey[];
+  appKeyDefaultExpiresAt?: string;
+  appKeyHost?: string;
   expiryChangeable?: boolean;
   renewal?: BoundRenewalChoice;
   signInRenewal?: SignInRenewalRequest;
@@ -429,6 +435,8 @@ export function issueAuthorizationContext(
     requestOrigin: input.requestOrigin,
     linkDelivery: input.linkDelivery,
     admittedAppKeys: input.admittedAppKeys,
+    appKeyDefaultExpiresAt: input.appKeyDefaultExpiresAt,
+    appKeyHost: input.appKeyHost,
     expiryChangeable: input.expiryChangeable,
     renewal: input.renewal,
     signInRenewal: input.signInRenewal,
@@ -891,6 +899,8 @@ export interface PeekSuccess {
     /** How a legacy /delegate link returns its delegation, as the server classified it at prepare time. */
     linkDelivery?: DelegateLinkDelivery;
     admittedAppKeys?: AdmittedAppKey[];
+    appKeyDefaultExpiresAt?: string;
+    appKeyHost?: string;
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
     /** The renewal choice bound with the preview (TC-2933). */
@@ -948,6 +958,8 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       requestOrigin: stored.requestOrigin,
       linkDelivery: stored.linkDelivery,
       admittedAppKeys: stored.admittedAppKeys,
+      appKeyDefaultExpiresAt: stored.appKeyDefaultExpiresAt,
+      appKeyHost: stored.appKeyHost,
       expiryChangeable: stored.expiryChangeable,
       renewal: stored.renewal,
       signInRenewal: stored.signInRenewal,
