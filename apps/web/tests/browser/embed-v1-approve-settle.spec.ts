@@ -167,17 +167,20 @@ test('a v1 parent that keeps resizing forever: Approve is still enabled by the c
   expect(enabledAt(log)! - appearedAt(log)).toBeLessThanOrEqual(1500 + 250);
 });
 
-test('v2 is unchanged: still gated by its own layout-ready handshake, not by the v1 settle gate', async ({ page }) => {
+test('v2 without a host acknowledgement: Approve is enabled past the v1 ceiling and the timeout warning is recorded', async ({ page }) => {
+  const warnings: string[] = [];
+  page.on('console', (message) => { if (message.type() === 'warning') warnings.push(message.text()); });
   await openEmbed(page, 'sdk-modal', 2);
   await reviewShown(page);
-  // Nothing acks the layout (the harness is not a v2 host), so a v2 Approve stays blocked far past the v1 ceiling.
+  // Nothing acks the layout (the harness is not a v2 host): Approve is enabled past the v1 ceiling, and the gate's 5 s timeout is only logged.
   await page.waitForTimeout(2200);
-  expect((await samples(page)).some((s) => s.enabled === true)).toBe(false);
+  expect((await samples(page)).some((s) => s.enabled === true)).toBe(true);
+  await expect.poll(() => warnings.some((text) => text.includes('review layout not confirmed by the host within 5s')), { timeout: 10_000 }).toBe(true);
 });
 
 // TC-2310: a click made by a script inside the frame (a shared-note flow does this) is no longer dropped for not coming
-// from the browser. What still stops a click that should not count is that Approve is not armed: while the frame is
-// moving (v1 settle gate) or before the host has acknowledged the layout (v2), the button is disabled and nothing is sent.
+// from the browser. What still stops a click that should not count is that Approve is not armed while the frame is
+// moving (v1 settle gate): the button is disabled and nothing is sent. A v2 frame no longer waits for the host's layout acknowledgement.
 async function approvalRequests(page: Page) {
   const seen: string[] = [];
   page.on('request', (request) => {
@@ -220,13 +223,15 @@ test('a v1 frame that is still moving: a click made by a script does nothing, an
   await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
 });
 
-test('a v2 frame the host has not acknowledged: a click made by a script does nothing', async ({ page }) => {
+test('a v2 frame the host has not acknowledged: a click made by a script is sent and the warning is recorded', async ({ page }) => {
   const approvals = await approvalRequests(page);
+  const warnings: string[] = [];
+  page.on('console', (message) => { if (message.type() === 'warning') warnings.push(message.text()); });
   await openEmbed(page, 'sdk-modal', 2);
   await reviewShown(page);
   await page.waitForTimeout(1500);
   const approvalCount = approvals.length;
   await scriptClicks(page);
-  await page.waitForTimeout(500);
-  expect(approvals).toHaveLength(approvalCount);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+  expect(warnings.some((text) => text.includes('approving while the review layout is not confirmed'))).toBe(true);
 });

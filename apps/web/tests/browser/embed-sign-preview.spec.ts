@@ -335,7 +335,7 @@ for (const surface of ['popup', 'iframe'] as const) {
   });
 }
 
-test('v2 background preview and raw details need a current layout ack before the single approval', async ({ page }) => {
+test('v2 background preview and raw details: Approve is enabled without a current layout ack, for the single approval', async ({ page }) => {
   const h = await openSigning(page, 'iframe');
   // openSigning observed the preview request without any layout acknowledgement.
   await h.ack();
@@ -344,7 +344,7 @@ test('v2 background preview and raw details need a current layout ack before the
   await h.view.getByText('Advanced details', { exact: true }).click();
   await expect(h.view.locator('pre.raw-bytes')).toHaveText(h.previews[0]!.bytes);
   await expect(h.view.locator('pre.raw-bytes')).toBeVisible();
-  await expect(h.approve).toBeDisabled();
+  await expect(h.approve).toBeEnabled();
   expect(h.signs).toHaveLength(0);
   await h.ready();
   await h.approve.click();

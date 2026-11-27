@@ -247,10 +247,10 @@ async function termsOwedUntilAccepted(page: Page): Promise<Array<string | undefi
   return accepts;
 }
 
-// Agree in the frame waits for the frame to settle, as Approve does. In a v2 Sign frame the host must also
-// acknowledge the frame's layout: until it does, Agree stays disabled past the frame's own settle ceiling and a click
-// records nothing. The acknowledgement arms it.
-test('in a v2 Sign frame the host has not acknowledged, Agree is disabled and a click records nothing', async ({ page }) => {
+// Agree in the frame waits for the frame to settle, as Approve does. In a v2 Sign frame the host's layout
+// acknowledgement no longer matters: past the frame's own settle ceiling Agree is enabled and a click records the
+// acceptance, whether or not the host has acknowledged.
+test('in a v2 Sign frame the host has not acknowledged, Agree is enabled past the settle ceiling and a click records the acceptance', async ({ page }) => {
   const address = '0x1111111111111111111111111111111111111111';
   const signingKey = { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' };
   const message = `${HOST} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${ORIGIN}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`;
@@ -292,15 +292,8 @@ test('in a v2 Sign frame the host has not acknowledged, Agree is disabled and a 
 
   const agree = page.frameLocator('#sign').getByTestId('terms-agree');
   await expect(agree).toBeVisible();
-  await expect(agree).toBeDisabled();
-  // Past the frame's own settle ceiling (1.5 s from display), only the missing acknowledgement holds Agree.
+  // Past the frame's own settle ceiling (1.5 s from display), no host acknowledgement is needed for Agree.
   await page.waitForTimeout(2_000);
-  await expect(agree).toBeDisabled();
-  await agree.dispatchEvent('click');
-  await page.waitForTimeout(300);
-  expect(accepts).toHaveLength(0);
-
-  await page.evaluate(() => (window as HarnessHost).acknowledge?.());
   await expect(agree).toBeEnabled();
   await agree.click();
   await expect.poll(() => accepts).toEqual(['Bearer fixture-session']);
