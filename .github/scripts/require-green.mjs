@@ -4,7 +4,9 @@
 // or not yet created, up to REQUIRE_GREEN_WAIT_SECONDS (default 2400), then fails
 // closed. The newest attempt of each check (highest check-run id) decides, so a
 // successful re-run supersedes a failure. Only GitHub Actions' check runs count:
-// another app can't satisfy a required name.
+// another app can't satisfy a required name. A check-run whose status field lags at
+// in_progress counts as finished once it carries a conclusion and a completed_at; the
+// conclusion must still be `success` to pass.
 //
 //   GH_TOKEN=… GH_REPO=owner/repo node .github/scripts/require-green.mjs <sha>
 import { execFileSync } from 'node:child_process';
@@ -13,6 +15,10 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GITHUB_ACTIONS_APP_ID = 15368;
+
+// GitHub can leave `status: in_progress` on a check-run that already has a conclusion and a
+// completed_at. A conclusion is only ever set on a finished run, so that pair means finished.
+const isFinished = (check) => check.status === 'completed' || (check.conclusion != null && Boolean(check.completed_at));
 
 // pages: output of `gh api --paginate --slurp .../check-runs?filter=all&per_page=100`.
 export function decide(pages, sha, names) {
@@ -32,7 +38,7 @@ export function decide(pages, sha, names) {
       if (!newest || check.id > newest.id) newest = check;
     }
     if (!newest) return { name, state: 'pending', detail: 'not started' };
-    if (newest.status !== 'completed') return { name, state: 'pending', detail: newest.status, url: newest.html_url };
+    if (!isFinished(newest)) return { name, state: 'pending', detail: newest.status, url: newest.html_url };
     return {
       name,
       state: newest.conclusion === 'success' ? 'success' : 'failure',
