@@ -529,6 +529,18 @@ model AccountSetupRequest {
   @@map("account_setup_request")
 }
 
+// One row per deleted account, written in the deletion's own transaction: every key address it held (managed, archived
+// and external), no email, no user id, no name. No foreign key to User: the user row is gone. Read in id order through
+// GET /api/internal/account-deletions; the consumer's cursor is the only delivery state. Rows are deleted after 60 days.
+model AccountDeletionEvent {
+  id        BigInt   @id @default(autoincrement())
+  addresses String[]
+  deletedAt DateTime
+
+  @@index([deletedAt])
+  @@map("account_deletion_event")
+}
+
 model TinyCloudBootstrapState {
   id               String    @id @default(cuid())
   userId           String
