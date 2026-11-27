@@ -235,10 +235,55 @@ function requirePostgresUrl() {
   }
 }
 
+// Every migration child process connects with lock_timeout set through the
+// connection URL, in code: a migration statement that has to wait for a lock
+// held by a live session fails with SQLSTATE 55P03 after this long instead of
+// queuing behind it (and blocking every query that queues behind the migration).
+// It bounds only the wait for a lock, not how long a statement runs once it
+// holds the lock. No role or database setting is involved.
+export const MIGRATION_LOCK_TIMEOUT_MS = 5000;
+
+// Return the URL with `-c lock_timeout=<ms>` in its `options` parameter, merged
+// with any options the URL already carries (an existing lock_timeout setting is
+// replaced, everything else is kept) and URL-encoded. Idempotent. Never logs.
+export function withMigrationLockTimeout(databaseUrl: string, timeoutMs: number = MIGRATION_LOCK_TIMEOUT_MS): string {
+  const queryStart = databaseUrl.indexOf('?');
+  const base = queryStart === -1 ? databaseUrl : databaseUrl.slice(0, queryStart);
+  const segments = queryStart === -1 ? [] : databaseUrl.slice(queryStart + 1).split('&').filter(Boolean);
+  const kept: string[] = [];
+  const options: string[] = [];
+  for (const segment of segments) {
+    const separator = segment.indexOf('=');
+    const key = separator === -1 ? segment : segment.slice(0, separator);
+    if (key !== 'options') {
+      kept.push(segment);
+      continue;
+    }
+    const value = separator === -1 ? '' : decodeURIComponent(segment.slice(separator + 1));
+    // Drop `-c lock_timeout=…`, `-clock_timeout=…` and `--lock_timeout=…`; keep every other setting.
+    const withoutLockTimeout = value
+      .replace(/(?:^|\s)-c\s*lock_timeout=\S*/g, ' ')
+      .replace(/(?:^|\s)--lock_timeout=\S*/g, ' ')
+      .trim();
+    if (withoutLockTimeout !== '') options.push(withoutLockTimeout);
+  }
+  options.push(`-c lock_timeout=${timeoutMs}`);
+  kept.push(`options=${encodeURIComponent(options.join(' '))}`);
+  return `${base}?${kept.join('&')}`;
+}
+
+// The environment of every migration child process: the caller's environment
+// with DATABASE_URL carrying the lock timeout.
+export function migrationChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const databaseUrl = env.DATABASE_URL;
+  if (!databaseUrl) return env;
+  return { ...env, DATABASE_URL: withMigrationLockTimeout(databaseUrl) };
+}
+
 function run(command: string, args: string[]) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
-    env: process.env,
+    env: migrationChildEnv(process.env),
     encoding: 'utf8',
     stdio: 'inherit',
   });

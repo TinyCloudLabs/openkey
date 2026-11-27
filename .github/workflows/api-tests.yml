@@ -57,7 +57,7 @@ jobs:
           bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
-        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/oauth-client-website.test.ts scripts/step-up-ceiling-parity.test.ts scripts/compose-image-digests.test.ts scripts/measured-app-compose.test.ts
+        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/deploy-production-migrations-lock-timeout.test.ts scripts/oauth-client-branding.test.ts scripts/oauth-client-website.test.ts scripts/step-up-ceiling-parity.test.ts scripts/compose-image-digests.test.ts scripts/measured-app-compose.test.ts
 
       # TC-3569: OpenKey's step-up ceilings against the ones TinyCloud One's framed apps ask for, entry for entry.
       # Reads One's file at the commit pinned in scripts/step-up-ceilings/one.pin.json from the public tinychat
@@ -124,3 +124,10 @@ jobs:
         env:
           OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: bun test apps/api/src/__tests__/email-otp-verify-race.integration.test.ts
+
+      # The production migration deploy sets lock_timeout=5s on its migration connections through the URL.
+      # Proves on Postgres 16 that Prisma honours it: a migration blocked by a held lock fails with 55P03.
+      - name: Production migration lock timeout (Prisma on Postgres)
+        env:
+          OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: bun test scripts/deploy-production-migrations-lock-timeout.test.ts
