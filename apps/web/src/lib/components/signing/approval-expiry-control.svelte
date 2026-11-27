@@ -211,7 +211,7 @@
 </script>
 
 {#if shownMs !== null}
-  <div class="expiry" role="group" aria-label="How long this permission lasts" onkeydown={onKeydown}>
+  <div class="expiry" role="group" aria-label="Access length" onkeydown={onKeydown}>
     {#if compactOn}
       <p class="expiry-once-note" id="{uid}-compact-caution" data-testid="approval-expiry-compact-caution">{#if cautionParts}{cautionParts.before}<span class="secret-name">{cautionParts.run}</span>{cautionParts.after}{:else}{compact!.caution}{/if}</p>
       {#if compactToggle !== null}
@@ -321,7 +321,7 @@
     {/if}
     {#if chooser}
       <details class="expiry-fold">
-        <summary>How long it lasts</summary>
+        <summary><span>How long it lasts</span> <span class="fold-current" data-testid="approval-expiry-fold-current">{formatDuration(shownMs!)}</span></summary>
         <ApprovalExpiryChooser {requestedMs} {chosenMs} {maxMs} {disabled} {onChange} {renewal} {endsAt} />
       </details>
     {/if}
@@ -497,6 +497,9 @@
   }
   .expiry-fold > summary::-webkit-details-marker {
     display: none;
+  }
+  .expiry-fold > summary .fold-current {
+    font-weight: 400;
   }
   /* The same disclosure marker as "Advanced details". */
   .expiry-fold > summary::after {
