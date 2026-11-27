@@ -243,10 +243,18 @@ function requirePostgresUrl() {
 // holds the lock. No role or database setting is involved.
 export const MIGRATION_LOCK_TIMEOUT_MS = 5000;
 
+// The lock timeout reaches the server as a startup parameter, so DATABASE_URL must be a direct (not
+// pooled) endpoint: a pooler such as PgBouncer usually refuses the `options` startup parameter, which
+// fails the connection before any statement runs (nothing is applied).
+//
 // Return the URL with `-c lock_timeout=<ms>` in its `options` parameter, merged
 // with any options the URL already carries (an existing lock_timeout setting is
 // replaced, everything else is kept) and URL-encoded. Idempotent. Never logs.
+// A `#` starts a URL fragment and would be mangled by the merge, so it fails fast with a fixed message.
 export function withMigrationLockTimeout(databaseUrl: string, timeoutMs: number = MIGRATION_LOCK_TIMEOUT_MS): string {
+  if (databaseUrl.includes('#')) {
+    throw new Error('DATABASE_URL contains "#"; percent-encode it as %23 so the migration lock timeout can be added');
+  }
   const queryStart = databaseUrl.indexOf('?');
   const base = queryStart === -1 ? databaseUrl : databaseUrl.slice(0, queryStart);
   const segments = queryStart === -1 ? [] : databaseUrl.slice(queryStart + 1).split('&').filter(Boolean);
@@ -503,6 +511,7 @@ async function deployAdditiveMigrationsBeforeTc488(
 
 async function main() {
   requirePostgresUrl();
+  migrationChildEnv(process.env); // fails fast, before any database access, if the URL cannot carry the lock timeout
   await assertReviewedMigrationFiles();
   const database = createPrismaClient({ connectionString: process.env.DATABASE_URL });
   try {

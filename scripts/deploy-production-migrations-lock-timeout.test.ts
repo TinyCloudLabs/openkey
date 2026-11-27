@@ -51,6 +51,18 @@ describe('withMigrationLockTimeout', () => {
     expect(withMigrationLockTimeout(once)).toBe(once);
     expect(withMigrationLockTimeout(withMigrationLockTimeout(url))).toBe(withMigrationLockTimeout(url));
   });
+
+  test('a # in the URL fails fast with a fixed message that does not repeat the URL', () => {
+    const withHash = 'postgresql://deploy:pa#ss-secret@db.internal:5432/openkey';
+    let message = '';
+    try {
+      withMigrationLockTimeout(withHash);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe('DATABASE_URL contains "#"; percent-encode it as %23 so the migration lock timeout can be added');
+    expect(message).not.toContain('secret');
+  });
 });
 
 describe('migrationChildEnv', () => {

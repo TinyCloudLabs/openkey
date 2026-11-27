@@ -13,6 +13,18 @@ import {
 
 const repoRoot = resolve(import.meta.dir, '..');
 
+// Naomi's stop line for the ethereum_keys table size before the organisation-custody migrations run
+// (their CHECK scans the whole table under an exclusive lock). More rows than this: stop and ask.
+export const ETHEREUM_KEYS_ROW_THRESHOLD = 1_000_000;
+
+// The fixed, count-only report: no identifier or value of any row is ever read or printed.
+export function ethereumKeysRowReport(rows: number) {
+  return {
+    ethereum_keys_rows: rows,
+    ethereum_keys_rows_over_threshold: rows > ETHEREUM_KEYS_ROW_THRESHOLD,
+  };
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Expected an object in production metadata');
@@ -133,11 +145,15 @@ async function main() {
       const unclassified = passkeyProvenanceApplied
         ? await transaction.$queryRawUnsafe<Array<{ count: number }>>('SELECT count(*)::int AS count FROM "passkey" WHERE "enrolledVia" IS NULL')
         : null;
+      const keyCount = await transaction.$queryRawUnsafe<Array<{ count: number }>>('SELECT count(*)::int AS count FROM "ethereum_keys"');
+      const keyRows = keyCount[0]?.count;
+      if (typeof keyRows !== 'number') throw new Error('ethereum_keys count unavailable');
       return {
         migration_mode: mode,
         pending: mode === 'pre-tc488-additive' ? partitionPreTc488Migrations(pending) : { apply: pending, park: [] },
         passkey_provenance_applied: passkeyProvenanceApplied,
         unclassified_passkeys: unclassified?.[0]?.count ?? null,
+        ...ethereumKeysRowReport(keyRows),
       };
     });
     console.log(JSON.stringify(metadata, null, 2));
