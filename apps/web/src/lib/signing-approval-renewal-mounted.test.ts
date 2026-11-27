@@ -211,6 +211,34 @@ describe('the renewal box', () => {
     cleanup();
   });
 
+  test('unticked, the box is labelled with what ticking it does, and the access line is plain text above it', () => {
+    for (const sensitive of [false, true]) {
+      const { target, cleanup } = render({ sensitive, leaseMs: null });
+      const label = target.querySelector('label.renewal-line')!;
+      expect(box(target)!.checked).toBe(false);
+      expect(text(label)).toBe('Renew automatically for up to 90 days');
+      expect(text(label.querySelector('[data-testid="approval-expiry-renew-label"]'))).toBe('Renew automatically for up to 90 days');
+      const plain = target.querySelector('p[data-testid="approval-expiry-line"]')!;
+      expect(text(plain)).toMatch(EXPIRES_IN_30_DAYS);
+      expect(label.contains(plain)).toBe(false);
+      expect(plain.compareDocumentPosition(label) & 4).toBe(4);
+      cleanup();
+    }
+  });
+
+  test('the unticked label follows the lease the requester allows', () => {
+    const { target, cleanup } = render({ leaseMs: null, maxLeaseMs: 60 * D });
+    expect(text(target.querySelector('label.renewal-line'))).toBe('Renew automatically for up to 60 days');
+    cleanup();
+  });
+
+  test('ticked, the renewing sentence labels the box and there is no separate plain line', () => {
+    const { target, cleanup } = render();
+    expect(text(target.querySelector('label.renewal-line'))).toBe('This permission renews automatically for up to 90 days');
+    expect(target.querySelector('p[data-testid="approval-expiry-line"]')).toBeNull();
+    cleanup();
+  });
+
   test('unticking reports no lease; ticking reports the 90-day default, or less when the requester asked for less', () => {
     const ticked = render();
     toggle(ticked.target);

@@ -264,6 +264,9 @@
         {#if renewalPending && !renewal}
           <p class="expiry-line" data-testid="approval-expiry-line">{RENEWAL_CHECKING_LINE}</p>
         {:else if renewal}
+          {#if !ticked && !compactOn}
+            <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
+          {/if}
           <label class="renewal-line">
             <input
               type="checkbox"
@@ -273,10 +276,10 @@
               {disabled}
               onchange={toggle}
             />
-            <span data-testid="approval-expiry-line">
+            <span data-testid={!ticked && !compactOn ? "approval-expiry-renew-label" : "approval-expiry-line"}>
               {#if renews}
                 {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
-              {:else if compactOn}
+              {:else if compactOn || !ticked}
                 {SECRET_BLOCK_COPY.renewLabel(formatDuration(proposedLeaseMs))}
               {:else}
                 {accessLine}
@@ -475,6 +478,10 @@
     color: #0f172a;
     cursor: pointer;
     overflow-wrap: anywhere;
+  }
+  /* The plain access line sits above the unticked box with room between them. */
+  .expiry-line + .renewal-line {
+    margin-top: 8px;
   }
   .renewal-box {
     flex: none;
