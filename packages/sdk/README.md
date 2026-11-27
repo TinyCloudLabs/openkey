@@ -70,7 +70,7 @@ A frame that is silent or slow never falls back by itself, because the popup hol
 
 The embedded page posts `{ type: 'openkey:loading' }` to the app as soon as it starts loading, before `openkey:ready`. A host that talks to OpenKey's embed frames without this SDK must ignore message types it does not know.
 
-One mode per `OpenKey` instance: once a flow on an instance has run in a popup (a fallback, the user's choice, or `mode: 'popup'`), later `'iframe'` flows on it open a popup directly, inside the app's call. `setupAccount()` is the exception: it is a popup by design and does not switch the instance. A page reload creates a new instance, which starts embedded again.
+One mode per `OpenKey` instance: once a flow on an instance has run in a popup (a fallback, the user's choice, or `mode: 'popup'`), the `'iframe'` flows after it on that instance open a popup directly, inside the app's call. `setupAccount()` is the exception: it is a popup by design and does not switch the instance. A page reload creates a new instance, which starts embedded.
 
 To avoid the CSP fallback, add to your CSP:
 
