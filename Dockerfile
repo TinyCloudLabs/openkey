@@ -30,7 +30,18 @@ FROM deps AS builder
 COPY . .
 # Keep the runtime fingerprint synchronized with committed migration files.
 RUN bun test packages/db/src/schema-contract.test.ts
-RUN bun run build --filter @openkey/db
+# Prisma's schema engine occasionally panics on a schema it has just parsed
+# ("panicked at psl/parser-database/..."). Retry that panic only, up to 3
+# attempts; any other failure, including a real schema error, fails at once.
+RUN attempt=1; \
+    while :; do \
+      if bun run build --filter @openkey/db >/tmp/db-build.log 2>&1; then cat /tmp/db-build.log; break; fi; \
+      echo "db build attempt $attempt of 3 failed:"; cat /tmp/db-build.log; \
+      if ! grep -q -E 'psl/parser-database|panicked at' /tmp/db-build.log; then echo "not the prisma panic; not retrying"; exit 1; fi; \
+      if [ "$attempt" -ge 3 ]; then echo "prisma panic on all 3 attempts"; exit 1; fi; \
+      attempt=$((attempt + 1)); \
+    done; \
+    rm -f /tmp/db-build.log
 RUN bun run build --filter @openkey/tee
 RUN bun run build --filter @openkey/capability-review
 # The runtime image ships this stage's node_modules and packages/tee/dist.
