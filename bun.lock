@@ -97,7 +97,7 @@
     },
     "packages/cli": {
       "name": "@openkey/cli",
-      "version": "0.1.6-beta.0",
+      "version": "0.1.6-beta.1",
       "bin": {
         "openkey": "./dist/cli.js",
       },
@@ -113,7 +113,7 @@
     },
     "packages/core": {
       "name": "@openkey/core",
-      "version": "0.13.0-beta.1",
+      "version": "0.13.0-beta.3",
       "dependencies": {
         "@noble/curves": "^1.9.7",
         "@tinycloud/share-envelope": "1.7.0",
@@ -145,7 +145,7 @@
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
-      "version": "0.13.0-beta.1",
+      "version": "0.13.0-beta.3",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
@@ -156,7 +156,7 @@
     },
     "packages/sdk-capacitor": {
       "name": "@openkey/sdk-capacitor",
-      "version": "0.2.0-beta.0",
+      "version": "0.2.0-beta.1",
       "devDependencies": {
         "@capacitor/core": "^8.0.0",
         "@openkey/core": "workspace:*",
@@ -174,7 +174,7 @@
     },
     "packages/sdk-react-native": {
       "name": "@openkey/sdk-react-native",
-      "version": "0.13.0-beta.1",
+      "version": "0.13.0-beta.3",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },

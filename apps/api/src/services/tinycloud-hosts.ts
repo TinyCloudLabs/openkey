@@ -64,3 +64,36 @@ export function isKnownTinyCloudActivationHost(raw: unknown): boolean {
 export function sameTinyCloudHost(left: string, right: string): boolean {
   return left === right || (TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(left) && TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(right));
 }
+
+// TC-3657: canonical node DID paired with the configured bootstrap host. Used only by
+// `/authorize-tinycloud-setup` to fill the location record's `nodes[]` entry — never by
+// renewal-lease (which has its own pin at `renewal-lease.ts`, different trust purpose).
+// MUST be set in production before the endpoint is exposed; the route fails closed
+// without it (fail-closed; the server never signs a record pointing at an unverified node). Must be a canonical Ed25519
+// `did:key:z...` matching the trusted bootstrap host's `/info` response.
+const TINYCLOUD_DEFAULT_NODE_DID_PATTERN = /^did:key:z[1-9A-HJ-NP-Za-km-z]{40,}$/;
+
+/** The configured trusted node DID, if any. Reads `TINYCLOUD_DEFAULT_NODE_DID`. Returns
+ *  `null` when unset or malformed; the setup endpoint treats `null` as fail-closed. */
+export function trustedTinyCloudBootstrapNodeDid(): string | null {
+  const raw = process.env.TINYCLOUD_DEFAULT_NODE_DID;
+  if (typeof raw !== 'string') return null;
+  return TINYCLOUD_DEFAULT_NODE_DID_PATTERN.test(raw) ? raw : null;
+}
+
+export interface TinyCloudBootstrapNode {
+  readonly nodeDid: string;
+  readonly origin: string;
+}
+
+/** The node DID + origin pair for the TC-3657 setup record. Both components come from
+ *  env/validated allowlist; neither can be influenced by the caller. Returns `null` when
+ *  either side is missing (fail-closed — the server never signs a record
+ *  pointing at an unverified node). */
+export function defaultTinyCloudBootstrapNode(configuredHost: string = DEFAULT_TINYCLOUD_BOOTSTRAP_HOST): TinyCloudBootstrapNode | null {
+  const nodeDid = trustedTinyCloudBootstrapNodeDid();
+  if (!nodeDid) return null;
+  const origin = canonicalTrustedTinyCloudHost(configuredHost, configuredHost);
+  if (!origin) return null;
+  return { nodeDid, origin };
+}

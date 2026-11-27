@@ -1182,3 +1182,36 @@ model ReviewerCleanup {
   @@index([retryAt, completedAt], map: "reviewer_cleanup_due")
   @@map("reviewer_cleanup")
 }
+
+// TC-3657: single-use nonce record for OpenKey's outside-app setup ticket store.
+// A row here is the ONLY proof that a ticket's nonce has been used, so the server
+// refuses a replay even after a restart or across API replicas (Bobbie C1 cross-
+// restart / cross-instance durability). Rows expire with the ticket's TTL; a
+// periodic cleanup can prune them, but admission never trusts a pruned-row absence
+// to mean "not consumed" within the TTL window because the ticket's own `mintedAt`
+// enforces that.
+model TinyCloudSetupConsumedNonce {
+  nonce     String   @id
+  subject   String
+  mintedAt  DateTime
+  consumedAt DateTime @default(now())
+  @@index([mintedAt], map: "tinycloud_setup_consumed_nonce_minted_at")
+  @@map("tinycloud_setup_consumed_nonce")
+}
+
+// TC-3657: per-owner-per-action window counter for the setup endpoint's rate limit
+// (Bobbie C5). Atomic increment via UPSERT keyed by {action, subject, windowStartMs}
+// so parallel API replicas cannot each run their own private counter and multiply
+// the effective limit (N3 server-side guarantee, not UX).
+model TinyCloudSetupRateLimitBucket {
+  // Opaque composite key: `${action}:${subject.toLowerCase()}:${windowStartMs}`.
+  // We store the fields separately so a janitor can prune old buckets.
+  id            String   @id
+  action        String
+  subject       String
+  windowStartMs BigInt
+  count         Int      @default(0)
+  updatedAt     DateTime @updatedAt
+  @@index([windowStartMs], map: "tinycloud_setup_rate_limit_bucket_window")
+  @@map("tinycloud_setup_rate_limit_bucket")
+}

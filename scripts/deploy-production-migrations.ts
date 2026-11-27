@@ -89,6 +89,12 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
   ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
   ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
+  // Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup endpoint.
+  // Additive (two CREATE TABLE + two CREATE INDEX, no ALTER); same reviewed-map pattern
+  // the earlier additive migrations use. Preflight is only strict about this entry on
+  // the pre-tc488-additive path; production is on `full`, but we follow the pattern so
+  // the sha-vs-file check continues to work for everyone.
+  ['20261122_0002_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
   ['20261123_0001_native_standing_renewal', 'd393544e72a00e8644c9cb044f165fc18be56f5e84fd5b21f189d87a7ed0fbbf'],
   ['20261124_0002_tinycloud_bootstrap_authority', '1dc898a4ffa69aa926fcbd197f00e4543cd9d5afc13c8772f3b3e71386bbb44e'],
   ['20261125_0001_account_setup_request', '4e7aa3d81c35c67126bb04a733eba0e47a9679aeeec9b6330fb824da68a41cee'],
