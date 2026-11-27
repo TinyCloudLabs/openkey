@@ -2,6 +2,6 @@
 "@openkey/web": patch
 ---
 
-The closed "How long it lasts" fold on the approval sheet shows the length that is selected beside its label, and the group around the length controls is named "Access length" for screen readers.
+The closed "How long it lasts" fold on the approval sheet shows the selected length beside its label. Screen readers name the group around the length controls "Access length".
 
 Details: TC-4443
