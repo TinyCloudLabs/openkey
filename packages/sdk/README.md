@@ -64,7 +64,9 @@ await openkey.connect({ mode: 'popup' });
 
 ### Auto-fallback
 
-When using `'iframe'` mode, the SDK automatically falls back to `'popup'` if the iframe is blocked, for example by the app's CSP. A frame that sends no message within 3 seconds is treated as blocked; a frame whose page reports it is loading gets up to 15 seconds to become ready. A brief toast notification ("Opening in new window...") is shown, and a console warning names the cause (a CSP violation the page reported, a slow load, or no answer). To avoid the fallback, add to your CSP:
+When using `'iframe'` mode, the SDK falls back to `'popup'` automatically when the iframe is blocked, for example by the app's CSP. A frame that sends no message within 3 seconds, on an `OpenKey` instance where no frame has loaded before, is treated as blocked. A brief toast ("Opening in new window...") is shown, and a console warning names the cause: a CSP violation the page reported, or no answer.
+
+A frame that is only slow never falls back by itself, because the popup holds a different OpenKey session than the frame. This applies once a frame reports that its page is loading, or once an earlier flow on the instance ran embedded. If such a frame is not ready after 15 seconds, the card offers "Open in a new window" ("You may need to sign in again there."), and the user chooses. To avoid the blocked-frame fallback, add to your CSP:
 
 ```
 frame-src https://openkey.so;

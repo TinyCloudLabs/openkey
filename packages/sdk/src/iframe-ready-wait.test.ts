@@ -2,26 +2,34 @@
 import { describe, expect, test, vi } from 'bun:test';
 import { OpenKey } from './index';
 
-// TC-4438: how long an embedded flow waits for the widget's `openkey:ready` before it opens a popup, and what it says.
+// TC-4438: when an embedded flow gives up on the widget's `openkey:ready` and what it does then. A popup holds a
+// different OpenKey session than the frame, so only a frame that never showed a sign of life falls back by itself.
 
 const HOST = 'https://openkey.test';
 
-type Frame = { tag: string; src: string; style: Record<string, string>; posts: unknown[]; contentWindow: { postMessage(data: unknown): void } };
+type Frame = { src: string; posts: unknown[]; contentWindow: { postMessage(data: unknown): void } };
+type Element = {
+  tag: string; className?: string; textContent?: string; removed: boolean; children: Element[];
+  clicks: Array<() => void>; style: Record<string, string>;
+};
 
 function harness() {
   const globals = globalThis as unknown as { window: unknown; document: unknown };
   const previous = { window: globals.window, document: globals.document };
   const listeners = new Map<string, Set<(event: unknown) => void>>();
   const frames: Frame[] = [];
+  const elements: Element[] = [];
   const popups: string[] = [];
   const warnings: string[] = [];
   const element = (tag: string) => {
-    const el: Record<string, unknown> & { children: unknown[] } = {
-      tag, style: {}, src: '', children: [],
+    const el: Element & Record<string, unknown> = {
+      tag, style: {}, src: '', children: [], clicks: [], removed: false,
       contentWindow: { postMessage() {} },
-      appendChild(child: unknown) { el.children.push(child); return child; },
+      appendChild(child: Element) { el.children.push(child); return child; },
       attachShadow: () => element('shadow'),
-      setAttribute() {}, addEventListener() {}, remove() {},
+      setAttribute() {},
+      addEventListener(type: string, fn: () => void) { if (type === 'click') el.clicks.push(fn); },
+      remove() { el.removed = true; },
     };
     if (tag === 'iframe') {
       const posts: unknown[] = [];
@@ -29,6 +37,7 @@ function harness() {
       el.contentWindow = { postMessage(data: unknown) { posts.push(data); } };
       frames.push(el as unknown as Frame);
     }
+    elements.push(el);
     return el;
   };
   globals.window = {
@@ -52,23 +61,38 @@ function harness() {
     frames, popups, warnings,
     send(frame: Frame, data: unknown, origin = HOST) { dispatch('message', { origin, source: frame.contentWindow, data }); },
     violation(effectiveDirective: string, blockedURI: string) { dispatch('securitypolicyviolation', { effectiveDirective, blockedURI }); },
+    /** The live "Open in a new window" offer, or undefined. */
+    offer() {
+      const offer = elements.find((el) => el.className === 'ok-new-window' && !el.removed);
+      if (!offer) return undefined;
+      const [link, note] = offer.children;
+      return { link: link!.textContent, note: note!.textContent, click() { for (const fn of link!.clicks) fn(); } };
+    },
     restore() { warn.mockRestore(); globals.window = previous.window; globals.document = previous.document; },
   };
 }
+type Harness = ReturnType<typeof harness>;
 
-function connectIn(h: ReturnType<typeof harness>) {
+function connectIn(h: Harness) {
   const result = h.client.connect();
   result.catch(() => {});
-  const frame = h.frames[0];
+  const frame = h.frames.at(-1);
   if (!frame) throw new Error('Connect iframe missing');
   const url = new URL(frame.src);
   return { result, frame, phase: { requestId: url.searchParams.get('requestId'), protocolVersion: 2 } };
 }
 
-async function withHarness(run: (h: ReturnType<typeof harness>) => Promise<void>) {
+async function withHarness(run: (h: Harness) => Promise<void>) {
   vi.useFakeTimers();
   const h = harness();
   try { await run(h); } finally { h.restore(); vi.useRealTimers(); }
+}
+
+async function outcome(promise: Promise<unknown>): Promise<string> {
+  let result = 'pending';
+  promise.then(() => { result = 'resolved'; }, (error: { code?: string }) => { result = `rejected:${error?.code}`; });
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  return result;
 }
 
 describe('embedded widget ready wait (TC-4438)', () => {
@@ -85,26 +109,74 @@ describe('embedded widget ready wait (TC-4438)', () => {
       expect((await result).keyId).toBe('key-first');
       vi.advanceTimersByTime(60_000);
       expect(h.popups).toHaveLength(0);
+      expect(h.offer()).toBeUndefined();
       expect(h.warnings).toHaveLength(0);
     });
   });
 
-  test('a loading frame not ready by 15 s falls back to the popup and says it was slow, not blocked', async () => {
+  test('a loading frame never falls back by itself: after 15 s the card offers a new window, and only a click opens it', async () => {
     await withHarness(async (h) => {
-      const { frame } = connectIn(h);
+      const { result, frame } = connectIn(h);
       h.send(frame, { type: 'openkey:loading' });
       vi.advanceTimersByTime(14_999);
-      expect(h.popups).toHaveLength(0);
+      expect(h.offer()).toBeUndefined();
       vi.advanceTimersByTime(1);
-      expect(h.popups).toHaveLength(1);
-      expect(h.popups[0]).toStartWith(`${HOST}/widget/connect?`);
+      expect(h.offer()).toMatchObject({ link: 'Open in a new window', note: 'You may need to sign in again there.' });
       expect(h.warnings).toHaveLength(1);
       expect(h.warnings[0]).toContain('started loading but was not ready within 15000 ms');
       expect(h.warnings[0]).not.toContain('Content Security Policy');
+      vi.advanceTimersByTime(60_000);
+      expect(h.popups).toHaveLength(0);
+      expect(await outcome(result)).toBe('pending');
+      h.offer()!.click();
+      expect(h.popups).toEqual([expect.stringMatching(new RegExp(`^${HOST}/widget/connect\\?`))]);
     });
   });
 
-  test('with no word from the frame, 3 s falls back without claiming a CSP block; foreign signals do not extend it', async () => {
+  test('without a click the loading frame waits for the overall timeout', async () => {
+    await withHarness(async (h) => {
+      const { result, frame } = connectIn(h);
+      h.send(frame, { type: 'openkey:loading' });
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(await outcome(result)).toBe('rejected:TIMEOUT');
+      expect(h.popups).toHaveLength(0);
+    });
+  });
+
+  test('after a flow ran embedded, a silent frame on the same instance gets the offer, not an automatic popup', async () => {
+    await withHarness(async (h) => {
+      const first = connectIn(h);
+      h.send(first.frame, { type: 'openkey:ready', ...first.phase });
+      h.send(first.frame, { type: 'openkey:auth:response', success: true, address: '0xfirst', keyId: 'key-first', ...first.phase });
+      await first.result;
+
+      connectIn(h);
+      vi.advanceTimersByTime(14_999);
+      expect(h.popups).toHaveLength(0);
+      expect(h.offer()).toBeUndefined();
+      vi.advanceTimersByTime(1);
+      expect(h.offer()?.link).toBe('Open in a new window');
+      expect(h.warnings[0]).toContain('no message from the OpenKey frame within 15000 ms');
+      expect(h.popups).toHaveLength(0);
+    });
+  });
+
+  test('a ready after the offer withdraws it and continues embedded', async () => {
+    await withHarness(async (h) => {
+      const { result, frame, phase } = connectIn(h);
+      h.send(frame, { type: 'openkey:loading' });
+      vi.advanceTimersByTime(15_000);
+      const offer = h.offer()!;
+      h.send(frame, { type: 'openkey:ready', ...phase });
+      expect(h.offer()).toBeUndefined();
+      offer.click();
+      expect(h.popups).toHaveLength(0);
+      h.send(frame, { type: 'openkey:auth:response', success: true, address: '0xfirst', keyId: 'key-first', ...phase });
+      expect((await result).keyId).toBe('key-first');
+    });
+  });
+
+  test('a frame silent for 3 s on a fresh instance falls back without claiming a CSP block; foreign signals do not count', async () => {
     await withHarness(async (h) => {
       const { frame } = connectIn(h);
       h.send(frame, { type: 'openkey:loading' }, 'https://attacker.test');
@@ -113,11 +185,11 @@ describe('embedded widget ready wait (TC-4438)', () => {
       vi.advanceTimersByTime(3_000);
       expect(h.popups).toHaveLength(1);
       expect(h.warnings).toHaveLength(1);
-      expect(h.warnings[0]).toContain('no message from the OpenKey frame within 3000 ms');
+      expect(h.warnings[0]).toContain('falling back to popup: no message from the OpenKey frame within 3000 ms');
       expect(h.warnings[0]).not.toContain('Content Security Policy blocked');
-      // The fallback ends the frame's wait: the later loading deadline opens no second popup.
       vi.advanceTimersByTime(20_000);
       expect(h.popups).toHaveLength(1);
+      expect(h.offer()).toBeUndefined();
     });
   });
 
