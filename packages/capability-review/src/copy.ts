@@ -85,6 +85,10 @@ export const SENDER_HISTORY_STATEMENT =
 export const FILES_FOR_YOU_STATEMENT =
   "Read and change files shared with you";
 
+export const INBOX_MEDIA_STATEMENT = "Read your Inbox attachments and message text";
+export const INBOX_MAIL_STATEMENT = "Read your Inbox mail and messages";
+export const INBOX_TRIAGE_STATEMENT = "Read how Inbox sorted your messages";
+
 /**
  * Consent sentences of the three grants a feed connect step makes on the
  * signer's own `applications` space (see feed-grant.ts), one per grant:
