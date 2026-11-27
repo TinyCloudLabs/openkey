@@ -120,4 +120,22 @@ describe('the OpenKey hand-off to the setup window', () => {
       success: false, error: { code: 'POPUP_BLOCKED' },
     });
   });
+
+  it('closes the setup window once it answers, not before', async () => {
+    let requestId: unknown;
+    let closes = 0;
+    const popup = {
+      closed: false,
+      postMessage: (data: unknown) => { if (data && typeof data === 'object' && 'requestId' in data) requestId = data.requestId; },
+      close: () => { closes++; },
+    };
+    const send = fakeWindow(popup);
+    const result = openAccountSetupWindow({ keyId: 'key_1', requestOrigin: APP });
+    send({ origin: OPENKEY, source: popup, data: { type: 'openkey:ready' } });
+    send({ origin: OPENKEY, source: popup, data: { type: ACCOUNT_SETUP_RESPONSE, requestId: 'other', protocolVersion: 1, success: true, outcome: 'published' } });
+    expect(closes).toBe(0);
+    send({ origin: OPENKEY, source: popup, data: { type: ACCOUNT_SETUP_RESPONSE, requestId, protocolVersion: 1, success: true, outcome: 'published' } });
+    expect(await result).toEqual({ success: true, outcome: 'published' });
+    expect(closes).toBe(1);
+  });
 });

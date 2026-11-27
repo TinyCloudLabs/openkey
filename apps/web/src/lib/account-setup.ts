@@ -138,8 +138,9 @@ export type AccountSetupHandoffResult =
 const POPUP_FEATURES = 'popup=true,width=440,height=720';
 
 /**
- * Opens OpenKey's own account setup window for an OpenKey page (the embedded hand-off, a sign widget's card) and relays
- * its answer. Call it straight from the owner's tap: the browser opens a window only from a user gesture.
+ * Opens OpenKey's own account setup window for an OpenKey page (the embedded hand-off, a sign widget's card), relays
+ * its answer and closes the window once it answers. Call it straight from the owner's tap: the browser opens a window
+ * only from a user gesture.
  *
  * The window is OpenKey's own origin. It is told the app this page verified (`requestOrigin`) and the key, and its
  * answer counts only from that window, from OpenKey's origin and for the request it was sent.
@@ -178,6 +179,12 @@ export function openAccountSetupWindow(input: { keyId: string | null; requestOri
       }
       if (data.type !== ACCOUNT_SETUP_RESPONSE || data.requestId !== requestId || data.protocolVersion !== ACCOUNT_SETUP_PROTOCOL_VERSION) return;
       settle(readHandoffAnswer(data));
+      // The answer is in: the setup window has nothing more to do, so the owner lands back where they started.
+      try {
+        popup!.close();
+      } catch {
+        // Already closed, or a window this page can no longer close.
+      }
     }
     const closedPoll = setInterval(() => {
       if (popup.closed) settle({ success: false, error: { code: 'USER_CANCELLED', message: 'The owner closed account setup.' } });
