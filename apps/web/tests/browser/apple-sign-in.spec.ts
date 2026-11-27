@@ -396,7 +396,7 @@ test('settings: a relay email that still forwards gets a quiet note', async ({ p
 // TC-1183: the Apple button is a layout change inside the measured widget,
 // the Apple popup hands its session to the iframe that opened it, and Approve
 // stays gated until the host acknowledges the latest layout.
-test('embedded sign: Apple is a measured layout change, signs the iframe in, and Approve waits for layout', async ({ page }, info) => {
+test('embedded sign: Apple is a measured layout change, signs the iframe in, and Approve does not wait for layout', async ({ page }, info) => {
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   const api = await stubApi(page, { providersDelay: held });
@@ -459,11 +459,11 @@ test('embedded sign: Apple is a measured layout change, signs the iframe in, and
     .toBe('session-cookie-token');
   const approve = frame.getByRole('button', { name: 'Approve', exact: true });
   await expect(approve).toBeVisible();
-  // The sign-in step's acknowledged layout cannot approve the review that replaced it.
-  await expect(approve).toBeDisabled();
+  // The layout gate no longer disables Approve: the review that replaced the sign-in step is approvable before any current ack.
+  await expect(approve).toBeEnabled();
   await expect.poll(async () => (await resizes()).at(-1)!.layoutId).toBeGreaterThan(after.layoutId);
   await ack(after);
-  await expect(approve).toBeDisabled();
+  await expect(approve).toBeEnabled();
   await ack((await resizes()).at(-1)!);
   await expect(approve).toBeEnabled();
 });

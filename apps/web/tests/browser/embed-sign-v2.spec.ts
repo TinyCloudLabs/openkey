@@ -11,7 +11,7 @@ const message = `${HOST} wants you to sign in with your Ethereum account:\n${add
 
 // Exercise the real embed route in a frame, not a mocked approval button.
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
-test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh host layout`, async ({ page }) => {
+test(`v2 review at ${viewport.width}px reads one owner key and keeps Approve enabled without a fresh host layout`, async ({ page }) => {
   await page.setViewportSize(viewport);
   const keyReads: string[] = [];
   let signCalls = 0;
@@ -50,7 +50,7 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
   }, message);
   await expect.poll(() => frame.locator('body').innerText()).toContain('Requested by');
   const approve = frame.getByRole('button', { name: 'Approve', exact: true });
-  await expect(approve).toBeDisabled();
+  await expect(approve).toBeEnabled();
   await expect(frame.getByRole('dialog')).toContainText('Requested by');
   await expect(frame.getByRole('dialog')).toContainText('No capability payload');
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.filter(m => m.type === 'openkey:resize').length)).toBeGreaterThan(0);
@@ -60,12 +60,12 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
     const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
     iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'wrong-phase', protocolVersion: 2, height, layoutId }, location.origin);
   }, lastResize!);
-  await expect(approve).toBeDisabled();
+  await expect(approve).toBeEnabled();
   await page.evaluate(({ height, layoutId }) => {
     const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
     iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, height, layoutId }, location.origin);
   }, lastResize!);
-  await expect(approve).toBeDisabled(); // ack alone cannot approve before the frame is resized
+  await expect(approve).toBeEnabled(); // an ack before the frame is resized does not change Approve
   await page.evaluate(({ height, layoutId }) => {
     const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
     const appliedHeight = Math.min(height, window.innerWidth <= 390 ? 300 : Math.floor(window.innerHeight * 0.85));
@@ -90,7 +90,7 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
   }));
   expect(await page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.filter(m => m.type === 'openkey:resize').length)).toBe(count);
   await frame.getByText('Advanced details').click();
-  await expect(approve).toBeDisabled();
+  await expect(approve).toBeEnabled();
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:layout-invalidated'))).toBe(true);
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.filter(m => m.type === 'openkey:resize').length)).toBeGreaterThan(count);
   const nextResize = await page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; height: number; layoutId: number }> }).received.filter(m => m.type === 'openkey:resize').at(-1));
@@ -101,7 +101,7 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
       location.origin,
     );
   }, lastResize!);
-  await expect(approve).toBeDisabled(); // stale same-phase ack cannot approve changed review
+  await expect(approve).toBeEnabled(); // a stale same-phase ack does not change Approve
   await page.evaluate(({ layoutId, stableHeight }) => {
     // A real v2 SDK keeps its first approved height, even if review text
     // changes and the widget needs a fresh acknowledgement.
