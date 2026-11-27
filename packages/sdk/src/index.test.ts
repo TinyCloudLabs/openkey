@@ -735,6 +735,7 @@ describe('iframe to popup fallback without popup support', () => {
       navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
     };
     const navigator = { userAgent: opts.userAgent };
+    const violationListeners: Array<(event: any) => void> = [];
     const win: any = {
       location: { origin: ORIGIN, hostname: 'app.test', href: '' },
       screenX: 0, screenY: 0, outerWidth: 1024, outerHeight: 768, innerHeight: 800,
@@ -742,7 +743,7 @@ describe('iframe to popup fallback without popup support', () => {
       Capacitor: opts.Capacitor,
       matchMedia: () => ({ matches: false }),
       open: opts.open,
-      addEventListener: () => {},
+      addEventListener: (type: string, fn: (event: any) => void) => { if (type === 'securitypolicyviolation') violationListeners.push(fn); },
       removeEventListener: () => {},
       dispatchEvent: () => true,
     };
@@ -753,6 +754,10 @@ describe('iframe to popup fallback without popup support', () => {
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
     return {
       openkey,
+      // The page reports that its CSP blocked the OpenKey frame: the only automatic fallback (TC-4438).
+      blockFrame() {
+        for (const fn of [...violationListeners]) fn({ effectiveDirective: 'frame-src', blockedURI: 'https://openkey.test/widget/embed/sign-out' });
+      },
       restore() {
         (globalThis as any).window = previous.window;
         (globalThis as any).document = previous.document;
@@ -780,10 +785,10 @@ describe('iframe to popup fallback without popup support', () => {
 
   test('window.open returning null rejects immediately with a typed error', async () => {
     await withFakeTimers(async () => {
-      const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => null });
+      const { openkey, blockFrame, restore } = setup({ userAgent: BROWSER_UA, open: () => null });
       try {
         const { result } = signOutRequest(openkey);
-        jest.advanceTimersByTime(3001); // iframe ready timeout only, not the 5 minute timeout
+        blockFrame(); // the page's CSP blocked the frame, not the 5 minute timeout
         expect(await outcome(result)).toBe('rejected');
         await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
         await expect(result).rejects.not.toHaveProperty('reason');
@@ -796,10 +801,10 @@ describe('iframe to popup fallback without popup support', () => {
 
   test('window.open returning an already closed window rejects immediately', async () => {
     await withFakeTimers(async () => {
-      const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => ({ closed: true, close() {}, postMessage() {} }) });
+      const { openkey, blockFrame, restore } = setup({ userAgent: BROWSER_UA, open: () => ({ closed: true, close() {}, postMessage() {} }) });
       try {
         const { result } = signOutRequest(openkey);
-        jest.advanceTimersByTime(3001);
+        blockFrame();
         expect(await outcome(result)).toBe('rejected');
         await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
         expect((openkey as any).popup).toBeNull();
@@ -818,17 +823,17 @@ describe('iframe to popup fallback without popup support', () => {
     }
   });
 
-  test('an embedded WebView with the iframe not ready skips the popup and rejects', async () => {
+  test('an embedded WebView whose frame the CSP blocked skips the popup and rejects', async () => {
     await withFakeTimers(async () => {
       let opened = 0;
-      const { openkey, restore } = setup({
+      const { openkey, blockFrame, restore } = setup({
         userAgent: WEBVIEW_UA,
         // A dead-but-open window is what hung sign-out in Android WebView.
         open: () => { opened += 1; return { closed: false, close() {}, postMessage() {} }; },
       });
       try {
         const { result } = signOutRequest(openkey);
-        jest.advanceTimersByTime(3001);
+        blockFrame();
         expect(await outcome(result)).toBe('rejected');
         await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED', reason: 'embedded-webview' });
         expect(opened).toBe(0);
@@ -844,14 +849,14 @@ describe('iframe to popup fallback without popup support', () => {
   test('Capacitor native is treated as an embedded WebView', async () => {
     await withFakeTimers(async () => {
       let opened = 0;
-      const { openkey, restore } = setup({
+      const { openkey, blockFrame, restore } = setup({
         userAgent: BROWSER_UA,
         Capacitor: { isNativePlatform: () => true },
         open: () => { opened += 1; return { closed: false, close() {}, postMessage() {} }; },
       });
       try {
         const { result } = signOutRequest(openkey);
-        jest.advanceTimersByTime(3001);
+        blockFrame();
         expect(await outcome(result)).toBe('rejected');
         await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED', reason: 'embedded-webview' });
         expect(opened).toBe(0);
@@ -865,14 +870,16 @@ describe('iframe to popup fallback without popup support', () => {
     await withFakeTimers(async () => {
       const popup: any = { closed: false, close() { popup.closed = true; }, postMessage() {} };
       let opened = 0;
-      const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => { opened += 1; return popup; } });
+      const { openkey, blockFrame, restore } = setup({ userAgent: BROWSER_UA, open: () => { opened += 1; return popup; } });
       const listeners: Array<(event: any) => void> = [];
+      const addOther = (globalThis as any).window.addEventListener;
       (globalThis as any).window.addEventListener = (type: string, fn: (event: any) => void) => {
         if (type === 'message') listeners.push(fn);
+        else addOther(type, fn);
       };
       try {
         const { result, state } = signOutRequest(openkey);
-        jest.advanceTimersByTime(3001);
+        blockFrame();
         expect(opened).toBe(1);
         expect(state()).toBeUndefined();
         // Answer with the requestId the SDK generated for this sign-out.

@@ -176,23 +176,6 @@ describe('embedded widget ready wait (TC-4438)', () => {
     });
   });
 
-  test('a frame silent for 3 s on a fresh instance falls back without claiming a CSP block; foreign signals do not count', async () => {
-    await withHarness(async (h) => {
-      const { frame } = connectIn(h);
-      h.send(frame, { type: 'openkey:loading' }, 'https://attacker.test');
-      h.violation('frame-src', 'https://elsewhere.test/embed');
-      h.violation('connect-src', `${HOST}/api`);
-      vi.advanceTimersByTime(3_000);
-      expect(h.popups).toHaveLength(1);
-      expect(h.warnings).toHaveLength(1);
-      expect(h.warnings[0]).toContain('falling back to popup: no message from the OpenKey frame within 3000 ms');
-      expect(h.warnings[0]).not.toContain('Content Security Policy blocked');
-      vi.advanceTimersByTime(20_000);
-      expect(h.popups).toHaveLength(1);
-      expect(h.offer()).toBeUndefined();
-    });
-  });
-
   test("a frame-src violation for the OpenKey frame is named as the page's CSP", async () => {
     await withHarness(async (h) => {
       const { frame } = connectIn(h);
