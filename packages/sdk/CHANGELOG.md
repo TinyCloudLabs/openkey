@@ -1,5 +1,40 @@
 # @openkey/sdk
 
+## 0.13.0-beta.5
+
+### Minor Changes
+
+- cc2edd2: `setupAccount()` opens OpenKey's account setup page, where the owner sets their TinyCloud account up on TinyCloud hosting with one approval. It resolves with `{ outcome: 'published' | 'present' }` and rejects with `USER_CANCELLED`, `POPUP_BLOCKED`, `ACCOUNT_SETUP_FAILED` or `ACCOUNT_SETUP_UNAVAILABLE` (with `setupUrl`). A sign request refused after the owner set the account up from the sign widget's "Finish setup" card rejects with `ACCOUNT_SETUP_COMPLETED`: the app repeats its request without hosting the account's spaces.
+
+  Details: TC-4344
+
+### Patch Changes
+
+- 300a24a: Add `UNVERIFIED_REQUESTER.reasons` and `RECIPIENT_KEY` to `@openkey/sdk/approval-copy`: one text for each reason a listed requester's link is shown as not verified, and the label of the line that names the key an approval request's access goes to.
+
+  Details: TC-4400
+
+- 7fdc471: Add `OWN_PAGE_APPROVAL` to `@openkey/sdk/approval-copy`: the space-creation lines and the note on the requester's reason that the approval pages show. The device page's reason note uses the same sentence.
+
+  Details: TC-4115
+
+- b1b25a4: An embedded flow no longer opens a popup just because the OpenKey frame is slow. The popup holds a different OpenKey session than the frame, so switching made people sign in twice, and a sign-out there left the frame signed in.
+  - A frame that sends nothing within 3 seconds, on an instance where no frame has loaded before, is taken as blocked. The flow falls back to a popup as before.
+  - Once a frame has reported that its page is loading (`openkey:loading`), or an earlier flow on the same `OpenKey` instance ran embedded, the SDK never opens a popup by itself. If the frame is not ready after 15 seconds, the card shows "Open in a new window" with the line "You may need to sign in again there." A popup opens only when the user clicks it. Until then the card waits for ready, for the user to close it, or for the 5-minute `TIMEOUT`. An app WebView, which cannot open a popup, gets no offer.
+  - The console warning gives the real cause: a Content Security Policy violation the page reported for the frame, a frame that started loading but was not ready, or no message at all.
+
+  Details: TC-4438
+
+- 4370699: An embedded flow opens a popup by itself only when the page reports that its Content Security Policy blocked the OpenKey frame, and then it does so at once.
+  - A frame that stays silent is treated like a slow one, with no popup at 3 seconds. After 15 seconds the card offers "Open in a new window", and the user chooses. A block the page does not report, such as one from a browser extension, waits 15 seconds and needs that click.
+  - Once a flow on an `OpenKey` instance runs in a popup (a fallback, the user's choice, or `mode: 'popup'`), the `'iframe'` flows after it on that instance open a popup directly, inside the app's call. An app session therefore never mixes the frame's and the popup's OpenKey sessions. `setupAccount()` does not switch the instance. A page reload starts embedded.
+
+  Details: TC-4438
+
+- Updated dependencies [7d256a2]
+- Updated dependencies [4389d88]
+  - @openkey/core@0.13.0-beta.5
+
 ## 0.13.0-beta.4
 
 ### Patch Changes

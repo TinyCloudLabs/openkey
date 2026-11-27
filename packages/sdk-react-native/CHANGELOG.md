@@ -1,5 +1,13 @@
 # @openkey/sdk-react-native
 
+## 0.13.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [7d256a2]
+- Updated dependencies [4389d88]
+  - @openkey/core@0.13.0-beta.5
+
 ## 0.13.0-beta.3
 
 ### Patch Changes
