@@ -36,6 +36,7 @@ import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
+import { accountDeletionFeedRouter } from './routes/account-deletion-feed';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
@@ -68,6 +69,7 @@ import {
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
+import { startAccountDeletionEventSweep } from './services/account-deletion-event-sweep';
 import { startRevokePendingSweep } from './services/native-delegation/revoke-pending';
 
 
@@ -408,6 +410,8 @@ app.route('/api/admin/review-accounts', createReviewerAdminRouter(authPrisma));
 app.route('/api/internal/metrics', internalMetricsRouter);
 // Counts-only scoreboard metrics (protected by OPENKEY_METRICS_READ_TOKEN)
 app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
+// Account-deletion event feed, read-only (protected by OPENKEY_ACCOUNT_DELETIONS_READ_TOKEN)
+app.route('/api/internal/account-deletions', accountDeletionFeedRouter);
 
 // Secrets and variables routes (TinyCloud-backed)
 app.route('/api/secrets', secretsRouter);
@@ -499,6 +503,8 @@ const port = parseInt(process.env.API_PORT || '3001');
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
 // Retries native lease withdrawal. OPENKEY_RENEWAL_LEASES=stop also revokes every live lease (TC-3088).
 if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
+// Deletes account-deletion events older than 60 days.
+if (process.env.NODE_ENV !== 'test') startAccountDeletionEventSweep(authPrisma);
 // Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
 // Not behind the step-up switch: a record already written must still be revoked with the switch off.
 if (process.env.NODE_ENV !== 'test') startRevokePendingSweep(authPrisma);

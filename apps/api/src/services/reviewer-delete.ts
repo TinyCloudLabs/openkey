@@ -6,6 +6,7 @@ import { reviewerBrowserRequest } from './reviewer-auth';
 import { appleReviewEnabled } from './reviewer-apple-policy';
 import { holdReviewer, lockReviewer, normalizedReviewerEmail, reviewerCodeMatches, reviewerFailure } from './reviewer-accounts';
 import { retireReviewerOwner } from './reviewer-cleanup';
+import { recordAccountDeletionEvent } from './account-deletion-event';
 
 const COOKIE = '__Secure-openkey-review-delete';
 const options = { httpOnly: true, secure: true, sameSite: 'strict' as const, path: '/', maxAge: 300 };
@@ -45,6 +46,7 @@ export function reviewerDeleteEndpoints(database: PrismaClient, origin: string) 
           // Tombstone is committed before the live owner/key can disappear.
           await retireReviewerOwner(tx, binding);
           await holdReviewer(tx, binding);
+          await recordAccountDeletionEvent(tx, binding.userId!);
           await tx.ethereumKey.deleteMany({ where: { userId: binding.userId! } });
           await tx.user.delete({ where: { id: binding.userId! } });
           await tx.reviewerAccount.update({ where: { store: 'apple' }, data: { userId: null, keyId: null, spaceId: null,

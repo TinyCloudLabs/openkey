@@ -47,6 +47,7 @@ import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
 import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { recordAccountDeletionEvent } from '../services/account-deletion-event';
 import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
@@ -734,6 +735,9 @@ accountRouter.post('/delete', async (c) => {
       where: { userId: user.id, providerId: 'apple', refreshToken: { not: null } },
       select: { refreshToken: true, appleClientId: true },
     });
+
+    // The deleted account's addresses go on the event feed in this transaction: a deletion that does not commit emits nothing.
+    await recordAccountDeletionEvent(tx, user.id);
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
