@@ -64,9 +64,13 @@ await openkey.connect({ mode: 'popup' });
 
 ### Auto-fallback
 
-When using `'iframe'` mode, the SDK falls back to `'popup'` automatically when the iframe is blocked, for example by the app's CSP. A frame that sends no message within 3 seconds, on an `OpenKey` instance where no frame has loaded before, is treated as blocked. A brief toast ("Opening in new window...") is shown, and a console warning names the cause: a CSP violation the page reported, or no answer.
+When using `'iframe'` mode, the SDK falls back to `'popup'` by itself only when the page reports that its Content Security Policy blocked the OpenKey frame (a `securitypolicyviolation` for `frame-src`, `child-src` or `default-src`). It then falls back at once, shows a brief toast ("Opening in new window..."), and logs a console warning that names the CSP.
 
-A frame that is only slow never falls back by itself, because the popup holds a different OpenKey session than the frame. This applies once a frame reports that its page is loading, or once an earlier flow on the instance ran embedded. If such a frame is not ready after 15 seconds, the card offers "Open in a new window" ("You may need to sign in again there."), and the user chooses. To avoid the blocked-frame fallback, add to your CSP:
+A frame that is silent or slow never falls back by itself, because the popup holds a different OpenKey session than the frame. If it is not ready after 15 seconds, the card offers "Open in a new window" ("You may need to sign in again there."), and the user chooses. A block the page does not report, such as one from a browser extension, also gets this offer.
+
+One mode per `OpenKey` instance: once a flow on an instance has run in a popup (a fallback, the user's choice, or `mode: 'popup'`), later `'iframe'` flows on it open a popup directly, inside the app's call. `setupAccount()` is the exception: it is a popup by design and does not switch the instance. A page reload creates a new instance, which starts embedded again.
+
+To avoid the CSP fallback, add to your CSP:
 
 ```
 frame-src https://openkey.so;

@@ -466,9 +466,10 @@ interface ReservedPopup {
 const POPUP_WIDTH = 400;
 const POPUP_HEIGHT = 600;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-/** With no sign of the embedded widget by then, the frame is taken as blocked and the flow opens a popup. */
-const IFRAME_READY_TIMEOUT = 3000;
-/** A widget that said `openkey:loading` gets this long, from opening the frame, to post `openkey:ready`. */
+/**
+ * An embedded frame not ready this long after opening gets the "Open in a new window" offer. Only a CSP violation the
+ * page reports for the frame opens a popup by itself (TC-4438).
+ */
 const IFRAME_LOADING_TIMEOUT = 15000;
 const OAUTH_STORAGE_KEY = 'openkey_oauth';
 
@@ -1061,10 +1062,10 @@ export class OpenKey {
   /** Cancels widget flows that could outlive a sign-out on this instance. */
   private activeFlowCancellations = new Set<() => void>();
   /**
-   * Set once an embedded frame on this instance said `openkey:loading` or `openkey:ready`. From then on a slow frame
-   * never falls back to a popup by itself: the popup holds a different OpenKey session than the frame (TC-4438).
+   * Set once a flow on this instance ran in a popup. The popup holds a different OpenKey session than an embedded
+   * frame, so from then on 'iframe' flows open a popup too (TC-4438). A page reload makes a new instance.
    */
-  private embeddedFrameSeen = false;
+  private popupFlowSeen = false;
   /**
    * Nostr identity custody + signing (secp256k1 Schnorr / BIP-340). Kept
    * fully separate from the Ethereum flows above: it never reuses
@@ -2035,7 +2036,8 @@ export class OpenKey {
   }
 
   private resolveMode(override?: OpenKeyMode): OpenKeyMode {
-    return override ?? this.mode;
+    const mode = override ?? this.mode;
+    return mode === 'iframe' && this.popupFlowSeen ? 'popup' : mode;
   }
 
   private hasDetectedEoa(): boolean {
@@ -2045,7 +2047,9 @@ export class OpenKey {
   }
 
   private async openFlow<T>(action: string, message: object, modeOverride?: OpenKeyMode, reserved?: ReservedPopup | null): Promise<T> {
-    const mode = this.resolveMode(modeOverride);
+    // Account setup is OpenKey's own page, a popup by design with an embedded card only when the popup is blocked: it
+    // neither switches the instance to popups nor follows that switch.
+    const mode = action === 'account-setup' ? modeOverride ?? this.mode : this.resolveMode(modeOverride);
     const origin = encodeURIComponent(window.location.origin);
     const eoaFlag = action === 'connect' && this.hasDetectedEoa() ? '&hasEoa=true' : '';
     const passkeysFlag = passkeysQueryFlag(this.passkeysSupported);
@@ -2090,10 +2094,6 @@ export class OpenKey {
     return new Promise((resolve, reject) => {
       let readyReceived = false;
       let loadingReceived = false;
-      // An earlier flow on this instance ran embedded: its session is the frame's, so never switch to a popup unasked.
-      const embeddedBefore = this.embeddedFrameSeen;
-      // The directive of a CSP violation that blocked this host's frame, if the page reported one.
-      let blockedByDirective: string | null = null;
       let settled = false;
       let modal: IframeModal | null = null;
       let cancel: () => void;
@@ -2105,15 +2105,15 @@ export class OpenKey {
       };
 
       const onSecurityPolicyViolation = (event: SecurityPolicyViolationEvent) => {
-        if (event.effectiveDirective !== 'frame-src' && event.effectiveDirective !== 'child-src') return;
+        if (!['frame-src', 'child-src', 'default-src'].includes(event.effectiveDirective)) return;
         try {
-          if (new URL(event.blockedURI).origin === this.host) blockedByDirective = event.effectiveDirective;
-        } catch { /* blockedURI is not a URL (e.g. 'inline'): not this frame. */ }
+          if (new URL(event.blockedURI).origin !== this.host) return;
+        } catch { return; /* blockedURI is not a URL (e.g. 'inline'): not this frame. */ }
+        fallBackToPopup(event.effectiveDirective);
       };
       window.addEventListener('securitypolicyviolation', onSecurityPolicyViolation);
 
       const cleanup = () => {
-        clearTimeout(readyTimeout);
         clearTimeout(loadingTimeout);
         clearTimeout(overallTimeout);
         window.removeEventListener('securitypolicyviolation', onSecurityPolicyViolation);
@@ -2136,7 +2136,6 @@ export class OpenKey {
           if (settled) return;
           if (data.type === 'openkey:loading') {
             loadingReceived = true;
-            this.embeddedFrameSeen = true;
             return;
           }
           if (data.type === 'openkey:ready') {
@@ -2162,7 +2161,6 @@ export class OpenKey {
               modal?.postMessage(messageForWidget(message, data));
             }
             readyReceived = true;
-            this.embeddedFrameSeen = true;
             modal?.withdrawNewWindowOffer();
             if (action === 'sign-out') this.signOutProgress?.get(outgoingRequestId as string)?.('ready');
             return;
@@ -2261,19 +2259,12 @@ export class OpenKey {
         cleanup();
         this.openPopup(action, popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
       };
-      // Why the frame is not ready after `ms`, for the console warning.
-      const causeAfter = (ms: number) => blockedByDirective
-        ? `the page's Content Security Policy blocked the OpenKey frame (${blockedByDirective}). Add frame-src ${this.host} to your CSP.`
-        : loadingReceived
-          ? `the OpenKey frame started loading but was not ready within ${ms} ms (slow network).`
-          : `no message from the OpenKey frame within ${ms} ms (frame blocked or slow to load). If the page sets a CSP, it must allow frame-src ${this.host}.`;
 
-      // A frame silent for IFRAME_READY_TIMEOUT on an instance that never ran embedded is taken as blocked: the flow
-      // falls back to a popup by itself.
-      const readyTimeout = setTimeout(() => {
-        if (loadingReceived || embeddedBefore || readyReceived || settled) return;
+      // The only automatic popup: the page reported that its CSP blocked the frame, so nothing will ever load in it.
+      const fallBackToPopup = (directive: string) => {
+        if (readyReceived || settled) return;
         cleanup();
-        const cause = causeAfter(IFRAME_READY_TIMEOUT);
+        const cause = `the page's Content Security Policy blocked the OpenKey frame (${directive}). Add frame-src ${this.host} to your CSP.`;
         if (isEmbeddedAppWebView()) {
           console.warn(`OpenKey: ${cause} An embedded app WebView cannot open a popup instead.`);
           settle(() => reject(popupUnavailableError(true)));
@@ -2282,14 +2273,16 @@ export class OpenKey {
         console.warn(`OpenKey: falling back to popup: ${cause}`);
         showToast();
         openInPopup();
-      }, IFRAME_READY_TIMEOUT);
+      };
 
-      // Otherwise the frame is loading, or ran here before: the popup would hold a different session (TC-4438). Not
+      // A silent or slow frame never opens a popup by itself: the popup would hold a different session (TC-4438). Not
       // ready after IFRAME_LOADING_TIMEOUT, the card offers a new window and the user decides; the card stays until
       // ready, close or the overall timeout. An app WebView cannot open one, so it gets no offer.
       const loadingTimeout = setTimeout(() => {
         if (readyReceived || settled) return;
-        const cause = causeAfter(IFRAME_LOADING_TIMEOUT);
+        const cause = loadingReceived
+          ? `the OpenKey frame started loading but was not ready within ${IFRAME_LOADING_TIMEOUT} ms (slow network).`
+          : `no message from the OpenKey frame within ${IFRAME_LOADING_TIMEOUT} ms (slow to load, or blocked without a CSP report, for example by a browser extension).`;
         if (isEmbeddedAppWebView()) {
           console.warn(`OpenKey: ${cause} Still waiting; an embedded app WebView cannot open a new window.`);
           return;
@@ -2460,6 +2453,7 @@ export class OpenKey {
       return;
     }
     this.popup = popup;
+    if (action !== 'account-setup') this.popupFlowSeen = true;
 
     let settled = false;
     let cancel: () => void;
