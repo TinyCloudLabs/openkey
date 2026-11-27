@@ -19,8 +19,10 @@
   // Terms and their ways out, and the sign-out pages work before an account agrees.
   const framed = browser && isEmbedContext();
   const session = authClient.useSession();
+  // The server render is gated too (`framed` is only known in the browser), so a hard load shows the gate's loading
+  // state until the session read answers instead of the page's shell.
   const gated = $derived(
-    browser && !framed &&
+    !framed &&
     $page.url.pathname !== '/' &&
     !isPreTermsPage($page.url.pathname) &&
     !$page.url.pathname.endsWith('/sign-out') &&
