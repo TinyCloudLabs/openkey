@@ -1,3 +1,12 @@
+BEGIN;
+
+-- Every lock this migration needs, taken up front in the application's order (user, session,
+-- ethereum_keys, key_grants), so a busy table fails the migration at this first statement while
+-- it holds nothing. SHARE ROW EXCLUSIVE (blocks writes, not reads) is enough for a table that is
+-- only the target of a foreign key.
+LOCK TABLE "user" IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE "ethereum_keys", "key_grants", "org_key_signature_audits" IN ACCESS EXCLUSIVE MODE;
+
 -- TC-1518 K2a: single-use server nonces for org-key signing challenges, and the
 -- grant role and message kind recorded on each org-key signature audit row.
 -- Additive only. Audit rows are written only by signing, which refuses every
@@ -32,3 +41,5 @@ CREATE INDEX "org_key_sign_challenges_grantId_idx" ON "org_key_sign_challenges"(
 ALTER TABLE "org_key_sign_challenges" ADD CONSTRAINT "org_key_sign_challenges_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "org_key_sign_challenges" ADD CONSTRAINT "org_key_sign_challenges_keyId_fkey" FOREIGN KEY ("keyId") REFERENCES "ethereum_keys"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "org_key_sign_challenges" ADD CONSTRAINT "org_key_sign_challenges_grantId_fkey" FOREIGN KEY ("grantId") REFERENCES "key_grants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+COMMIT;

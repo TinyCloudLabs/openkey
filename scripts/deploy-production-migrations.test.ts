@@ -332,7 +332,7 @@ describe('production migration deployment mode', () => {
     const checksum = createHash('sha256').update(await readFile(
       join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
     )).digest('hex');
-    expect(checksum).toBe('2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23');
+    expect(checksum).toBe('902d5c9c93913bfa55ed6eed1aae59ea386161b3ab53035c1b33844c97fb6e80');
     expect(() => selectProductionMigrationMode({
       migrations: [baseline, { migration_name: name, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null }],
       migrationDirectories: directories,
@@ -345,7 +345,7 @@ describe('production migration deployment mode', () => {
     const checksum = createHash('sha256').update(await readFile(
       join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
     )).digest('hex');
-    expect(checksum).toBe('2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569');
+    expect(checksum).toBe('993884374d0c7b95f50edcff1b683aa9f5ba9fde236e4bdef862b34a25fc9081');
     expect(requiredRuntimeMigrationChecksums.get(name)).toBe(checksum);
     const directories = [baseline.migration_name, ...tc492, device, name];
     expect(selectProductionMigrationMode({
