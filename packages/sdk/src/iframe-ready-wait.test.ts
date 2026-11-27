@@ -176,23 +176,6 @@ describe('embedded widget ready wait (TC-4438)', () => {
     });
   });
 
-  test('a frame silent for 3 s on a fresh instance falls back without claiming a CSP block; foreign signals do not count', async () => {
-    await withHarness(async (h) => {
-      const { frame } = connectIn(h);
-      h.send(frame, { type: 'openkey:loading' }, 'https://attacker.test');
-      h.violation('frame-src', 'https://elsewhere.test/embed');
-      h.violation('connect-src', `${HOST}/api`);
-      vi.advanceTimersByTime(3_000);
-      expect(h.popups).toHaveLength(1);
-      expect(h.warnings).toHaveLength(1);
-      expect(h.warnings[0]).toContain('falling back to popup: no message from the OpenKey frame within 3000 ms');
-      expect(h.warnings[0]).not.toContain('Content Security Policy blocked');
-      vi.advanceTimersByTime(20_000);
-      expect(h.popups).toHaveLength(1);
-      expect(h.offer()).toBeUndefined();
-    });
-  });
-
   test("a frame-src violation for the OpenKey frame is named as the page's CSP", async () => {
     await withHarness(async (h) => {
       const { frame } = connectIn(h);
@@ -201,6 +184,97 @@ describe('embedded widget ready wait (TC-4438)', () => {
       expect(h.popups).toHaveLength(1);
       expect(h.warnings[0]).toContain("the page's Content Security Policy blocked the OpenKey frame (frame-src)");
       expect(h.warnings[0]).toContain(`frame-src ${HOST}`);
+    });
+  });
+});
+
+// TC-4438 follow-up (R1, R2): only a CSP block the page reports opens a popup by itself, and an instance that used a
+// popup keeps using popups, so a frame and a popup never split one app session between two OpenKey sessions.
+describe('one widget mode per instance (TC-4438 R1, R2)', () => {
+  test('R1 cost: a silent frame opens no popup; at 15 s the card offers a new window and says no CSP report was seen', async () => {
+    await withHarness(async (h) => {
+      const { result, frame } = connectIn(h);
+      // A loading signal from another origin is not the frame's: the frame still counts as silent.
+      h.send(frame, { type: 'openkey:loading' }, 'https://attacker.test');
+      vi.advanceTimersByTime(14_999);
+      expect(h.popups).toHaveLength(0);
+      expect(h.offer()).toBeUndefined();
+      vi.advanceTimersByTime(1);
+      expect(h.offer()).toMatchObject({ link: 'Open in a new window', note: 'You may need to sign in again there.' });
+      expect(h.warnings).toEqual([expect.stringContaining('no message from the OpenKey frame within 15000 ms (slow to load, or blocked without a CSP report')]);
+      expect(h.popups).toHaveLength(0);
+      expect(await outcome(result)).toBe('pending');
+    });
+  });
+
+  test('R1: a reported CSP block of the OpenKey frame opens the popup at once; other reports are ignored', async () => {
+    await withHarness(async (h) => {
+      const { frame } = connectIn(h);
+      h.violation('frame-src', 'https://elsewhere.test/embed');
+      h.violation('connect-src', `${HOST}/api`);
+      expect(h.popups).toHaveLength(0);
+      h.violation('default-src', frame.src);
+      expect(h.popups).toEqual([expect.stringMatching(new RegExp(`^${HOST}/widget/connect\\?`))]);
+      expect(h.warnings).toEqual([expect.stringContaining("falling back to popup: the page's Content Security Policy blocked the OpenKey frame (default-src)")]);
+      vi.advanceTimersByTime(20_000);
+      expect(h.popups).toHaveLength(1);
+      expect(h.offer()).toBeUndefined();
+    });
+  });
+
+  test('R1: in an app WebView a reported CSP block rejects at once with POPUP_BLOCKED', async () => {
+    await withHarness(async (h) => {
+      (globalThis as unknown as { window: { navigator: { userAgent: string } } }).window.navigator.userAgent =
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.0.0 Mobile Safari/537.36';
+      const { result, frame } = connectIn(h);
+      h.violation('frame-src', frame.src);
+      expect(await outcome(result)).toBe('rejected:POPUP_BLOCKED');
+      expect(h.popups).toHaveLength(0);
+    });
+  });
+
+  test('R2: after an automatic popup, later flows open a popup in the same call and no frame; a new instance starts embedded', async () => {
+    await withHarness(async (h) => {
+      const first = connectIn(h);
+      h.violation('frame-src', first.frame.src);
+      expect(h.popups).toHaveLength(1);
+
+      const signing = h.client.signMessage({ message: 'hello', keyId: 'key-first' });
+      signing.catch(() => {});
+      expect(h.popups).toHaveLength(2);
+      expect(h.popups[1]).toStartWith(`${HOST}/widget/sign?`);
+      const signingOut = h.client.signOut({ mode: 'iframe' });
+      signingOut.catch(() => {});
+      expect(h.popups).toHaveLength(3);
+      expect(h.frames).toHaveLength(1);
+
+      // A page reload is a new instance: it starts embedded again.
+      void new OpenKey({ host: HOST }).connect().catch(() => {});
+      expect(h.frames).toHaveLength(2);
+      expect(h.popups).toHaveLength(3);
+    });
+  });
+
+  test('R2: after the user chose "Open in a new window", later flows open a popup directly', async () => {
+    await withHarness(async (h) => {
+      const { frame } = connectIn(h);
+      h.send(frame, { type: 'openkey:loading' });
+      vi.advanceTimersByTime(15_000);
+      h.offer()!.click();
+      expect(h.popups).toHaveLength(1);
+      h.client.connect().catch(() => {});
+      expect(h.popups).toHaveLength(2);
+      expect(h.frames).toHaveLength(1);
+    });
+  });
+
+  test('R2: account setup, a popup by design, does not switch the instance to popups', async () => {
+    await withHarness(async (h) => {
+      h.client.setupAccount().catch(() => {});
+      expect(h.popups).toEqual([expect.stringMatching(new RegExp(`^${HOST}/widget/account-setup\\?`))]);
+      connectIn(h);
+      expect(h.frames).toHaveLength(1);
+      expect(h.popups).toHaveLength(1);
     });
   });
 });
