@@ -869,8 +869,8 @@ class IframeModal {
   }
 
   /**
-   * Offer the user a popup instead of a frame that is still not ready (TC-4438). Only the user's click opens it; a
-   * card hidden until the widget's layout is shown so the offer can be seen.
+   * Offer the user a popup instead of a frame that is still not ready (TC-4438). Only the user's click opens it. If
+   * the card is hidden until the widget's layout, this reveals the card (not the frame) so the offer can be seen.
    */
   offerNewWindow(onOpen: () => void): void {
     if (this.newWindowOffer) return;
