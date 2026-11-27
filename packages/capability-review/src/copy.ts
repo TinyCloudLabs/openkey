@@ -399,3 +399,15 @@ export function buildRenderPlan(grants: CapabilityGrant[]): Array<{
 export function grantHeading(grant: CapabilityGrant): string {
   return grant.metadataLabel ?? grant.displayLabel;
 }
+
+/** Row descriptors for a command-line request for one exact app key. */
+const TICKET_APP_KEY_TOOL = "TinyCloud CLI";
+
+export const TICKET_APP_KEY_ROW_COPY = {
+  toolName: TICKET_APP_KEY_TOOL,
+  heading: `${TICKET_APP_KEY_TOOL}, for {host}`,
+  rowHeading: "{host}",
+  createLine: "Create the encryption key `{keyName}` for {host}",
+  decryptLine: "Decrypt data locked with {host}'s key `{keyName}`",
+  keyLine: "Key: `{keyPath}`",
+} as const;

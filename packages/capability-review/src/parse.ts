@@ -200,7 +200,9 @@ const BASE64_DECODE_TABLE: Int8Array = (() => {
  * bring their own atob/Buffer/TextDecoder, but this package's tsconfig
  * targets ES2022 without DOM or node lib, so we can't reference any of them.
  */
-function decodeBase64Url(input: string): string | null {
+export function decodeBase64Url(input: string, canonical = false): string | null {
+  if (canonical && (!/^[A-Za-z0-9_-]+={0,2}$/.test(input) ||
+      (input.includes("=") && input.length % 4 !== 0))) return null;
   try {
     let b64 = input.replace(/-/g, "+").replace(/_/g, "/");
     const padding = b64.length % 4;
@@ -217,11 +219,17 @@ function decodeBase64Url(input: string): string | null {
       const v1 = c1 < 128 ? BASE64_DECODE_TABLE[c1]! : -1;
       if (v0 < 0 || v1 < 0) return null;
       bytes.push((v0 << 2) | (v1 >> 4));
-      if (b64.charAt(i + 2) === "=") break;
+      if (b64.charAt(i + 2) === "=") {
+        if (canonical && (v1 & 0xf) !== 0) return null;
+        break;
+      }
       const v2 = c2 < 128 ? BASE64_DECODE_TABLE[c2]! : -1;
       if (v2 < 0) return null;
       bytes.push(((v1 & 0xf) << 4) | (v2 >> 2));
-      if (b64.charAt(i + 3) === "=") break;
+      if (b64.charAt(i + 3) === "=") {
+        if (canonical && (v2 & 0x3) !== 0) return null;
+        break;
+      }
       const v3 = c3 < 128 ? BASE64_DECODE_TABLE[c3]! : -1;
       if (v3 < 0) return null;
       bytes.push(((v2 & 0x3) << 6) | v3);

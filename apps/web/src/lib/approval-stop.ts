@@ -7,7 +7,7 @@ import { isTermsRequired } from './terms';
 import { termsRefused } from './terms-gate';
 
 export class ApprovalReplyError extends Error {
-  constructor(readonly status: number, readonly code?: unknown, readonly detail?: string, message = `HTTP ${status}`) {
+  constructor(readonly status: number, readonly code?: unknown, readonly detail?: string, message = `HTTP ${status}`, readonly reason?: unknown) {
     super(message);
   }
 }
@@ -44,7 +44,7 @@ export async function readHandoffReply(response: Response, valid?: (reply: Recor
   if (!response.ok) {
     if (isTermsRequired(response.status, reply)) termsRefused();
     const passkeyMessage = isPasskeyApprovalRefusal(reply) && typeof reply?.error === 'string' ? reply.error : undefined;
-    throw new ApprovalReplyError(response.status, reply?.code, delegateServerMessage(reply), passkeyMessage);
+    throw new ApprovalReplyError(response.status, reply?.code, delegateServerMessage(reply), passkeyMessage, reply?.reason);
   }
   if (!reply || (valid && !valid(reply))) throw new ServerReplyError(response.status);
   return reply;

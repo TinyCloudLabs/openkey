@@ -4,7 +4,13 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
-  import { buildStatements, parseEncryptionResource, parseCapabilityReview, parseSiweFields, defaultSelection, renderLiteral, renderSiweLiteral, siweExpirationTime, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import {
+    TICKET_APP_KEY_COPY, TICKET_APP_KEY_MAX_MS, admittedTicketAppKeyDefault, buildStatements, defaultSelection, matchesTicketAppKeyPreview,
+    parseCapabilityReview, parseEncryptionResource, parseSiweFields, readTicketAppKey, renderLiteral, renderSiweLiteral,
+    reviewTicketAppKey, siweExpirationTime, splitStatementCode, ticketAppKeyRefusal, ticketAppKeyRefusalText,
+    ticketAppKeyText, validTicketAppKeyRequest, type CapabilityGrant, type CapabilityReviewModel,
+    type TicketAppKey, type TicketAppKeyRefusal,
+  } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
@@ -14,7 +20,8 @@
   import { ApprovalReplyError, compareWallets, readHandoffReply, releasedSigningCancellation, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
   import { OwnerMessageError } from '$lib/delegate-failure-text';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { expiryAtCapped, requestedExpiryMs } from '$lib/approval-expiry';
+  import { ONCE_DEFAULT_EXPIRY_MS, expiryAtCapped, requestedExpiryMs } from '$lib/approval-expiry';
+  import TicketAppKeyRow from '$lib/components/approval/ticket-app-key.svelte';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import CodeBox from '$lib/components/approval/code-box.svelte';
@@ -29,7 +36,7 @@
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
   const apiUrl = import.meta.env.VITE_API_URL || '';
-  type Request = { protocolVersion: 1; siwe: string; jwk: Record<string, unknown>; host: string; sessionDid: string; keyId?: string; presentation?: Record<string, unknown> };
+  type Request = { protocolVersion: 1; siwe: string; jwk: Record<string, unknown>; host: string; sessionDid: string; keyId?: string; presentation?: Record<string, unknown>; appKey?: TicketAppKey };
   type Claim = { transportVersion: 2; request: Request; delivery: { handoffId: string; state: string; cancelSecret: string; callback?: string } };
   type Handoff = { request: Request; delivery: { callback?: string }; expiresAt: string };
   type Result = { protocolVersion: 1; address: string; signature: string; signedMessage: string; selectedActionKeys: string[]; permissions: unknown[] };
@@ -54,6 +61,7 @@
       typeof request.sessionDid === 'string' && isRecord(request.jwk) &&
       (request.keyId === undefined || typeof request.keyId === 'string') &&
       (request.presentation === undefined || isRecord(request.presentation)) &&
+      (request.appKey === undefined || readTicketAppKey(request.appKey) !== null) &&
       opaque(delivery.handoffId) && opaque(delivery.state) && opaque(delivery.cancelSecret) &&
       (delivery.callback === undefined || (typeof delivery.callback === 'string' && validCallback(delivery.callback)));
   }
@@ -86,7 +94,8 @@
   // from now, else what the CLI asked for.
   const foldEndsAt = $derived.by(() => {
     if (phase === 'preview') return siweExpirationTime(previewMessage);
-    if (expiryChoiceMs !== null) return new Date(Date.now() + expiryChoiceMs).toISOString();
+    if (appKeyReview) return appKeyAcceptedEnd;
+    if (expiryChoiceMs !== null) return expiryAtCapped(expiryChoiceMs, siweExpirationTime(handoff?.request.siwe ?? ''));
     return siweExpirationTime(handoff?.request.siwe ?? '');
   });
   let key = $state<EthereumKey | null>(null);
@@ -100,6 +109,15 @@
   // A choice after the preview is sealed would not be in what gets signed.
   const expiryEditable = $derived.by(() => phase === 'review' && !busy && !submitted);
   let selected = $state(new Set<string>());
+  // The owner's view of a command-line tool's app key (null for every other request), and why the server refused it.
+  const appKeyReview = $derived(handoff?.request.appKey ? reviewTicketAppKey((model ?? keyChoices[0]?.review)!, handoff.request.appKey) : null);
+  let appKeyRefusal = $state<TicketAppKeyRefusal | null>(null);
+  let appKeyDefault = $state<{ expiresAt: string; durationMs: number | null } | null>(null);
+  let appKeyChosenEnd = $state<string | null>(null);
+  let appKeyPreviewDuration = $state<number | null>(null);
+  const appKeyAcceptedEnd = $derived(appKeyChosenEnd ?? appKeyDefault?.expiresAt ?? null);
+  const appKeyMaxMs = $derived(expiryRequestedMs === null ? null : Math.min(expiryRequestedMs, TICKET_APP_KEY_MAX_MS));
+  const appKeyLonger = $derived(appKeyReview !== null && (expiryChoiceMs ?? appKeyDefault?.durationMs ?? 0) > ONCE_DEFAULT_EXPIRY_MS);
   let contextToken = $state('');
   let previewToken = $state('');
   let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
@@ -235,6 +253,9 @@
       leaveRefusedSigning();
       if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
       if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
+      handoff = null;
+      contextToken = '';
+      clearPreview();
     };
   });
 
@@ -278,6 +299,19 @@
     selected = defaultSelection(choice.review);
   }
 
+  function reviewFor(candidate: EthereumKey, siwe: string, displayName: string, chainId: number): CapabilityReviewModel {
+    const review = parseCapabilityReview({
+      message: siwe,
+      signer: { label: candidate.label ?? `Key ${candidate.keyIndex}`, address: candidate.address, chainId, provenance: candidate.keyType === 'EXTERNAL' ? 'external' : 'managed' },
+      editable: true,
+      metadataTrust: { status: 'unsigned', reason: 'No verified manifest supplied' },
+      reason: { text: '', source: 'none' },
+      requester: { displayName, verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false },
+    });
+    if (review.protocol !== 'tinycloud-siwe-recap') throw new Error('The prepared SIWE contains no valid capability request.');
+    return review;
+  }
+
   async function load() {
     const input = pending;
     if (!input) return;
@@ -306,6 +340,14 @@
         }
       }
       if (pending !== input) return;
+      const fields = parseSiweFields(input.request.siwe);
+      if (!fields.ok || (input.request.appKey && input.request.presentation) ||
+          !validTicketAppKeyRequest(fields.fields, input.request.appKey, replyTime(availableDate))) {
+        pending = null;
+        clearPending();
+        stop = approvalStop('S11');
+        return;
+      }
       const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(input.request.siwe);
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(input.request.siwe);
       if (!match || !chain) {
@@ -331,6 +373,14 @@
         return;
       }
       if (pending !== input) return;
+      // A command-line tool's app key: what the signed message holds must be exactly the key the request names,
+      // checked before the one-use claim is spent.
+      if (input.request.appKey && !reviewTicketAppKey(reviewFor(candidates[0]!, input.request.siwe, match[1]!, Number(chain[1])), input.request.appKey)) {
+        pending = null;
+        clearPending();
+        stop = approvalStop('S11');
+        return;
+      }
       const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt'], (reply) =>
         reply.transportVersion === 2 && reply.ticket === input.delivery.handoffId &&
         typeof reply.expiresAt === 'string' && Number.isFinite(Date.parse(reply.expiresAt)),
@@ -347,23 +397,22 @@
       };
       pending = null;
       clearPending();
-      const choices = candidates.map(candidate => {
-        const review = parseCapabilityReview({
-          message: resolved.request.siwe,
-          signer: { label: candidate.label ?? `Key ${candidate.keyIndex}`, address: candidate.address, chainId: Number(chain[1]), provenance: candidate.keyType === 'EXTERNAL' ? 'external' : 'managed' },
-          editable: true,
-          metadataTrust: { status: 'unsigned', reason: 'No verified manifest supplied' },
-          reason: { text: '', source: 'none' },
-          requester: { displayName: match[1]!, verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false },
-        });
-        if (review.protocol !== 'tinycloud-siwe-recap') throw new Error('The prepared SIWE contains no valid capability request.');
-        return { key: candidate, review };
-      });
+      const choices = candidates.map(candidate => ({ key: candidate, review: reviewFor(candidate, resolved.request.siwe, match[1]!, Number(chain[1])) }));
       keyChoices = choices;
       handoff = resolved;
-      if (choices.length === 1) chooseKey(choices[0]!);
+      if (choices.length === 1) {
+        chooseKey(choices[0]!);
+        if (input.request.appKey) await prepareAppKey();
+      }
     } catch (cause) {
       if (pending !== input && stop?.id === 'S4') return;
+      if (input.request.appKey && cause instanceof ApprovalReplyError && cause.code === 'app_key_request_invalid') {
+        const refusal = ticketAppKeyRefusal(cause.code, cause.reason);
+        if (refusal) error = TICKET_APP_KEY_COPY.refusals[refusal];
+        pending = null;
+        clearPending();
+        return;
+      }
       report(cause, pending === input ? load : undefined, true);
       if (stop && !stop.buttons.includes('try-again')) {
         pending = null;
@@ -391,25 +440,95 @@
     selected = next;
   }
 
-  async function preview() {
-    if (!handoff || !key || !model || busy || submitted) return;
+  async function prepareContext() {
+    if (!handoff || !key || contextToken) return;
+    const activeHandoff = handoff;
+    const request = handoff.request;
+    const prepared = await post('authorize-sign-prepare', {
+      ticket, keyId: key.id, siwe: request.siwe, jwk: request.jwk, host: request.host,
+      ...(request.presentation ? { presentation: request.presentation } : {}),
+      ...(request.appKey ? { appKey: request.appKey } : {}),
+    }, ['authorizationContextToken']);
+    if (handoff !== activeHandoff) return;
+    if (typeof prepared.authorizationContextToken !== 'string') throw new ServerReplyError(200);
+    if (request.appKey) {
+      const serverNow = replyTime();
+      const expiresAt = admittedTicketAppKeyDefault(prepared.appKey, request.appKey, request.siwe, serverNow, ONCE_DEFAULT_EXPIRY_MS);
+      if (!appKeyReview || !expiresAt) throw new ServerReplyError(200);
+      appKeyDefault = {
+        expiresAt,
+        durationMs: requestedExpiryMs(new Date(serverNow).toISOString(), expiresAt),
+      };
+    }
+    contextToken = prepared.authorizationContextToken;
+  }
+
+  async function prepareAppKey() {
     busy = true;
     error = '';
+    appKeyRefusal = null;
     try {
-      const request = handoff.request;
-      if (!contextToken) {
-        const prepared = await post('authorize-sign-prepare', {
-          ticket, keyId: key.id, siwe: request.siwe, jwk: request.jwk, host: request.host,
-          ...(request.presentation ? { presentation: request.presentation } : {}),
-        }, ['authorizationContextToken']);
-        if (typeof prepared.authorizationContextToken !== 'string') throw new Error('Missing bound authorization context.');
-        contextToken = prepared.authorizationContextToken;
-      }
+      await prepareContext();
+    } catch (cause) {
+      const refusal = cause instanceof ApprovalReplyError ? ticketAppKeyRefusal(cause.code, cause.reason) : null;
+      if (refusal) appKeyRefusal = refusal; else report(cause, prepareAppKey);
+    } finally { busy = false; }
+  }
+
+  function replyTime(date = serverDate): number {
+    const replyMs = Date.parse(date ?? '');
+    return Number.isFinite(replyMs) ? replyMs : Date.now();
+  }
+
+  function changeExpiry(ms: number | null) {
+    if (!expiryEditable) return;
+    expiryChoiceMs = ms;
+    if (handoff?.request.appKey) {
+      appKeyChosenEnd = ms === null ? null : expiryAtCapped(ms, siweExpirationTime(handoff.request.siwe));
+    }
+  }
+
+  function clearPreview() {
+    phase = 'review';
+    previewToken = '';
+    previewMessage = '';
+    previewActions = [];
+    passkeyNeed = null;
+    appKeyPreviewDuration = null;
+  }
+
+  async function preview() {
+    if (!handoff || !key || !model || busy || submitted || (handoff.request.appKey && !contextToken)) return;
+    const activeHandoff = handoff;
+    const request = handoff.request;
+    if (request.appKey) clearPreview();
+    busy = true;
+    error = '';
+    appKeyRefusal = null;
+    try {
+      if (!contextToken) await prepareContext();
+      if (!handoff || !contextToken) return;
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpirationTime(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
+      const signedCeiling = siweExpirationTime(request.siwe);
+      const expirationTime = request.appKey
+        ? appKeyAcceptedEnd
+        : expiryChoiceMs === null ? null : expiryAtCapped(expiryChoiceMs, signedCeiling);
+      if (request.appKey && !expirationTime) throw new ServerReplyError(200);
+      const candidate = await post('authorize-sign-preview', {
+        ticket, authorizationContextToken: contextToken, selectedActionIds: actions,
+        ...(expirationTime ? { expirationTime } : {}),
+      }, ['signedMessage', 'previewApprovalToken']);
+      if (handoff !== activeHandoff) return;
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
+      if (request.appKey) {
+        const serverNow = replyTime();
+        if (!expirationTime || !matchesTicketAppKeyPreview(request.siwe, candidate.signedMessage, expirationTime, serverNow)) {
+          throw new ServerReplyError(200);
+        }
+        appKeyPreviewDuration = requestedExpiryMs(new Date(serverNow).toISOString(), expirationTime);
+      }
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
@@ -417,7 +536,8 @@
       passkeyNeed = isRecord(candidate.passkey) ? candidate.passkey as ApprovalPasskeyNeed : null;
       phase = 'preview';
     } catch (cause) {
-      report(cause, preview);
+      const refusal = appKeyReview && cause instanceof ApprovalReplyError ? ticketAppKeyRefusal(cause.code, cause.reason) : null;
+      if (refusal) appKeyRefusal = refusal; else report(cause, preview);
     }
     finally { busy = false; }
   }
@@ -430,27 +550,35 @@
   }
 
   async function approve() {
-    if (!handoff || !key || !previewToken || !contextToken || busy || submitted) return;
+    if (!handoff || !key || !previewToken || !previewMessage || !contextToken || busy || submitted) return;
+    const activeHandoff = handoff;
+    const signingKey = key;
+    const approvedToken = previewToken;
+    const approvedMessage = previewMessage;
+    const approvalIsCurrent = () => handoff === activeHandoff && previewToken === approvedToken;
     busy = true;
     error = '';
     try {
       // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture. Without one the tap
       // stays synchronous up to `submitted`, so a deadline passing mid-tap can't throw the handoff away.
-      const passkeyAssertion = key.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
-      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
-      if (key.keyType === 'EXTERNAL') {
+      const passkeyAssertion = signingKey.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
+      if (!approvalIsCurrent()) return;
+      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: approvedToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
+      if (signingKey.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
         if (!provider) throw new OwnerMessageError(STOPS.S32.lines.noWallet);
         const accounts = await provider.request({ method: 'eth_requestAccounts' });
+        if (!approvalIsCurrent()) return;
         if (!Array.isArray(accounts) || !accounts.every(value => typeof value === 'string')) throw new Error('Wallet returned invalid accounts.');
-        const account = accounts.find(value => value.toLowerCase() === key!.address.toLowerCase());
-        if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(key.address) }));
+        const account = accounts.find(value => value.toLowerCase() === signingKey.address.toLowerCase());
+        if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(signingKey.address) }));
         let signature: unknown;
         try {
-          signature = await provider.request({ method: 'personal_sign', params: [previewMessage, account] });
+          signature = await provider.request({ method: 'personal_sign', params: [approvedMessage, account] });
         } catch {
           throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
         }
+        if (!approvalIsCurrent()) return;
         if (typeof signature !== 'string') throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
         body.externalSignature = signature;
       }
@@ -462,40 +590,47 @@
         // A refusal or failure comes back with no signature. The server releases the handoff when the key failed to
         // sign, so the owner may approve again or cancel; if the key signed but the tokens could not be spent it stays
         // signing until it expires and a retry is refused. Only a 2xx reply that cannot be read may have been signed.
+        if (!approvalIsCurrent()) return;
         if (!(cause instanceof ServerReplyError)) submitted = false;
         throw cause;
       }
+      if (!approvalIsCurrent()) return;
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
-          signed.signedMessage !== previewMessage || signed.selectedKeyId !== key.id || typeof signed.deliveryState !== 'string') {
+          signed.signedMessage !== approvedMessage || signed.selectedKeyId !== signingKey.id || typeof signed.deliveryState !== 'string') {
         throw new Error('Signed response differs from the reviewed request. Restart the CLI command.');
       }
       const result: Result = {
         protocolVersion: 1, address: signed.address, signature: signed.signature,
-        signedMessage: previewMessage, selectedActionKeys: signed.selectedActionKeys, permissions: signed.permissions,
+        signedMessage: approvedMessage, selectedActionKeys: signed.selectedActionKeys, permissions: signed.permissions,
       };
       const envelope = { transportVersion: 2, state: signed.deliveryState, selectedKeyId: signed.selectedKeyId, result };
       code = encode(envelope);
       phase = 'done';
-      if (handoff.delivery.callback) {
+      if (activeHandoff.delivery.callback) {
         try {
-          const response = await fetch(handoff.delivery.callback, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
+          const response = await fetch(activeHandoff.delivery.callback, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
+          if (!approvalIsCurrent()) return;
           const receipt: unknown = await response.json().catch(() => null);
+          if (!approvalIsCurrent()) return;
           if (!response.ok || !receipt || typeof receipt !== 'object' || !('accepted' in receipt) || receipt.accepted !== true) {
             throw new Error('CLI did not accept the response.');
           }
           delivered = true;
-        } catch { callbackFailed = true; }
+        } catch {
+          if (approvalIsCurrent()) callbackFailed = true;
+        }
       }
     } catch (cause) {
+      if (!approvalIsCurrent()) return;
       if (cause instanceof PasskeyPromptError) {
         error = cause.message;
       } else if (cause instanceof ApprovalReplyError && isPasskeyApprovalRefusal(cause)) {
         // The refused challenge is spent: preview again before the next Approve.
         busy = false;
         await preview();
-        if (!stop) error = cause.message;
+        if (handoff === activeHandoff && !stop) error = cause.message;
       } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
         error = STOPS.S32.lines.walletDeclined;
       } else {
@@ -545,11 +680,17 @@
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : handoff && phase === 'done' ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(handoff && phase === 'done' && !delivered && !cancelled ? 'code' : 'terminal');
   // The end pages: who asked, and what the receipt can say for certain.
-  const requester = $derived(model?.requester.displayName ?? '');
+  const requester = $derived(appKeyReview ? TICKET_APP_KEY_COPY.toolName : model?.requester.displayName ?? '');
+  const appKeyReceipt = $derived.by(() => {
+    const ends = siweExpirationTime(previewMessage);
+    return appKeyReview && ends
+      ? ticketAppKeyText(TICKET_APP_KEY_COPY.receipt, appKeyReview).replace('{time}', formatLocalAccessEnd(ends))
+      : '';
+  });
   const receiptRows = $derived.by(() => {
     const rows: ReceiptRow[] = [];
     const ends = siweExpirationTime(previewMessage);
-    if (ends) rows.push({ label: DONE.receipt.ends, value: formatLocalAccessEnd(ends) });
+    if (ends && !appKeyReceipt) rows.push({ label: DONE.receipt.ends, value: formatLocalAccessEnd(ends) });
     if (key && accountKeyCount > 1) {
       rows.push({ label: DONE.receipt.signedWith, value: `${key.label ?? `Key ${key.keyIndex}`} ${key.address.slice(0, 6)}...${key.address.slice(-4)}` });
     }
@@ -586,7 +727,7 @@
   {:else if cancelled}
     <DonePage outcome="cancelled" />
   {:else if handoff && phase === 'done' && delivered}
-    <DonePage outcome="signedIn" {requester} rows={receiptRows} />
+    <DonePage outcome="signedIn" {requester} line={appKeyReceipt} rows={receiptRows} />
   {:else if handoff && phase === 'done'}
     <CodeBox
       fullCode={code}
@@ -595,12 +736,16 @@
     />
   {:else}
     <div class="space-y-5">
-    <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
+    <header><h1 class="text-xl font-semibold text-surface-900">{appKeyReview ? ticketAppKeyText(TICKET_APP_KEY_COPY.heading, appKeyReview) : 'Prepared CLI sign-in'}</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
     {#if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>
     {:else if handoff && keyChoices.length > 1 && !key}
-      <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
+      {#if appKeyReview}
+        <TicketAppKeyRow review={appKeyReview} />
+      {:else}
+        <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
+      {/if}
       <dl class="space-y-2 text-sm break-all">
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
@@ -617,11 +762,14 @@
         expectedAddress={keyChoices[0].key.address.toLowerCase()}
         onselect={(selected) => {
           const choice = keyChoices.find((choice) => choice.key.id === selected.id);
-          if (choice) chooseKey(choice);
+          if (!choice) return;
+          chooseKey(choice);
+          if (handoff?.request.appKey) void prepareAppKey();
         }}
         listHeading="Choose which key signs this:"
         primaryHeading="Sign with your primary key:"
       />
+      {#if !appKeyReview}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
@@ -630,12 +778,17 @@
           <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
+      {/if}
       <details><summary>Original SIWE message</summary>
         <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {:else if handoff && model && key}
-      <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
+      {#if appKeyReview}
+        <TicketAppKeyRow review={appKeyReview} />
+      {:else}
+        <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
+      {/if}
       <dl class="space-y-2 text-sm break-all">
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
@@ -654,14 +807,16 @@
         <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
       {/if}
       <ApprovalExpiryControl
-        requestedMs={expiryRequestedMs}
-        chosenMs={expiryChoiceMs}
-        maxMs={expiryRequestedMs}
+        requestedMs={appKeyReview ? appKeyDefault?.durationMs ?? null : expiryRequestedMs}
+        chosenMs={appKeyReview && phase === 'preview' ? appKeyPreviewDuration : expiryChoiceMs}
+        maxMs={appKeyReview ? appKeyMaxMs : expiryRequestedMs}
         disabled={!expiryEditable}
-        onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
+        onChange={changeExpiry}
         endsAt={foldEndsAt}
         holder="device"
+        lengthNote={appKeyLonger ? TICKET_APP_KEY_COPY.longerNote : null}
       />
+      {#if !appKeyReview}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
@@ -673,17 +828,23 @@
           <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
+      {/if}
       <details><summary>Original SIWE message</summary>
         <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
-      {#if phase === 'preview'}
+      {#if phase === 'preview' && previewToken}
         <details>
           <summary class="font-semibold">Exact candidate signedMessage</summary>
           <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(previewMessage)}</pre>
         </details>
-        <button onclick={() => { phase = 'review'; previewToken = ''; }}>Change abilities</button>
+        <button disabled={busy || submitted} onclick={clearPreview}>{appKeyReview ? 'Change access length' : 'Change abilities'}</button>
         <button disabled={busy || submitted} onclick={approve}>Approve</button>
-      {:else}
+      {:else if appKeyReview && appKeyRefusal}
+        <p role="alert" data-testid="ticket-app-key-refusal" class="rounded-lg bg-red-50 p-3 text-red-800">{#each splitStatementCode(ticketAppKeyRefusalText(appKeyRefusal, appKeyReview)) as part}{#if part.code}<code class="font-mono">{part.text}</code>{:else}{part.text}{/if}{/each}</p>
+        {#if appKeyRefusal === 'unavailable' || appKeyRefusal === 'fetchBusy'}
+          <button disabled={busy || submitted} onclick={contextToken ? preview : prepareAppKey}>Try again</button>
+        {/if}
+      {:else if !appKeyReview || contextToken}
         <button disabled={busy || submitted || selectedIds().length === 0} onclick={preview}>Preview signing message</button>
       {/if}
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
