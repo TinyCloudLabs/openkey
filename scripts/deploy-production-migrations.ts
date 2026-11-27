@@ -49,15 +49,15 @@ const preparedHandoffChecksum = '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d0
 const appSignInDayMigration = '20261019_0001_app_sign_in_day';
 const appSignInDayChecksum = 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29';
 const orgKeyCustodyMigration = '20261021_0001_org_key_custody';
-const orgKeyCustodyChecksum = '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23';
+const custodyMigrationSha256 = '902d5c9c93913bfa55ed6eed1aae59ea386161b3ab53035c1b33844c97fb6e80';
 const orgKeySignChallengesMigration = '20261021_0002_org_key_sign_challenges';
-const orgKeySignChallengesChecksum = '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1';
+const signChallengesMigrationSha256 = 'b9fc9c7cd31f2a948a2c213c66a53ab5b15b5375cab005380d9d81d9dce3a8f1';
 const tinycloudBootstrapSweepMigration = '20261021_0001_tinycloud_bootstrap_sweep_attempts';
 const tinycloudBootstrapSweepChecksum = '905d0105d5b97e75d8855f30cd7e35e80d8034e7ee3051402f81d1efc1bf5edd';
 const revokedAccessTokenMigration = '20261026_0001_revoked_access_token';
 const revokedAccessTokenChecksum = 'a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30';
 const orgRegistrationMigration = '20261029_0001_org_registration_proofs';
-const orgRegistrationChecksum = '2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569';
+const registrationProofsMigrationSha256 = '993884374d0c7b95f50edcff1b683aa9f5ba9fde236e4bdef862b34a25fc9081';
 const reviewerAccountsMigration = '20261111_0001_reviewer_accounts';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
@@ -73,12 +73,12 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [appleSocialContinuationMigration, appleSocialContinuationChecksum],
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
-  [orgKeyCustodyMigration, orgKeyCustodyChecksum],
+  [orgKeyCustodyMigration, custodyMigrationSha256],
   [tinycloudBootstrapSweepMigration, tinycloudBootstrapSweepChecksum],
-  [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
+  [orgKeySignChallengesMigration, signChallengesMigrationSha256],
   [revokedAccessTokenMigration, revokedAccessTokenChecksum],
   ['20261028_0001_approval_request_results', 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f'],
-  [orgRegistrationMigration, orgRegistrationChecksum],
+  [orgRegistrationMigration, registrationProofsMigrationSha256],
   ['20261103_0001_delegation_code_claim', 'de705f548d9ffd6bc6a0d669f1156874258f31cc2d3e3584dbf0b49e5b40d992'],
   ['20261103_0002_approval_request_denied', '87d5205193ef11fc87a52325ff703cc9fc14dcec3c2a81ac71408ea5709bfce8'],
   ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
