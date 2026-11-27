@@ -1,3 +1,12 @@
+BEGIN;
+
+-- Every lock this migration needs, taken up front in the application's order (user, session,
+-- ethereum_keys, key_grants), so a busy table fails the migration at this first statement while
+-- it holds nothing. SHARE ROW EXCLUSIVE (blocks writes, not reads) is enough for a table that is
+-- only the target of a foreign key.
+LOCK TABLE "user" IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE "ethereum_keys" IN ACCESS EXCLUSIVE MODE;
+
 -- TC-1518: organization custody for managed keys. Additive only; existing rows keep custody = PERSONAL.
 
 CREATE TYPE "KeyCustody" AS ENUM ('PERSONAL', 'ORG');
@@ -65,3 +74,5 @@ CREATE INDEX "org_key_signature_audits_grantId_idx" ON "org_key_signature_audits
 CREATE UNIQUE INDEX "org_key_signature_audits_passkeyAssertionHash_key" ON "org_key_signature_audits"("passkeyAssertionHash");
 ALTER TABLE "org_key_signature_audits" ADD CONSTRAINT "org_key_signature_audits_keyId_fkey" FOREIGN KEY ("keyId") REFERENCES "ethereum_keys"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "org_key_signature_audits" ADD CONSTRAINT "org_key_signature_audits_grantId_fkey" FOREIGN KEY ("grantId") REFERENCES "key_grants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+COMMIT;

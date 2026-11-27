@@ -1,3 +1,12 @@
+BEGIN;
+
+-- Every lock this migration needs, taken up front in the application's order (user, session,
+-- ethereum_keys, key_grants), so a busy table fails the migration at this first statement while
+-- it holds nothing. SHARE ROW EXCLUSIVE (blocks writes, not reads) is enough for a table that is
+-- only the target of a foreign key.
+LOCK TABLE "session" IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE "ethereum_keys", "key_grants" IN ACCESS EXCLUSIVE MODE;
+
 -- TC-128 S1b: durable session-bound consent and immutable per-intent registration receipts.
 -- Additive only. Existing org custody, signing and cutover migrations remain unchanged.
 CREATE TABLE "org_key_registration_challenges" (
@@ -51,3 +60,5 @@ CREATE TABLE "org_key_registrations" (
 CREATE UNIQUE INDEX "org_key_registrations_keyId_key" ON "org_key_registrations"("keyId");
 CREATE UNIQUE INDEX "org_key_registrations_grantId_key" ON "org_key_registrations"("grantId");
 CREATE UNIQUE INDEX "org_key_registrations_jti_key" ON "org_key_registrations"("jti");
+
+COMMIT;
