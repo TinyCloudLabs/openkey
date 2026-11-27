@@ -17,6 +17,7 @@ Object.assign(globalThis, {
   window: win,
   document: win.document,
   HTMLElement: win.HTMLElement,
+  HTMLMediaElement: win.HTMLMediaElement,
   Element: win.Element,
   Node: win.Node,
   Text: win.Text,
@@ -64,6 +65,17 @@ function stubUrl(name: string): string {
   return pathToFileURL(file).href;
 }
 
+// The page mounts `$lib` components (the expiry line, TC-2933): compile them, and theirs, the same way.
+function compileChild(file: string): string {
+  const code = compile(readFileSync(file, 'utf8'), { generate: 'client', dev: false, name: 'Child', filename: file }).js.code
+    .replace(/from\s+['"](\$lib\/[^'"]+)['"]/g, (_match, spec: string) => `from '${spec.endsWith('.svelte')
+      ? compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)))
+      : pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href}'`);
+  const out = join(OUT_DIR, `${file.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+  writeFileSync(out, code);
+  return pathToFileURL(out).href;
+}
+
 const COMPONENT = join(WEB_ROOT, 'src/routes/delegate/PreparedHandoff.svelte');
 const compiled = compile(readFileSync(COMPONENT, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: COMPONENT });
 let code = '';
@@ -77,7 +89,8 @@ for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
   else if (spec === 'svelte') target = pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href;
   else if (spec === '@openkey/capability-review') {
     target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
-  } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
+  } else if (spec.startsWith('$lib/') && spec.endsWith('.svelte')) target = compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)));
+  else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
   code += `from '${target}'`;
   cursor = match.index! + match[0].length;
 }
@@ -186,12 +199,45 @@ test('both exact-message blocks show line feeds as real line breaks', async () =
 test('a carriage return, tab and bidi control stay escaped and ASCII quotes and markup read as themselves in both blocks', async () => {
   const siwe = siweWith('TinyCloud delegation');
   const signed = siwe.replace('TinyCloud delegation', 'Line one\r\nLine\ttwo \u202e<b>&"\'');
-  const { original, candidate } = await exactBlocks(siwe.replace('TinyCloud delegation', 'Line one\r'), signed);
-  expect(original).toBe(siwe.replace('TinyCloud delegation', 'Line one\\u000d'));
+  const { original, candidate } = await exactBlocks(siwe, signed);
+  expect(original).toBe(siwe);
   expect(candidate).toBe(renderSiweLiteral(signed));
   expect(candidate).toContain('Line one\\u000d\nLine\\u0009two \\u202e<b>&"\'\n');
   expect(candidate.split('\n')).toHaveLength(14);
 });
+
+// TC-3826: the node does not treat `\r`, U+2028 or U+2029 as a line break, so a
+// statement hiding a fake `Expiration Time:` behind one would show an expiry the
+// node never enforces. The page refuses such a request before any preview.
+for (const [name, separator] of [['CR', '\r'], ['U+2028', '\u2028'], ['U+2029', '\u2029']] as const) {
+  test(`a request whose statement hides a fake expiry behind ${name} stops before any preview or sign call`, async () => {
+    const siwe = siweWith(`Expiration Time: 2026-10-17T17:00:00.000Z${separator} TinyCloud delegation`);
+    const claim = {
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, host: 'https://node.tinycloud.xyz', sessionDid: 'did:key:z6Mk' },
+      delivery: { handoffId: opaque('handoff'), state: opaque('state'), cancelSecret: opaque('cancel') },
+    };
+    const encoded = `#tv2=${Buffer.from(JSON.stringify(claim)).toString('base64url')}`;
+    const realFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return { ok: true, status: 200, json: async () => ({ transportVersion: 2 }) };
+    }) as unknown as typeof fetch;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
+    try {
+      await until(() => target.textContent?.includes('The app’s request has a mistake in it') ?? false, 'the invalid-request stop');
+      expect([...target.querySelectorAll('button')].some((b) => b.textContent === 'Preview signing message')).toBe(false);
+      expect(calls.filter((url) => url.includes('/authorize-sign'))).toEqual([]);
+    } finally {
+      unmount(app);
+      target.remove();
+      globalThis.fetch = realFetch;
+    }
+  });
+}
 
 test('HTML in the message is shown literally in both blocks', async () => {
   const html = '<script>alert(1)</script> <b>x</b> &amp; "><img src=x onerror=alert(1)>';

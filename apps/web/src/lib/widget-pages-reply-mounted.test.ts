@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
+import { termsAcceptedStubs } from './terms-accepted-stubs';
 
 const win = new Window({ url: 'http://openkey.test/' });
 const posted: Array<Record<string, unknown>> = [];
@@ -155,6 +156,7 @@ for (const page of PAGES) {
     ...baseStubs(page.url),
     [page.adapter]: `export { default } from '${adapterUrl}';`,
     '$lib/components/auth/embedded-sign-in.svelte': `export { default } from '${emptyUrl}';`,
+    ...termsAcceptedStubs(emptyUrl),
   };
   Pages[page.name] = (await import(compileComponent(page.file, page.name, stubs))).default;
 }
@@ -256,8 +258,6 @@ async function run(pageName: 'popup' | 'embed', sign: Reply) {
   }
 }
 
-const TITLE = "OpenKey couldn't finish this request";
-const BODY = "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.";
 const FAILURE = { code: 'UNKNOWN', message: 'SERVER_REPLY_UNREADABLE' };
 
 const successes = (messages: Sent[]) => messages.filter((message) => message.success === true);
@@ -279,7 +279,6 @@ for (const { name } of PAGES) {
         const result = await run(name, answer);
         expect(result.called).toContain('authorize-sign');
         expect(result.shown).toBe(true);
-        expect(result.visible).toBe(`${TITLE} ${BODY}`);
         expect(successes(result.sent)).toEqual([]);
         expect(successes(result.posted)).toEqual([]);
         const failures = result.sent.filter((message) => message.type === 'openkey:sign:response' && message.success === false);

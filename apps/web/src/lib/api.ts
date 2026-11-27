@@ -1,6 +1,14 @@
 // API client for key management
 import { getSessionToken, isEmbedContext } from './embed-passkey';
+import { webSignFlowHeaders } from './web-sign-flow';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
+import { isTermsRequired } from './terms';
+import { termsRefused } from './terms-gate';
+import type { RenewalLease } from './renewal-leases';
+import type {
+  ApprovalPasskeyAssertion, ApprovalPasskeyNeed, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting,
+} from './approval-passkey';
+import type { AccountSetupPrepared, AccountSetupState, AccountSetupStepUp } from './account-setup';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -33,6 +41,9 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
+    // TC-3232: the account owes the current Terms (a release went live while the page was open): the page's
+    // Terms gate checks again and shows the Terms in place.
+    if (isTermsRequired(res.status, error)) termsRefused();
     const message = typeof detail === 'string' ? detail : detail?.message;
     // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
     if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
@@ -41,6 +52,8 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
       code: detail?.code ?? (typeof error?.code === 'string' ? error.code : undefined),
       status: res.status,
       policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
+      reason: typeof error?.reason === 'string' ? error.reason : undefined,
+      ...(error?.accountSetup === 'required' ? { accountSetup: 'required' as const } : {}),
     });
     throw failure;
   }
@@ -195,8 +208,20 @@ export const api = {
     async createGrant(
       keyId: string,
       input: { clientOrigin: string; kinds: number[]; relayUrl?: string; ttlSeconds?: number },
+      passkeyAssertion?: ApprovalPasskeyAssertion,
     ): Promise<{ grant: NostrGrant }> {
       return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/grants`, {
+        method: 'POST',
+        body: JSON.stringify({ ...input, passkeyAssertion }),
+      });
+    },
+
+    /** TC-3442: whether approving this grant needs the passkey, with the challenge for exactly this grant. */
+    async createGrantPasskey(
+      keyId: string,
+      input: { clientOrigin: string; kinds: number[]; relayUrl?: string; ttlSeconds?: number },
+    ): Promise<ApprovalPasskeyNeed> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/grants/passkey`, {
         method: 'POST',
         body: JSON.stringify(input),
       });
@@ -217,6 +242,34 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ event, clientOrigin }),
       });
+    },
+  },
+
+  // OpenKey's own account setup page (/widget/account-setup). Cookie session only: the API refuses a bearer token.
+  accountSetup: {
+    async prepare(keyId: string, requestOrigin: string | null): Promise<AccountSetupPrepared> {
+      return fetchAPI('/api/account-setup/prepare', {
+        method: 'POST',
+        body: JSON.stringify({ keyId, placement: 'tinycloud', ...(requestOrigin ? { requestOrigin } : {}) }),
+      }, true);
+    },
+
+    async stepUp(id: string): Promise<AccountSetupStepUp> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/passkey`, { method: 'POST', body: '{}' }, true);
+    },
+
+    async sendEmailCode(id: string): Promise<{ sent: boolean; email: string }> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/email-code`, { method: 'POST', body: '{}' }, true);
+    },
+
+    async approve(
+      id: string, proof: { passkeyAssertion: ApprovalPasskeyAssertion } | { emailCode: string },
+    ): Promise<AccountSetupState> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify(proof) }, true);
+    },
+
+    async finish(id: string): Promise<AccountSetupState> {
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/finish`, { method: 'POST', body: '{}' }, true);
     },
   },
 
@@ -266,20 +319,54 @@ export const api = {
     keyId: string,
     message: string,
     requestOrigin?: string,
+    /** TC-2927: the owner allowed the extra permissions this exact message carries, on the warning screen. */
+    elevatedAcknowledged?: boolean,
+    passkeyAssertion?: ApprovalPasskeyAssertion,
+    /** The sign page's own flow id; see `signMessagePasskey`. */
+    webFlowId?: string,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
+      headers: webFlowId ? webSignFlowHeaders(webFlowId) : undefined,
+      body: JSON.stringify({
+        message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}), passkeyAssertion,
+      }),
+    });
+  },
+
+  /**
+   * TC-3442: whether approving this signature needs the passkey, with the challenge for exactly this message.
+   * `webFlowId` is the sign page's own flow id: a passkey sign-in made for that flow covers the approval.
+   */
+  async signMessagePasskey(keyId: string, message: string, requestOrigin?: string, webFlowId?: string): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI(`/api/keys/${keyId}/sign/passkey`, {
+      method: 'POST',
+      headers: webFlowId ? webSignFlowHeaders(webFlowId) : undefined,
       body: JSON.stringify({ message, requestOrigin }),
     });
   },
 
   async signTypedData(
     keyId: string,
-    data: { domain: any; types: any; primaryType: string; message: any }
+    data: { domain: any; types: any; primaryType: string; message: any },
+    passkeyAssertion?: ApprovalPasskeyAssertion,
+    requestOrigin?: string,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, passkeyAssertion, requestOrigin }),
+    });
+  },
+
+  /** TC-3442: whether approving this typed data needs the passkey, with the challenge for exactly this data. */
+  async signTypedDataPasskey(
+    keyId: string,
+    data: { domain: any; types: any; primaryType: string; message: any },
+    requestOrigin?: string,
+  ): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI(`/api/keys/${keyId}/sign-typed-data/passkey`, {
+      method: 'POST',
+      body: JSON.stringify({ ...data, requestOrigin }),
     });
   },
 
@@ -305,14 +392,41 @@ export const api = {
     }, true);
   },
 
+  async getPasskeyApprovalSetting(): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {}, true);
+  },
+
+  /** A challenge bound to `mode`, for lowering the setting to it. */
+  async passkeyApprovalSettingOffer(mode: PasskeyApprovalMode): Promise<ApprovalPasskeyOffer> {
+    return fetchAPI('/api/account/passkey-approval/options', { method: 'POST', body: JSON.stringify({ mode }) }, true);
+  },
+
+  async updatePasskeyApprovalSetting(mode: PasskeyApprovalMode, passkeyAssertion?: ApprovalPasskeyAssertion): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {
+      method: 'PATCH',
+      body: JSON.stringify({ mode, passkeyAssertion }),
+    }, true);
+  },
+
   async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
     return fetchAPI('/api/account/tinycloud-manage-key');
   },
 
-  async updateTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number, confirmation: string): Promise<TinyCloudManageKeyPreference> {
+  async updateTinyCloudManageKeyPreference(
+    mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number, confirmation: string,
+    passkeyAssertion?: ApprovalPasskeyAssertion,
+  ): Promise<TinyCloudManageKeyPreference> {
     return fetchAPI('/api/account/tinycloud-manage-key', {
       method: 'PATCH',
-      body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation }),
+      body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation, passkeyAssertion }),
+    }, true);
+  },
+
+  /** TC-3442: whether this TinyCloud key management change needs the passkey, with its challenge. */
+  async tinyCloudManageKeyPasskey(mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI('/api/account/tinycloud-manage-key/passkey', {
+      method: 'POST',
+      body: JSON.stringify({ mode, expectedEpoch: policyEpoch }),
     }, true);
   },
 
@@ -320,12 +434,23 @@ export const api = {
     return fetchAPI('/api/account/tinycloud-apps');
   },
 
-  async updateTinyCloudManageKeyApp(clientId: string, enabled: boolean, policyEpoch: number, confirmation: string): Promise<{
+  async updateTinyCloudManageKeyApp(
+    clientId: string, enabled: boolean, policyEpoch: number, confirmation: string,
+    passkeyAssertion?: ApprovalPasskeyAssertion,
+  ): Promise<{
     clientId: string; enabled: boolean; status: string; policyEpoch: number;
   }> {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
+      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation, passkeyAssertion }),
+    }, true);
+  },
+
+  /** TC-3442: whether turning this app's signing on needs the passkey, with its challenge. */
+  async tinyCloudManageKeyAppPasskey(clientId: string, enabled: boolean, policyEpoch: number): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}/passkey`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch }),
     }, true);
   },
 
@@ -344,6 +469,27 @@ export const api = {
     return fetchAPI(`/api/account/tinycloud-apps/identity/${encodeURIComponent(consentId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
     }, true);
+  },
+
+  async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
+    // A read, so an embedded frame (the in-app sign-out confirm) may send its token.
+    return fetchAPI('/api/account/renewal-leases');
+  },
+  /**
+   * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with
+   * `{ siwe: walletMessage, signature }`.
+   */
+  async stopRenewalLease(leaseCid: string, signed?: { siwe: string; signature: string }): Promise<{ stopped: true } | { walletMessage: string }> {
+    const res = await fetch(`${API_URL}/api/account/renewal-leases/${encodeURIComponent(leaseCid)}/stop`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signed ?? {}),
+    });
+    const body = await res.json().catch(() => null) as { stopped?: boolean; code?: string; siwe?: string; error?: string } | null;
+    if (res.ok && body?.stopped === true) return { stopped: true };
+    if (res.status === 409 && body?.code === 'wallet_required' && typeof body.siwe === 'string') return { walletMessage: body.siwe };
+    throw Object.assign(new Error(typeof body?.error === 'string' ? body.error : `HTTP ${res.status}`), { code: body?.code, status: res.status });
   },
 
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {

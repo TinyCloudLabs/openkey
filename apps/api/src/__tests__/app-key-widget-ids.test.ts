@@ -486,28 +486,27 @@ describe('key.block and key.unblock are admitted only on the requesting app\'s o
     expect(body.error).toBe(NOT_DECLARED);
   });
 
-  test('block or unblock on a prefix that is not under apps/ is refused', async () => {
+  test('block or unblock outside apps/ gets a context for the warning screen, and nothing is signed', async () => {
     for (const ability of [BLOCK, UNBLOCK]) {
       for (const resource of [urn('/secrets/'), urn('/secrets/k'), urn('/'), urn('')]) {
-        const { res, body } = await fromA({ [resource]: ability }, ownBlock);
-        expect(res.status).toBe(403);
-        expect(body.code).toBe('app_key_grant_refused');
+        const { res } = await fromA({ [resource]: ability }, ownBlock);
+        expect(res.status).toBe(200);
       }
     }
-  });
-
-  test('block on a key outside apps/ is refused beside an app key that is listed, and the whole request is refused', async () => {
-    const { res, body } = await fromA({ [urn(`/apps/${A_ID}/`)]: BLOCK, [urn('/secrets/')]: BLOCK }, ownBlock);
-    expect(res.status).toBe(403);
-    expect(body.code).toBe('app_key_grant_refused');
     expect(signed).toEqual([]);
   });
 
-  // TC-2247: a website's sign-in may not name create or decrypt outside its own apps/ prefix, whatever its manifest lists.
-  test('create and decrypt outside apps/ are refused, and nothing is signed', async () => {
-    const { res, body } = await fromA({ [urn('/secrets/')]: ['tinycloud.encryption/decrypt'] }, ownBlock);
-    expect(res.status).toBe(403);
-    expect(body.code).toBe('app_key_grant_refused');
+  test('block on a key outside apps/ beside an app key that is listed: the app key is admitted and the block waits for the owner', async () => {
+    const { res } = await fromA({ [urn(`/apps/${A_ID}/`)]: BLOCK, [urn('/secrets/')]: BLOCK }, ownBlock);
+    expect(res.status).toBe(200);
+    expect(signed).toEqual([]);
+  });
+
+  // TC-2927: create or decrypt outside the app's own apps/ prefix reaches the warning screen, whatever its manifest lists;
+  // nothing is signed by preparing it.
+  test('create and decrypt outside apps/ get a context for the warning screen, and nothing is signed', async () => {
+    const { res } = await fromA({ [urn('/secrets/')]: ['tinycloud.encryption/decrypt'] }, ownBlock);
+    expect(res.status).toBe(200);
     expect(signed).toEqual([]);
   });
 });

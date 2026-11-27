@@ -37,6 +37,7 @@ import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
+import { FLOW_PASSKEY_HEADER, recordFlowPasskeyAfterHook } from './services/approval-passkey';
 import { passkeyEnrolmentPlugin, type ResolvedSession } from './services/passkey-enrolment';
 import {
   appleTokenClientId,
@@ -46,18 +47,28 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
+import { signInCodeStorage } from './services/email-code-storage';
+import { EMAIL_CODE_ALLOWED_ATTEMPTS, emailCodeAtomicVerify } from './services/email-code-atomic-verify';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
+import { EMAIL_OTP_ADDRESS_LIMIT_OFF } from './middleware/email-otp-rate-limit';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
+import { sessionTokenPlugin } from './services/session-token';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
 import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
 import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
 import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
+import { emailOtpDelivery } from './services/email-otp-delivery';
+import { withReviewerDatabase } from './services/reviewer-database';
+import { reviewerAuth } from './services/reviewer-auth';
+import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
+import { hasAcceptedTerms, termsRequired } from './services/terms';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
+import { signInLeaseSignOutPlugin } from './services/signin-lease-sign-out';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -69,6 +80,7 @@ const resend = process.env.RESEND_API_KEY
 
 // Environment-based configuration
 const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
+const otpDelivery = emailOtpDelivery(resend, isDev);
 const rpID = process.env.WEBAUTHN_RP_ID!;
 const origin = process.env.WEBAUTHN_ORIGIN!;
 
@@ -199,6 +211,12 @@ const passkeyFreshnessPlugin = {
           (ctx.body as { response?: { id?: unknown } } | undefined)?.response?.id,
         );
       }) as AuthMiddleware,
+    }, {
+      // One passkey per interaction: a passkey sign-in that names its native request covers that request's Approve.
+      matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
+      handler: (async (ctx: { headers?: Headers; body?: unknown; context: { returned?: unknown } }) => {
+        return recordFlowPasskeyAfterHook(prisma, ctx.context.returned, ctx.headers?.get(FLOW_PASSKEY_HEADER), ctx.body);
+      }) as AuthMiddleware,
     }],
   },
 } satisfies BetterAuthPlugin;
@@ -243,6 +261,7 @@ function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(pl
   const endpoint = plugin.endpoints.oauth2Authorize;
   endpoint.options.query = endpoint.options.query.extend({
     tinycloud_request: endpoint.options.query.shape.client_id.optional(),
+    resource: endpoint.options.query.shape.client_id.optional(),
     login_method: endpoint.options.query.shape.client_id.optional(),
   });
   return plugin;
@@ -261,9 +280,37 @@ function currentRequestResource(): unknown {
   return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
 }
 function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
+  // An Apple reviewer's tokens end on the source deadline in whole seconds: exp = iat + lifetime <= floor(deadline).
+  // The provider samples an integral iat and reads `accessTokenExpiresIn` (or `idTokenExpiresIn`) in the same
+  // synchronous step, so the second this getter reads is iat's. It reads `refreshTokenExpiresIn` for that same iat only
+  // after `customTokenResponseFields` has awaited the native code exchange, when the clock may be seconds later. The
+  // access read keeps its second for the endpoint call and the refresh read subtracts that second. A second read
+  // after iat only shortens a lifetime, so exp never passes the deadline (the database adapter also caps every row).
+  const accessTokenSecond = new WeakMap<object, number>();
+  const cappedLifetime = (seconds: number, token: 'access' | 'id' | 'refresh') => {
+    const reviewer = capturedReviewer();
+    if (!reviewer) return seconds;
+    let remaining: number;
+    if (reviewer.store === 'apple') {
+      const call = endpointContext.getStore();
+      let second = Math.floor(Date.now() / 1000);
+      if (call && token === 'access') accessTokenSecond.set(call, second);
+      if (call && token === 'refresh') second = accessTokenSecond.get(call) ?? second;
+      remaining = Math.floor((reviewer.deadline ?? Date.now()) / 1000) - second;
+    } else {
+      remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    }
+    return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
+  };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
     enumerable: true,
-    get: () => accessTokenExpiresInFor(currentRequestResource()),
+    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource()), 'access'),
+  });
+  Object.defineProperty(plugin.options, 'idTokenExpiresIn', {
+    enumerable: true, get: () => cappedLifetime(3600, 'id'),
+  });
+  Object.defineProperty(plugin.options, 'refreshTokenExpiresIn', {
+    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600, 'refresh'),
   });
   return plugin;
 }
@@ -274,7 +321,7 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
 // refresh grant and opaque access-token validation. The filter is on Better
 // Auth's client only; OpenKey's own reads keep seeing the rows.
 function withLockedUserFilter(db: PrismaClient): PrismaClient {
-  const unlocked = { user: { lockedAt: null } };
+  const unlocked = { user: { lockedAt: null, reviewerHoldAt: null } };
   const filter = ({ args, query }: { args: { where?: object }; query: (args: unknown) => Promise<unknown> }) =>
     query({ ...args, where: args.where ? { AND: [args.where, unlocked] } : unlocked });
   const reads = { findFirst: filter, findMany: filter };
@@ -294,10 +341,16 @@ export const auth = betterAuth({
     log: betterAuthLog,
   },
 
-  database: prismaAdapter(withLockedUserFilter(withNativeTokenGuardErrors(prisma)), {
+  database: prismaAdapter(withReviewerDatabase(withLockedUserFilter(withNativeTokenGuardErrors(prisma))), {
     provider: 'postgresql',
     transaction: true,
   }),
+
+  // The email-code endpoints are limited per target email by middleware/email-otp-rate-limit.ts, ahead of this
+  // handler; the address-keyed limit is off for them because the address is caller-chosen or shared.
+  rateLimit: {
+    customRules: EMAIL_OTP_ADDRESS_LIMIT_OFF,
+  },
 
   // Passwords stay disabled; email OTP is the default authentication path.
   emailAndPassword: {
@@ -308,6 +361,7 @@ export const auth = betterAuth({
   session: {
     expiresIn: SESSION_EXPIRES_IN_SECONDS, // 7 days
     updateAge: SESSION_UPDATE_AGE_SECONDS, // Update session every 24 hours
+    additionalFields: { reviewerEpoch: { type: 'number', required: false, input: false, returned: false } },
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
@@ -316,6 +370,7 @@ export const auth = betterAuth({
       socialCreatedProvider: { type: 'string', required: false, input: false, returned: false },
       socialEmailReviewedAt: { type: 'date', required: false, input: false, returned: false },
       lockedAt: { type: 'date', required: false, input: false, returned: false },
+      reviewerHoldAt: { type: 'date', required: false, input: false, returned: false },
     },
   },
 
@@ -349,6 +404,8 @@ export const auth = betterAuth({
         }),
       },
     },
+    // An app signing out of its OpenKey session stops that sign-in's own renewal lease, and nothing else.
+    signInLeaseSignOutPlugin(prisma),
     passkeyFreshnessPlugin,
     // TC-1198: passkey enrolment and removal need a fresh step-up.
     passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),
@@ -376,26 +433,7 @@ export const auth = betterAuth({
     // Email OTP is the default registration and sign-in method. A verified code
     // for an unknown email asks the user to confirm before an account exists.
     emailOTP({
-      async sendVerificationOTP({ email, otp, type }) {
-        if (!resend) {
-          if (isDev) log('warn', 'otp_delivery_unconfigured');
-          return;
-        }
-
-        await resend.emails.send({
-          from: 'OpenKey <noreply@openkey.so>',
-          to: email,
-          subject: 'Verify your OpenKey email',
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
-              <h2 style="color: #1a1a1a; margin-bottom: 24px;">Your verification code</h2>
-              <p style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #667eea; margin: 32px 0; text-align: center;">${otp}</p>
-              <p style="color: #666; font-size: 14px;">This code expires in 5 minutes.</p>
-              <p style="color: #888; font-size: 12px; margin-top: 24px;">If you didn't request this, you can safely ignore this email.</p>
-            </div>
-          `,
-        });
-      },
+      sendVerificationOTP: otpDelivery.sendVerificationOTP,
       generateOTP({ email }: { email: string }) {
         if (process.env.TEE_MODE === 'development' && email === 'test@openkey.dev') {
           return '000000';
@@ -404,14 +442,19 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
-      // Repeated requests during the active window must not invalidate a code
-      // that may still be arriving or grouped into the same email thread.
-      resendStrategy: 'reuse',
+      allowedAttempts: EMAIL_CODE_ALLOWED_ATTEMPTS,
+      // Codes are stored hashed, so a resend mails a new code and the earlier
+      // one stops working; the sign-in page asks for the latest email.
+      resendStrategy: 'rotate',
+      storeOTP: signInCodeStorage,
     }),
+    otpDelivery.plugin,
     emailSignupConfirmation(prisma),
 
-    // Bearer plugin - returns session token in set-auth-token header
-    bearer(),
+    // Bearer plugin - returns the signed session token in the set-auth-token header, and accepts
+    // only that signed form back. OpenKey's pages read it through /session-token after a redirect.
+    bearer({ requireSignature: true }),
+    sessionTokenPlugin(),
 
     // JWT plugin (required for OAuth provider)
     jwt(),
@@ -433,6 +476,14 @@ export const auth = betterAuth({
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
+      // TC-3232: an account that has not accepted the current Terms is sent to the Terms screen before
+      // consent or a code, and resumes with POST /oauth2/continue {postLogin: true}.
+      postLogin: {
+        page: `${origin}/auth/terms`,
+        shouldRedirect: async ({ user }: { user: { id: string } }) => !await hasAcceptedTerms(prisma, user.id),
+        // Consents are not scoped by a reference; the provider's type requires the hook.
+        consentReferenceId: () => undefined,
+      },
       allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
       allowUnauthenticatedClientRegistration: dynamicClientRegistrationEnabled(),
       validAudiences: oauthValidAudiences(baseURL),
@@ -451,6 +502,30 @@ export const auth = betterAuth({
         // locked user, whatever was authorized before the lock.
         if (user && (await prisma.user.findUnique({ where: { id: user.id }, select: { lockedAt: true } }))?.lockedAt) {
           throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: 'The account is locked' });
+        }
+        // TC-3232: no grant issues tokens until the account accepts the Terms. This runs before the provider
+        // rotates a refresh token, so a refused refresh leaves the token usable once the account accepts.
+        if (user && !await hasAcceptedTerms(prisma, user.id)) {
+          const { error_description, terms_url } = termsRequired();
+          throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description, terms_url });
+        }
+        if (user) {
+          const reviewer = await reviewerForUser(prisma, user.id);
+          if (reviewer) {
+            const captured = capturedReviewer();
+            if (captured?.userId !== user.id || !captured.sessionId || !reviewerActive(reviewer, captured.epoch)) {
+              throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
+            }
+            const source = await prisma.session.findFirst({
+              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() },
+                createdAt: { gt: new Date(Date.now() - REVIEWER_MAX_SECONDS * 1000) } },
+            });
+            if (!source) throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
+            await prisma.reviewerAccount.updateMany({
+              where: { store: reviewer.store, userId: user.id, installEpoch: captured.epoch },
+              data: { grantSessionId: source.id },
+            });
+          }
         }
         // Runs before any access, refresh or ID token is created. A token
         // carrying tinycloud:delegation comes only from the native code
@@ -541,6 +616,10 @@ export const auth = betterAuth({
         return claims;
       },
     }))) as any,
+    reviewerAuth(prisma, origin),
+    // Last: reviewer sign-in answers its own paths before a code is graded, and every other hook that
+    // can refuse one of the code endpoints runs first, so no code is spent on a request that is refused.
+    emailCodeAtomicVerify(prisma),
   ],
 
   // Provider entries are present only when every required secret is configured.
@@ -577,10 +656,18 @@ export const auth = betterAuth({
   // User.autoSignEnabled is @default(true) in Prisma, so every new account
   // starts with bootstrap Auto-Sign enabled before this provisioning hook runs.
   databaseHooks: {
-    // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
+    // Ordinary web sessions use the shared absolute cap; reviewer sessions end one hour after sign-in.
     session: {
       update: {
-        before: capSessionRefresh,
+        before: async (data, context) => {
+          const capped = await capSessionRefresh(data, context);
+          const source = context?.context.session?.session;
+          if (data.expiresAt === undefined || !source || !await reviewerForUser(prisma, source.userId)) return capped;
+          const requested = new Date(capped?.data.expiresAt ?? data.expiresAt).getTime();
+          return { data: { expiresAt: new Date(Math.min(
+            requested, new Date(source.createdAt).getTime() + REVIEWER_MAX_SECONDS * 1000,
+          )) } };
+        },
       },
     },
     user: {

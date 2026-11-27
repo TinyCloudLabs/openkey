@@ -58,6 +58,7 @@ const revokedAccessTokenMigration = '20261026_0001_revoked_access_token';
 const revokedAccessTokenChecksum = 'a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30';
 const orgRegistrationMigration = '20261029_0001_org_registration_proofs';
 const orgRegistrationChecksum = '2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569';
+const reviewerAccountsMigration = '20261111_0001_reviewer_accounts';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -83,6 +84,24 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
   ['20261110_0001_apple_notifications', '431fea91f3c4ed37c4a7efef982fc5b88e7dc396bdc9b49633366c7da64fd4ba'],
   ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
+  ['20261113_0001_approval_request_renewal', '1168755d777b50a32bdc33b6e3b8af5e5838527d9bf2f9edf071fc6923954bd8'],
+  ['20261113_0002_renewal_lease', '2dd0af909a1d9660a44e392eb1a0efdec46b5b7d83041ba1da7fe8cd6713d18f'],
+  ['20261113_0003_renewal_lease_reservation', 'b9463cc0c23648dbc22b97ebfcd35b415be99da6cc6f6ab8422a46e367b76ce0'],
+  [reviewerAccountsMigration, '11196b6dd808c535f5ad66f7a92aff85a12afcd47004e279bc42bbc9d9fa7cf2'],
+  ['20261111_0002_reviewer_apple', '60d1032a0ef4805e61101fdfb345b3c6ba8fd395110cf2bdbbb0b1573455d56a'],
+  ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
+  ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
+  ['20261119_0002_passkey_approval_mode', 'a6e0a4dd2351b7bdddf94013b3340db1ba118f6f2fa0e3b82f58b528e371ba78'],
+  ['20261121_0001_native_stepup', 'e83cdd1c6296344b0d3df1559c40dbb9381faaff8e167f98486f27d0551bde3b'],
+  ['20261121_0002_native_request_kind', '22823dfea36b42f7ffcfc5da0d333340ed025316e68a95c39f63821181022c23'],
+  ['20261121_0003_native_withdraw_stepup_tokens', '0058b9b249016025ce123121ee48ffad03241060d6c708100f9958dd8179cf48'],
+  ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
+  ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
+  ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
+  ['20261123_0001_native_standing_renewal', 'd393544e72a00e8644c9cb044f165fc18be56f5e84fd5b21f189d87a7ed0fbbf'],
+  ['20261124_0002_tinycloud_bootstrap_authority', '1dc898a4ffa69aa926fcbd197f00e4543cd9d5afc13c8772f3b3e71386bbb44e'],
+  ['20261125_0001_account_setup_request', '4e7aa3d81c35c67126bb04a733eba0e47a9679aeeec9b6330fb824da68a41cee'],
+  ['20261125_0002_bootstrap_authority_account_setup', '585f1528893926937e54c73055d96cff060b6e9e82bbb3a67c6066403e7c76a8'],
 ]);
 
 export type MigrationRow = {
@@ -191,6 +210,29 @@ export async function assertNoDuplicateAccountIdentities(database: RawQueryClien
   if (duplicateGroups > 0) {
     throw new Error(
       `${googleLinkStepUpMigration} cannot run: account has ${duplicateGroups} duplicate (providerId, accountId) groups; resolve them before deploying`,
+    );
+  }
+}
+
+const userTableExistsQuery = `SELECT to_regclass('public."user"') IS NOT NULL AS "exists"`;
+const reservedReviewerEmailCountQuery = `
+  SELECT count(*)::int AS reserved_users FROM "user"
+  WHERE lower(email) IN ('openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz', 'appreview@tinycloud.xyz')
+`;
+
+// The reviewer-accounts migration reserves three addresses and raises when a
+// user already holds one, which leaves a failed history row. The check runs
+// before `prisma migrate deploy` and reports only the number of such users.
+export async function assertNoReservedReviewerEmails(database: RawQueryClient) {
+  const table = await database.$queryRawUnsafe<Array<{ exists: boolean }>>(userTableExistsQuery);
+  if (table[0]?.exists !== true) return;
+  const rows = await database.$queryRawUnsafe<Array<{ reserved_users: number }>>(
+    reservedReviewerEmailCountQuery,
+  );
+  const reservedUsers = Number(rows[0]?.reserved_users ?? 0);
+  if (reservedUsers > 0) {
+    throw new Error(
+      `${reviewerAccountsMigration} cannot run: ${reservedUsers} existing user(s) hold a reserved app-review address; resolve them before deploying`,
     );
   }
 }
@@ -470,6 +512,9 @@ async function main() {
     const pending = state.migrationDirectories.filter((name) => !successful.has(name));
     if (pending.includes(googleLinkStepUpMigration)) {
       await assertNoDuplicateAccountIdentities(database);
+    }
+    if (pending.includes(reviewerAccountsMigration)) {
+      await assertNoReservedReviewerEmails(database);
     }
 
     if (mode === 'full') {

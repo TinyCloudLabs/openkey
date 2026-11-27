@@ -1,13 +1,20 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
-  EXPIRY_PRESETS,
   LONG_EXPIRY_MS,
   LONG_EXPIRY_WARNING,
+  ONCE_DEFAULT_EXPIRY_MS,
   expiryAt,
+  daysOverTwoDays,
+  formatDuration,
+  formatDurationWithEnd,
   formatExpiry,
+  onceCautionLine,
+  onceDefaultExpiryMs,
+  onceLongerChoice,
   parseExpiry,
   requestedExpiryMs,
+  approvalRequestStartSeconds,
 } from './approval-expiry';
 
 const S = 1000;
@@ -107,15 +114,6 @@ describe('requestedExpiryMs', () => {
 });
 
 describe('presets, warning and expiry time', () => {
-  test('presets are 1 hr, 24 hr, 7d, 30d', () => {
-    expect(EXPIRY_PRESETS).toEqual([
-      { label: '1 hr', ms: H },
-      { label: '24 hr', ms: 24 * H },
-      { label: '7d', ms: 7 * D },
-      { label: '30d', ms: 30 * D },
-    ]);
-  });
-
   test('the warning threshold is more than one year', () => {
     expect(LONG_EXPIRY_MS).toBe(365 * D);
     expect(LONG_EXPIRY_WARNING).toBe("That's a long time. OpenKey can't cancel it early once you approve.");
@@ -123,15 +121,6 @@ describe('presets, warning and expiry time', () => {
 
   test('expiryAt adds the duration to now, as an ISO string', () => {
     expect(expiryAt(7 * D, Date.UTC(2026, 9, 31))).toBe('2026-11-07T00:00:00.000Z');
-  });
-});
-
-describe('expiryLimitNote', () => {
-  test('names the longest time the request allows and how to get longer', async () => {
-    const { expiryLimitNote } = await import('./approval-expiry');
-    expect(expiryLimitNote(7 * D)).toBe(
-      'This app asked for up to 7d. To allow longer, start the request again with a longer expiry.',
-    );
   });
 });
 
@@ -155,5 +144,153 @@ describe('expiryAtCapped', () => {
     expect(expiryAtCapped(7 * D, '2026-11-05T00:00:00.000Z', now)).toBe('2026-11-05T00:00:00.000Z');
     expect(expiryAtCapped(H, null, now)).toBe('2026-10-31T01:00:00.000Z');
     expect(expiryAtCapped(H, 'not a time', now)).toBe('2026-10-31T01:00:00.000Z');
+  });
+});
+
+describe('onceDefaultExpiryMs (TC-3111)', () => {
+  test('a one-time request that asks for more than an hour starts at one hour', () => {
+    expect(ONCE_DEFAULT_EXPIRY_MS).toBe(H);
+    expect(onceDefaultExpiryMs(true, H + S)).toBe(H);
+    expect(onceDefaultExpiryMs(true, 7 * D)).toBe(H);
+  });
+
+  test('an hour or less, an unknown request, or a request that is not one-time keeps what the app asked for', () => {
+    expect(onceDefaultExpiryMs(true, H)).toBeNull();
+    expect(onceDefaultExpiryMs(true, 30 * M)).toBeNull();
+    expect(onceDefaultExpiryMs(true, null)).toBeNull();
+    expect(onceDefaultExpiryMs(false, 7 * D)).toBeNull();
+  });
+});
+
+describe('approvalRequestStartSeconds', () => {
+  test('a request without a valid suggestion starts at its signed maximum', () => {
+    expect(approvalRequestStartSeconds(7 * 86_400)).toBe(7 * 86_400);
+    expect(approvalRequestStartSeconds(8000 * 365 * 86_400)).toBe(8000 * 365 * 86_400);
+    expect(approvalRequestStartSeconds(7 * 86_400, 0)).toBe(7 * 86_400);
+  });
+  test('a request for less than an hour starts at what it asked for', () => {
+    expect(approvalRequestStartSeconds(600)).toBe(600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 1800)).toBe(1800);
+  });
+  test('a valid suggestion sets the start, and one above the maximum is ignored', () => {
+    expect(approvalRequestStartSeconds(30 * 86_400, 7 * 86_400)).toBe(7 * 86_400);
+    expect(approvalRequestStartSeconds(7200, 30 * 86_400)).toBe(7200);
+    expect(approvalRequestStartSeconds(900, 30 * 86_400)).toBe(900);
+  });
+});
+
+describe('formatDuration over two days', () => {
+  const over: Array<[number, string]> = [
+    [700 * H, '30 days'],
+    [745 * H, '32 days'],
+    [720 * H, '30 days'],
+    [49 * H, '3 days'],
+    [3 * D, '3 days'],
+    [(30 * D) + (5 * H) + (7 * M), '31 days'],
+    [400 * D, '400 days'],
+    [365 * D, '1 year'],
+    [730 * D, '2 years'],
+  ];
+  for (const [ms, label] of over) {
+    test(`${ms} ms reads as ${label}`, () => {
+      expect(formatDuration(ms)).toBe(label);
+    });
+  }
+
+  const within: Array<[number, string]> = [
+    [47 * H, '47 hours'],
+    [36 * H, '36 hours'],
+    [90 * M, '90 minutes'],
+    [H, '1 hour'],
+    [45 * S, '45 seconds'],
+  ];
+  for (const [ms, label] of within) {
+    test(`${ms} ms, two days or less, keeps its smaller unit: ${label}`, () => {
+      expect(formatDuration(ms)).toBe(label);
+    });
+  }
+
+  test('no duration over two days is ever worded in hours', () => {
+    for (let hours = 49; hours <= 24 * 400; hours += 7) {
+      expect(formatDuration(hours * H)).not.toMatch(/hour|minute|second/);
+    }
+  });
+
+  test('the days shown never cover less time than the grant', () => {
+    for (let minutes = 2 * 24 * 60 + 1; minutes <= 400 * 24 * 60; minutes += 977) {
+      const ms = minutes * M;
+      expect(daysOverTwoDays(ms)! * D).toBeGreaterThanOrEqual(ms);
+    }
+  });
+
+  test('daysOverTwoDays is null for two days or less and rounds the rest up', () => {
+    expect(daysOverTwoDays(2 * D)).toBeNull();
+    expect(daysOverTwoDays(2 * D + 1)).toBe(3);
+    expect(daysOverTwoDays(700 * H)).toBe(30);
+  });
+});
+
+describe('formatDurationWithEnd', () => {
+  const now = Date.UTC(2026, 10, 18, 4, 30);
+
+  test('over two days names the length and the day it ends, month first', () => {
+    expect(formatDurationWithEnd(30 * D, now, 'UTC')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(700 * H, now, 'UTC')).toBe('30 days, until Dec 17');
+  });
+
+  test('the day follows the instant, not the rounded days', () => {
+    // 23:30 UTC plus 30 days is still the 18th; plus 30 days 1 hour is the 19th.
+    const late = Date.UTC(2026, 10, 18, 23, 30);
+    expect(formatDurationWithEnd(30 * D, late, 'UTC')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(30 * D + H, late, 'UTC')).toBe('31 days, until Dec 19');
+  });
+
+  test('the day is the owner\'s own, not the UTC one', () => {
+    // The window ends Dec 18 02:00 UTC: still the evening of Dec 17 in New York, already Dec 18 afternoon in Tokyo.
+    const start = Date.UTC(2026, 10, 18, 2, 0);
+    expect(formatDurationWithEnd(30 * D, start, 'UTC')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(30 * D, start, 'America/New_York')).toBe('30 days, until Dec 17');
+    expect(formatDurationWithEnd(30 * D, start, 'Asia/Tokyo')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(30 * D, Date.UTC(2026, 10, 17, 20, 0), 'Asia/Tokyo')).toBe('30 days, until Dec 18');
+  });
+
+  test('a day in another year carries the year', () => {
+    expect(formatDurationWithEnd(60 * D, now, 'UTC')).toBe('60 days, until Jan 17, 2027');
+    expect(formatDurationWithEnd(365 * D, now, 'UTC')).toBe('1 year, until Nov 18, 2027');
+  });
+
+  test('two days or less has no date', () => {
+    expect(formatDurationWithEnd(36 * H, now, 'UTC')).toBe('36 hours');
+    expect(formatDurationWithEnd(H, now, 'UTC')).toBe('1 hour');
+  });
+});
+
+describe('onceLongerChoice', () => {
+  test('offers nothing when the app asked for an hour or less, or for nothing', () => {
+    expect(onceLongerChoice(null, null)).toBeNull();
+    expect(onceLongerChoice(30 * M, null)).toBeNull();
+    expect(onceLongerChoice(H, 7 * D)).toBeNull();
+  });
+
+  test('offers the asked length when it is over an hour and within the cap, or where no cap applies', () => {
+    expect(onceLongerChoice(3 * D, 7 * D)).toEqual({ ms: 3 * D, label: '3 days (what the app asked)' });
+    expect(onceLongerChoice(30 * D, null)).toEqual({ ms: 30 * D, label: '30 days (what the app asked)' });
+  });
+
+  test('reads "what the app asked" for exactly the cap', () => {
+    expect(onceLongerChoice(7 * D, 7 * D)).toEqual({ ms: 7 * D, label: '7 days (what the app asked)' });
+  });
+
+  test('offers the cap, labelled the longest allowed, when the app asked for more', () => {
+    expect(onceLongerChoice(30 * D, 7 * D)).toEqual({ ms: 7 * D, label: '7 days (the longest allowed)' });
+    expect(onceLongerChoice(7 * D + S, 7 * D)).toEqual({ ms: 7 * D, label: '7 days (the longest allowed)' });
+  });
+});
+
+describe('onceCautionLine', () => {
+  test('names what each reach can open', () => {
+    expect(onceCautionLine('network')).toBe('This access can open all your encrypted data.');
+    expect(onceCautionLine('secrets')).toBe('This access can open all your secrets.');
+    expect(onceCautionLine('wide')).toBe('This access can open a wide range of your data.');
   });
 });

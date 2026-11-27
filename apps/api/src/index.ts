@@ -1,17 +1,29 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
-import { Hono } from 'hono';
+import { appleReviewEnabled } from './services/reviewer-apple-policy';
+import { runReviewerCleanup } from './services/reviewer-cleanup';
+import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
-import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
+import { apiErrorHandler, log, logConfigInvalid, logError, logLegacyResealFailed, requestLogger, type ApiEnv } from './log';
 import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
 } from '@better-auth/oauth-provider';
+import { initializeReviewersAtBoot, reviewerRequest } from './services/reviewer-accounts';
+import { createReviewerRouteGuard, createReviewerAuthAudit } from './middleware/reviewer';
+import { JWT_SHAPE } from './services/access-token-verifier';
+import { storedOpaqueAccessToken } from './services/native-delegation/provider-tokens';
 import { auth, prisma as authPrisma } from './auth';
+import { createReviewerAdminRouter } from './routes/reviewer-admin';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
+import { accountSetupRouter } from './routes/account-setup';
+import { createAccountTermsRouter } from './routes/account-terms';
+import { termsRelease } from './services/terms';
+import { allowBeforeTerms, allowBeforeTermsWhen, allowBrowserBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
 import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
@@ -34,6 +46,7 @@ import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
 import { requireAccountOriginForSensitiveAuth } from './middleware/bearer-origin';
+import { mountEmailOtpRateLimit } from './middleware/email-otp-rate-limit';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
@@ -49,12 +62,16 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
+import { handleNativeStepUpRequest } from './services/native-delegation/step-up';
 import { createTeeClient, resolveTeeMode } from '@openkey/tee';
+import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
+import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
+import { startRevokePendingSweep } from './services/native-delegation/revoke-pending';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -65,12 +82,47 @@ try {
   logConfigInvalid('BETTER_AUTH_URL');
   throw new Error('Invalid API configuration');
 }
+// A Terms release that is set but invalid would gate every account on a version no one can accept.
+try {
+  termsRelease();
+} catch {
+  logConfigInvalid('TERMS_RELEASE');
+  throw new Error('Invalid API configuration');
+}
 
 // Create Hono app
 const app = new Hono<ApiEnv>();
 
 // Middleware
 app.use('*', requestLogger);
+app.use('/api/*', async (_c, next) => reviewerRequest.run({}, next));
+app.use('/api/review-account/*', bodyLimit({ maxSize: 4096 }));
+app.use('/api/auth/reviewer/*', bodyLimit({ maxSize: 4096 }));
+app.use('/api/review-account/*', createReviewerAuthAudit(authPrisma));
+app.use('/api/auth/sign-in/reviewer', bodyLimit({ maxSize: 16384 }));
+app.use('/api/auth/sign-in/email-otp', bodyLimit({ maxSize: 16384 }));
+// Email-code sends and checks are limited per target email (and by a shared ceiling) before any other auth work.
+mountEmailOtpRateLimit(app, process.env.NODE_ENV);
+app.use('/api/auth/*', createReviewerAuthAudit(authPrisma));
+app.use('/api/*', createReviewerRouteGuard(authPrisma, async (headers) => {
+  if (!headers.has('cookie') && !headers.has('authorization')) return [];
+  const principals: Array<{ userId: string; sessionId: string | null }> = [];
+  const session = await auth.api.getSession({ headers, query: { disableRefresh: true } });
+  if (session) principals.push({ userId: session.user.id, sessionId: session.session.id });
+  const token = /^bearer +(\S+)$/i.exec(headers.get('authorization') ?? '')?.[1];
+  if (!token || token.length > 8192) return principals;
+  if (JWT_SHAPE.test(token)) {
+    const payload = await reviewerTokenVerifier(token, tokenAudiences);
+    if (typeof payload?.sub === 'string') {
+      principals.push({ userId: payload.sub, sessionId: typeof payload.sid === 'string' ? payload.sid : null });
+    }
+    return principals;
+  }
+  const stored = await storedOpaqueAccessToken(providerTokenOptions(auth), token);
+  const row = stored ? await authPrisma.oauthAccessToken.findUnique({ where: { token: stored } }) : null;
+  if (row && row.expiresAt > new Date()) principals.push({ userId: row.userId, sessionId: row.sessionId });
+  return principals;
+}));
 
 // Zero-gesture bootstrap signing: allow any origin. Third-party apps call
 // this from the browser with a bearer session token (no cookies), and the
@@ -208,9 +260,9 @@ app.get('/api/auth/.well-known/openid-configuration', (c) =>
 );
 
 // Public capability discovery keeps login buttons aligned with server config.
-// It intentionally exposes provider IDs only, never credentials.
+// Only public sign-in capabilities are exposed, never credentials.
 app.get('/api/auth/providers', (c) =>
-  c.json({ providers: configuredSocialProviderIds() })
+  c.json({ providers: configuredSocialProviderIds(), appleReviewEnabled: appleReviewEnabled() })
 );
 
 // Fail-closed guards for delegation clients, ahead of the provider's
@@ -218,6 +270,7 @@ app.get('/api/auth/providers', (c) =>
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+app.post('/api/auth/oauth2/tinycloud/stepup', (c) => handleNativeStepUpRequest(c.req.raw, authPrisma, oauthIssuer));
 
 // The key set /api/auth/jwks serves, read through the auth handler.
 const readSigningKeys = async () => {
@@ -226,6 +279,7 @@ const readSigningKeys = async () => {
   return (await response.json()) as { keys: import('jose').JWK[] };
 };
 const tokenAudiences = oauthValidAudiences(process.env.BETTER_AUTH_URL!);
+const reviewerTokenVerifier = createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys });
 
 // Token status check for registered resource servers (the hosted MCP server).
 // The provider's own /oauth2/introspect, further down, is untouched.
@@ -248,6 +302,13 @@ app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
 // the lock filter in auth.ts can hide, so the provider's own answer is checked.
 app.use('/api/auth/oauth2/userinfo', createLockedSubjectGuard(authPrisma));
 app.use('/api/auth/oauth2/introspect', createLockedSubjectGuard(authPrisma));
+// TC-3232: until the account accepts the Terms, its tokens get no userinfo answer, and no consent or
+// postLogin continue goes ahead. Declining a consent stays open: leaving never requires agreeing.
+app.use('/api/auth/oauth2/userinfo', createTermsSubjectGuard(authPrisma));
+const termsSessionUserId = async (headers: Headers) =>
+  (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.user.id ?? null;
+app.use('/api/auth/oauth2/consent', createTermsSessionGuard(authPrisma, termsSessionUserId, { allowDenial: true }));
+app.use('/api/auth/oauth2/continue', createTermsSessionGuard(authPrisma, termsSessionUserId));
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
@@ -266,6 +327,19 @@ app.use('/api/auth/*', createProviderInterceptors({
   },
 }));
 
+// The session read answers without the session token. A bearer is the signed token, which OpenKey's
+// pages get from `set-auth-token` or /api/auth/session-token. Server-side `auth.api.getSession` is unaffected.
+app.get('/api/auth/get-session', async (c, next) => {
+  await next();
+  if (!c.res.headers.get('content-type')?.includes('application/json')) return;
+  const body = await c.res.clone().json().catch(() => null) as { session?: Record<string, unknown> } | null;
+  if (!body?.session || !('token' in body.session)) return;
+  delete body.session.token;
+  const headers = new Headers(c.res.headers);
+  headers.delete('content-length');
+  c.res = new Response(JSON.stringify(body), { status: c.res.status, headers });
+});
+
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
 app.on(['POST', 'GET'], '/api/auth/*', (c) => {
@@ -279,6 +353,43 @@ app.post('/api/webhooks/apple', bodyLimit({
   onError: (c) => c.json({ error: 'invalid_notification' }, 400),
 }), createAppleWebhookHandler({ database: authPrisma }));
 
+// Ways out (TC-3232): leaving never requires agreeing, so these answer for an account that hasn't accepted
+// the current Terms. Marked here, ahead of the routers that serve them, so their `requireSession` skips the
+// Terms check. Agreeing to anything, and managing the account, still wait for acceptance.
+// An email step-up is a way out only for deleting the account; its other purposes manage the account.
+const deleteAccountStepUp = allowBeforeTermsWhen(4 * 1024, (body) => body.purpose === 'delete_account');
+// Claiming a handoff is a way out only for an owner revocation (the claim service reads `kind` the same way
+// and accepts no kind but owner-revocation); a sign-in handoff grants access.
+const ownerRevocationClaim = allowBeforeTermsWhen(6 * 1024, (body) =>
+  !!body.request && typeof body.request === 'object' && !Array.isArray(body.request) && 'kind' in body.request);
+const WAYS_OUT: Array<['GET' | 'POST' | 'DELETE', string, MiddlewareHandler?]> = [
+  // What the web's ways-out page reads to offer them: the account (the delete flow), its connected apps and its
+  // renewing permissions. Own-account reads with no side effects.
+  ['GET', '/api/account'],
+  ['GET', '/api/account/tinycloud-apps'],
+  ['GET', '/api/account/renewal-leases'],
+  // Reading what you hold before deleting the account (secret names, variable names and values): the browser
+  // session only (a request with an Authorization header stays gated), reads only (every write stays gated).
+  // `/status` is here because it restores the TinyCloud session that listing needs after a restart.
+  ['GET', '/api/secrets/status', allowBrowserBeforeTerms],
+  ['GET', '/api/secrets', allowBrowserBeforeTerms],
+  ['GET', '/api/variables', allowBrowserBeforeTerms],
+  ['POST', '/api/account/step-up/email-otp/send', deleteAccountStepUp],
+  ['POST', '/api/account/step-up/email-otp/verify', deleteAccountStepUp],
+  ['POST', '/api/account/step-up/passkey/options'], // a passkey step-up proves what a passkey sign-in does
+  ['POST', '/api/account/step-up/passkey/verify'],
+  ['POST', '/api/account/delete'],
+  ['DELETE', '/api/account/tinycloud-apps/*'], // disconnecting a TinyCloud, MCP or identity app
+  ['POST', '/api/account/renewal-leases/:leaseCid/stop'],
+  ['DELETE', '/api/keys/nostr/grants/:grantId'],
+  ['POST', '/api/delegate/handoffs/claim', ownerRevocationClaim],
+  ['POST', '/api/delegate/owner-revocation/*'],
+  ['POST', '/api/delegate/handoffs/cancel-claimed'],
+  ['POST', '/api/approval-requests/:id/deny'],
+  ['POST', '/api/device-authorizations/:transactionId/deny'],
+];
+for (const [method, path, marker = allowBeforeTerms] of WAYS_OUT) app.on(method, path, marker);
+
 // Key management routes
 app.route('/api/keys', keysRouter);
 
@@ -286,14 +397,27 @@ app.route('/api/keys', keysRouter);
 // separate from the Ethereum/ECDSA routes above)
 app.route('/api/keys/nostr', nostrKeysRouter);
 
-// Account management routes
+// Account management routes. The Terms routes come first: the account router refuses an account
+// that has not accepted them.
+app.route('/api/account/terms', createAccountTermsRouter(authPrisma));
 app.route('/api/account', accountRouter);
+// OpenKey's own account setup page: cookie session from an OpenKey origin only.
+app.route('/api/account-setup', accountSetupRouter);
 
 // Passkey proxy routes (for iframe embed mode)
 app.route('/api/passkey', passkeyProxyRouter);
 
 // OAuth admin routes (protected by ADMIN_API_KEY)
 app.route('/api/admin/oauth', oauthAdminRouter);
+app.post('/api/review-account/:action', async c => {
+  const action = c.req.param('action');
+  if (!['delete-intent', 'delete'].includes(action)) return c.json({ error: 'Not found' }, 404);
+  const url = new URL(c.req.url);
+  url.pathname = '/api/auth/reviewer/' + action;
+  return auth.handler(new Request(url, c.req.raw));
+});
+
+app.route('/api/admin/review-accounts', createReviewerAdminRouter(authPrisma));
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
 app.route('/api/internal/metrics', internalMetricsRouter);
@@ -361,12 +485,48 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
   }
 })();
 
+// Reviewer authority is settled before Bun can serve this module. A failure leaves every
+// reviewer refused and does not stop the API for ordinary users.
+log('info', 'api_starting');
+// TC-3554: one-time re-seal of keys sealed under the pre-move root. Off unless the compose enables it. Any
+// failure ends the process here, before Bun can serve this module: the API never listens on a half-migrated
+// database. Finished rows stay finished, so the restart policy resumes where this stopped. The process holds
+// two minutes before it exits, so a failure that will not go away retries about once per two minutes, not in
+// a tight loop against the KMS.
+try {
+  await resealLegacyAtBoot(authPrisma, createTeeClient());
+} catch (error) {
+  logLegacyResealFailed(error);
+  await new Promise((resolve) => setTimeout(resolve, 120_000));
+  throw error;
+}
+await initializeReviewersAtBoot(authPrisma);
+
+// Persisted cleanup runs outside account transactions and survives restarts.
+if (process.env.NODE_ENV !== 'test') {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await runReviewerCleanup(authPrisma, reviewerCleanupNode); }
+    catch { log('error', 'reviewer_cleanup'); }
+    finally { running = false; }
+  };
+  const timer = setInterval(() => { void tick(); }, 60_000);
+  timer.unref();
+  void tick();
+}
+
 // Start server
 const port = parseInt(process.env.API_PORT || '3001');
 
-log('info', 'api_starting');
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
+// Retries native lease withdrawal. OPENKEY_RENEWAL_LEASES=stop also revokes every live lease (TC-3088).
+if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
+// Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
+// Not behind the step-up switch: a record already written must still be revoked with the switch off.
+if (process.env.NODE_ENV !== 'test') startRevokePendingSweep(authPrisma);
 
 export default {
   port,

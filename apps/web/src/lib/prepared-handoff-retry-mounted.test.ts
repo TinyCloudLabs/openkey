@@ -68,6 +68,17 @@ function stubUrl(name: string): string {
   return pathToFileURL(file).href;
 }
 
+// The page mounts `$lib` components (the expiry line, TC-2933): compile them, and theirs, the same way.
+function compileChild(file: string): string {
+  const code = compile(readFileSync(file, 'utf8'), { generate: 'client', dev: false, name: 'Child', filename: file }).js.code
+    .replace(/from\s+['"](\$lib\/[^'"]+)['"]/g, (_match, spec: string) => `from '${spec.endsWith('.svelte')
+      ? compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)))
+      : pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href}'`);
+  const out = join(OUT_DIR, `${file.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+  writeFileSync(out, code);
+  return pathToFileURL(out).href;
+}
+
 const COMPONENT = join(WEB_ROOT, 'src/routes/delegate/PreparedHandoff.svelte');
 const compiled = compile(readFileSync(COMPONENT, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: COMPONENT });
 let code = '';
@@ -81,7 +92,8 @@ for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
   else if (spec === 'svelte') target = pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href;
   else if (spec === '@openkey/capability-review') {
     target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
-  } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
+  } else if (spec.startsWith('$lib/') && spec.endsWith('.svelte')) target = compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)));
+  else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
   code += `from '${target}'`;
   cursor = match.index! + match[0].length;
 }
@@ -197,6 +209,8 @@ async function open(options: { signReplies?: Reply[]; serverDate?: () => string;
   return {
     target, button, calls,
     alert: () => target.querySelector('[role="alert"]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+    stopHeading: () => target.querySelector('[data-testid="stop-page"] h1')?.textContent?.trim(),
+    support: () => target.querySelector('[data-support-line]')?.textContent?.trim(),
     approve: async (settled: () => boolean) => {
       button('Approve')!.click();
       await until(settled, 'the answer to Approve');
@@ -206,36 +220,41 @@ async function open(options: { signReplies?: Reply[]; serverDate?: () => string;
 }
 
 describe('the prepared handoff page after a signing that fails', () => {
-  test('a refused signing shows the error and gives Approve and Cancel back; the next Approve signs', async () => {
+  test('a refused signing offers Close this tab and a retry that signs', async () => {
     const page = await open({ signReplies: [{ status: 500, body: { error: 'TEE unavailable', code: 'sign_failed' } }, { status: 200, body: GOOD_SIGN }] });
-    await page.approve(() => page.alert() !== null);
-    expect(page.alert()).toBe('TEE unavailable');
-    expect(page.button('Approve')!.disabled).toBe(false);
-    expect(page.button('Cancel')!.disabled).toBe(false);
-    await page.approve(() => page.target.textContent!.includes('Paste this response in your CLI'));
-    expect(page.alert()).toBeNull();
+    await page.approve(() => !!page.stopHeading());
+    expect(page.stopHeading()).toBe('The approval didn’t go through');
+    expect(page.support()).toBe('HTTP 500 · sign_failed');
+    expect(page.button('Try again')?.disabled).toBe(false);
+    expect(page.button('Close this tab')?.disabled).toBe(false);
+    page.button('Try again')!.click();
+    await until(() => page.target.textContent!.includes('Paste this into your terminal'), 'the signed result');
+    expect(page.stopHeading()).toBeUndefined();
     page.close();
   });
 
-  test('a refused signing can be cancelled instead of retried', async () => {
+  test('Close this tab cancels a refused signing', async () => {
     const page = await open({ signReplies: [{ status: 500, body: { error: 'TEE unavailable', code: 'sign_failed' } }] });
-    await page.approve(() => page.alert() !== null);
-    page.button('Cancel')!.click();
+    await page.approve(() => !!page.stopHeading());
+    page.button('Close this tab')!.click();
     await until(() => page.calls.includes('cancel-claimed'), 'the cancel request');
     page.close();
   });
 
-  test('a request that never reaches the server gives Approve back too', async () => {
+  test('a request that never reaches the server offers Try again', async () => {
     const page = await open({ signReplies: ['network-failure', { status: 200, body: GOOD_SIGN }] });
-    await page.approve(() => page.alert() !== null);
-    expect(page.button('Approve')!.disabled).toBe(false);
+    await page.approve(() => !!page.stopHeading());
+    expect(page.stopHeading()).toBe('The approval didn’t go through');
+    expect(page.button('Try again')?.disabled).toBe(false);
     page.close();
   });
 
   test('an unreadable reply may have been signed by the server, so Approve stays off', async () => {
     const page = await open({ signReplies: [{ status: 200, text: '{}' }] });
-    await page.approve(() => page.target.querySelector('[data-testid="server-reply-refusal"]') !== null);
-    expect(page.button('Approve')!.disabled).toBe(true);
+    await page.approve(() => !!page.stopHeading());
+    expect(page.stopHeading()).toBe('OpenKey couldn’t finish this request');
+    expect(page.button('Approve')).toBeUndefined();
+    expect(page.button('Try again')).toBeUndefined();
     page.close();
   });
 });
@@ -255,7 +274,9 @@ describe('the prepared handoff page and the server clock', () => {
       vi.advanceTimersByTime(2_000);
       flushSync();
       expect(page.button('Approve')).toBeUndefined();
-      expect(page.alert()).toBe('Prepared sign-in request expired. Restart the CLI command.');
+      expect(page.stopHeading()).toBe('This request expired');
+      expect(page.target.querySelector('[data-testid="stop-page"]')?.textContent)
+        .toContain('This sign-in was open for 5 minutes and ran out. Run the command again.');
       page.close();
     } finally {
       vi.useRealTimers();
@@ -274,7 +295,7 @@ describe('the prepared handoff page and the server clock', () => {
       flushSync();
       expect(page.alert()).toBeNull();
       signing.resolve();
-      await until(() => page.target.textContent!.includes('Paste this response in your CLI'), 'the signed result');
+      await until(() => page.target.textContent!.includes('Paste this into your terminal'), 'the signed result');
       expect(page.alert()).toBeNull();
       page.close();
     } finally {

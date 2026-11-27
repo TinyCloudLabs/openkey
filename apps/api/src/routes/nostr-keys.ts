@@ -20,6 +20,7 @@ import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
+import { approvalPasskeyOffer, approvalRequestDigest, checkApprovalPasskey, type ApprovalBinding } from '../services/approval-passkey';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -159,6 +160,56 @@ nostrKeysRouter.get('/', async (c) => {
   return c.json({ keys });
 });
 
+type GrantRequest = { clientOrigin: string; kinds: number[]; relayUrl: string | null; ttlSeconds: number };
+type GrantBody = { clientOrigin?: string; kinds?: number[]; relayUrl?: string; ttlSeconds?: number; passkeyAssertion?: unknown };
+
+function parseGrantRequest(body: GrantBody): { ok: true; grant: GrantRequest } | { ok: false; error: string } {
+  const clientOrigin = parseClientOrigin(body.clientOrigin);
+  if (!clientOrigin) return { ok: false, error: 'Invalid clientOrigin' };
+
+  const kinds = Array.isArray(body.kinds) ? [...new Set(body.kinds)] : [];
+  if (kinds.length === 0 || !kinds.every((k) => SUPPORTED_NOSTR_KINDS.has(k))) {
+    return { ok: false, error: 'kinds must be a non-empty subset of {22242, 9}' };
+  }
+
+  let relayUrl: string | null = null;
+  if (kinds.includes(22242)) {
+    relayUrl = parseRelayUrl(body.relayUrl);
+    if (!relayUrl) return { ok: false, error: 'relayUrl required and must be ws(s):// when granting kind 22242' };
+  }
+
+  const ttlSeconds = Math.min(Math.max(1, body.ttlSeconds ?? DEFAULT_GRANT_TTL_SECONDS), MAX_GRANT_TTL_SECONDS);
+  return { ok: true, grant: { clientOrigin, kinds, relayUrl, ttlSeconds } };
+}
+
+/**
+ * TC-3442: a passkey on a signing grant confirms this key, site, kinds, relay and lifetime. A grant lets the site sign
+ * later without a button, so the passkey setting treats it as sensitive.
+ */
+function grantPasskeyBinding(keyId: string, grant: GrantRequest): ApprovalBinding {
+  return {
+    purpose: 'nostr_grant',
+    requestDigest: approvalRequestDigest(
+      keyId, grant.clientOrigin, [...grant.kinds].sort((a, b) => a - b).join(','), grant.relayUrl ?? '', String(grant.ttlSeconds),
+    ),
+  };
+}
+
+// TC-3442: whether Approve on a signing grant needs the passkey, with the challenge for exactly this grant.
+nostrKeysRouter.post('/:keyId/grants/passkey', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
+  const user = c.get('user');
+  const keyId = c.req.param('keyId');
+  const parsed = parseGrantRequest(await c.req.json<GrantBody>());
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const key = await prisma.nostrKey.findFirst({ where: { id: keyId, userId: user.id, revokedAt: null }, select: { id: true } });
+  if (!key) return c.json({ error: 'Key not found' }, 404);
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, grantPasskeyBinding(key.id, parsed.grant), 'sensitive',
+  ));
+});
+
 // Create/extend a silent-signing grant. Meant to be called from inside the
 // OpenKey-origin widget page after real, explicit user consent - this route
 // trusts the caller's own authenticated session, not any client-supplied
@@ -168,31 +219,22 @@ nostrKeysRouter.post('/:keyId/grants', async (c) => {
   if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
-  const body = await c.req.json<{
-    clientOrigin?: string;
-    kinds?: number[];
-    relayUrl?: string;
-    ttlSeconds?: number;
-  }>();
+  const body = await c.req.json<GrantBody>();
 
   const key = await prisma.nostrKey.findFirst({ where: { id: keyId, userId: user.id, revokedAt: null } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
 
-  const clientOrigin = parseClientOrigin(body.clientOrigin);
-  if (!clientOrigin) return c.json({ error: 'Invalid clientOrigin' }, 400);
+  const parsed = parseGrantRequest(body);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const { clientOrigin, kinds, relayUrl, ttlSeconds } = parsed.grant;
 
-  const kinds = Array.isArray(body.kinds) ? [...new Set(body.kinds)] : [];
-  if (kinds.length === 0 || !kinds.every((k) => SUPPORTED_NOSTR_KINDS.has(k))) {
-    return c.json({ error: 'kinds must be a non-empty subset of {22242, 9}' }, 400);
-  }
+  // TC-3442: the account's passkey setting, before the grant exists.
+  const passkeyRefusal = await checkApprovalPasskey(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, grantPasskeyBinding(key.id, parsed.grant), 'sensitive',
+    body.passkeyAssertion,
+  );
+  if (passkeyRefusal) return c.json(passkeyRefusal, 403);
 
-  let relayUrl: string | null = null;
-  if (kinds.includes(22242)) {
-    relayUrl = parseRelayUrl(body.relayUrl);
-    if (!relayUrl) return c.json({ error: 'relayUrl required and must be ws(s):// when granting kind 22242' }, 400);
-  }
-
-  const ttlSeconds = Math.min(Math.max(1, body.ttlSeconds ?? DEFAULT_GRANT_TTL_SECONDS), MAX_GRANT_TTL_SECONDS);
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
   const grant = await prisma.nostrSigningGrant.create({

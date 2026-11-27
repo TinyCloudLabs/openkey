@@ -16,11 +16,15 @@ model User {
   socialCreatedProvider String?
   socialEmailReviewedAt DateTime?
   lockedAt DateTime?
+  reviewerHoldAt DateTime?
+  reviewerBinding ReviewerAccount?
   image           String?
   autoSignEnabled Boolean  @default(true)
   tinyCloudManageKeyEnabled Boolean @default(true)
   tinyCloudManageKeyMode String @default("APP_MANAGED")
   tinyCloudManageKeyPolicyEpoch BigInt @default(0)
+  // TC-3442: ALWAYS, SENSITIVE or NEVER: which approvals need a passkey assertion bound to the request.
+  passkeyApprovalMode String @default("SENSITIVE")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -31,6 +35,7 @@ model User {
   nostrSigningGrants             NostrSigningGrant[]
   tinyCloudBootstrapState        TinyCloudBootstrapState[]
   sessions                       Session[]
+  renewalLeases                  RenewalLease[]
   accounts                       Account[]
   userEncryptionKey              UserEncryptionKey?
   verification                   Verification[]
@@ -50,8 +55,40 @@ model User {
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
   keyGrants                      KeyGrant[]
   orgKeySignChallenges           OrgKeySignChallenge[]
+  termsAcceptances               TermsAcceptance[]
+  accountSetupRequests           AccountSetupRequest[]
 
   @@map("user")
+}
+
+// TC-3232: one row per account per Terms version accepted on the required Terms screen. Append-only:
+// the migration refuses updates; rows go only with the account.
+model TermsAcceptance {
+  id          String   @id
+  userId      String
+  // 'terms'. The Privacy Policy is acknowledged under the same version, not agreed separately.
+  documentId  String
+  version     String
+  // SHA-256 (hex) of the published text of this version.
+  textSha256  String
+  acceptedAt  DateTime @default(now())
+  // 'web'; 'native:<clientId>' when accepted in a native app's sign-in sheet; 'embed' when accepted in the
+  // embedded OpenKey frame (set by the server from the frame's session token, never from the request body).
+  surface     String
+  // The API build that recorded the acceptance.
+  appVersion  String
+  // 'embed' only: the session that agreed, the proof a person was present ('session_created': a sign-in within
+  // 10 minutes) with its time, the request's Origin, and the embedding page's origin as the frame claimed it.
+  sessionId          String?
+  proof              String?
+  proofAt            DateTime?
+  requestOrigin      String?
+  embedOriginClaimed String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, version])
+  @@map("terms_acceptance")
 }
 
 // Public, short-lived manual handoff of an already-signed CLI delegation.
@@ -135,10 +172,66 @@ model ApprovalRequest {
   deniedAt              DateTime?
   // Set when an approval is admitted, before signing starts; counts for a short lease. Deny is refused meanwhile.
   approvingAt           DateTime?
+  // The owner's renewal lease steps for this request (TC-2933): saved before each node call so a retry reuses them.
+  renewal               Json?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])
   @@map("approval_request")
+}
+
+// An owner renewal lease OpenKey signed and the node admitted for an approval request (TC-2933). Written in the
+// same transaction as the approval it belongs to, so the owner can see and stop it later (TC-2946 sets revokedAt).
+model RenewalLease {
+  leaseCid             String    @id
+  userId               String
+  // The OpenKey session that completed the approval. Not a foreign key: it outlives the session.
+  sessionId            String?
+  // Null for a lease no approval request produced; Settings lists and stops it all the same.
+  approvalRequestId    String?   @unique
+  ownerDid             String
+  // The approved grant the lease renews.
+  originalCid          String
+  nodeOrigin           String
+  nodeDid              String
+  // The lease's audience: the node's renewer.
+  renewerDid           String
+  leaseLifetimeSeconds Int
+  approvedAt           DateTime
+  leaseExpiresAt       DateTime
+  createdAt            DateTime  @default(now())
+  revokedAt            DateTime?
+  // The approved grant's SIWE message text, as signed (no signature): Settings shows its permissions.
+  grantSiwe            String
+  // Set once the approval that admitted the lease is saved; until then the admission outcome is unknown.
+  admittedAt           DateTime?
+  // Set when the node refused to admit the lease and holds no lease to revoke: it can never renew.
+  neverAdmittedAt      DateTime?
+  // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
+  leaseAuthorization   String?
+
+  nativeRenewal NativeRenewalLease?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("renewal_lease")
+}
+
+// The native lifecycle binding survives its short-lived request and OAuth token rows.
+model NativeRenewalLease {
+  leaseCid          String    @id
+  requestId         String
+  grantId           String?   @unique
+  deliveredAt       DateTime?
+  revokeUntil       DateTime
+  stopRequested     Boolean   @default(false)
+  originalRevokedAt DateTime?
+
+  lease RenewalLease @relation(fields: [leaseCid], references: [leaseCid], onDelete: Cascade)
+
+  @@index([requestId])
+  @@map("native_renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
@@ -179,9 +272,11 @@ model Session {
   // accepts the assertion only while that passkey counts for step-up.
   lastPasskeyId String?
   lastEmailOtpAt DateTime?
+  reviewerEpoch Int?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   orgRegistrationChallenges OrgKeyRegistrationChallenge[]
+  accountSetupRequests AccountSetupRequest[]
 
   @@map("session")
 }
@@ -341,6 +436,7 @@ model EthereumKey {
   orgKeySignatureAudits   OrgKeySignatureAudit[]
   orgKeySignChallenges    OrgKeySignChallenge[]
   orgRegistration        OrgKeyRegistration?
+  accountSetupRequests    AccountSetupRequest[]
 
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
   @@map("ethereum_keys")
@@ -495,6 +591,50 @@ model NostrSigningDecision {
   @@map("nostr_signing_decision")
 }
 
+// One account setup the owner asks for on OpenKey's own page (/widget/account-setup): OpenKey hosts the account's
+// spaces on TinyCloud hosting and publishes the location record it built here. Single use: bound to the user, the
+// session, the key and the exact record text, five minutes to approve, and replaced by a newer one for the same key.
+model AccountSetupRequest {
+  id            String    @id
+  userId        String
+  sessionId     String
+  keyId         String
+  // Always 1: the record's owner subject is on chain 1 whatever chain an app signs in on. A CHECK keeps it so.
+  chainId       Int
+  // The requesting app's origin as OpenKey's page read it from its message channel. Shown to the owner; never trusted.
+  requestOrigin String?
+  // Where the account's data lives: 'tinycloud' (TinyCloud hosting). A CHECK keeps it to that value.
+  placement     String
+  nodeUrl       String
+  nodeDid       String
+  // The exact canonical location record text OpenKey signs, built by the server at prepare. Its updated_at is createdAt.
+  payload       String
+  payloadDigest String
+  expiresAt     DateTime
+  // Set when an approval is admitted, before the passkey answer is spent; counts for a short lease.
+  approvingAt   DateTime?
+  consumedAt    DateTime?
+  // Set when a newer request for the same key replaces this one before it was approved.
+  supersededAt  DateTime?
+  // Set when one call takes the record publication; counts for a short lease.
+  publishingAt  DateTime?
+  // 'pending' from approval until the record is published, then 'published', 'present' (the registry has a record
+  // for this owner) or 'failed'.
+  outcome       String?
+  failureCode   String?
+  createdAt     DateTime
+
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  key     EthereumKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, keyId])
+  @@index([sessionId])
+  @@index([keyId])
+  @@index([expiresAt])
+  @@map("account_setup_request")
+}
+
 model TinyCloudBootstrapState {
   id               String    @id @default(cuid())
   userId           String
@@ -511,6 +651,8 @@ model TinyCloudBootstrapState {
   failureCode      String?
   failureReason    String?
   sweepAttempts    Int       @default(0)
+  // Who asked for this setup (apps/api provision-authority.ts). NULL on rows made before this column: not first-party.
+  authority        String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -726,6 +868,7 @@ model OauthRefreshToken {
 
 // User consent records
 model OauthConsent {
+  reviewerEpoch Int?
   id          String   @id
   userId      String
   clientId    String
@@ -754,6 +897,8 @@ model TinyCloudNativeRequest {
   sessionJwk              Json
   sessionJkt              String
   requestedPermissions    Json
+  renewalAsk              Json?
+  renewalLeaseCid         String?
   ttlSeconds              Int
   // PAR siwe_nonce, or the server nonce written by the first prepare. Fixed
   // once set (trigger), and reused by every revision and the approval.
@@ -773,14 +918,26 @@ model TinyCloudNativeRequest {
   expiresAt               DateTime
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
+  // TC-3569: SIGNIN (grantId and appId null) or STEPUP (both set); a check constraint enforces it.
+  kind                    String   @default("SIGNIN")
+  grantId                 String?
+  appId                   String?
+  // TC-3596: which gate let the approval through: NOT_REQUIRED, FLOW_PASSKEY (the passkey sign-in made for this
+  // request) or REQUEST_PASSKEY (a passkey assertion bound to this request's revision). Null until approved.
+  approvalPasskeyMethod   String?
 
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  grant TinyCloudNativeGrant? @relation(fields: [grantId], references: [id], onDelete: Cascade)
   preparations TinyCloudNativePreparation[]
 
   @@index([clientId, status])
   @@index([userId, clientId, status])
   @@index([expiresAt])
+  @@index([grantId])
   @@map("tinycloud_native_request")
+  reviewerEpoch Int?
+  reviewerSessionId String?
+  reviewerDeadline DateTime?
 }
 
 // Immutable consent-screen revision of a request: the exact bytes and digest
@@ -797,6 +954,7 @@ model TinyCloudNativePreparation {
   sessionSiwe  String
   hostPlan     Json?
   permissions  Json
+  renewalChoice Json?
   digest       String
   createdAt    DateTime @default(now())
 
@@ -810,6 +968,7 @@ model TinyCloudNativePreparation {
 // (the provider's stored token format). Revoked by the consent-withdrawal
 // triggers in the migration.
 model TinyCloudNativeGrant {
+  reviewerEpoch Int?
   id                       String   @id
   userId                   String
   clientId                 String
@@ -824,6 +983,7 @@ model TinyCloudNativeGrant {
   approvedPermissions      Json
   ttlSeconds               Int
   tinycloudHost            String
+  renewalLeaseCid          String?
   refreshTokenHash         String?  @unique
   previousRefreshTokenHash String?
   rotatedAt                DateTime?
@@ -837,10 +997,62 @@ model TinyCloudNativeGrant {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  stepUps TinyCloudNativeStepUp[]
+  stepUpRequests TinyCloudNativeRequest[]
 
   @@index([userId, clientId, status])
   @@index([previousRefreshTokenHash])
   @@map("tinycloud_native_grant")
+}
+
+// TC-3569: a step-up on a native grant, one row per (grant, app). It is signed
+// only to the grant's recorded session did:key and re-issued at renewal only
+// while ACTIVE. A database trigger revokes every step-up when its grant is
+// revoked, by any path. Nothing writes this table until the step-up endpoint
+// ships.
+model TinyCloudNativeStepUp {
+  id                  String    @id
+  grantId             String
+  appId               String
+  approvedPermissions Json
+  status              String    @default("ACTIVE")
+  approvedAt          DateTime  @default(now())
+  revokedAt           DateTime?
+  revokedReason       String?
+  lastRenewedAt       DateTime?
+  createdAt           DateTime  @default(now())
+
+  grant       TinyCloudNativeGrant              @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  delegations TinyCloudNativeStepUpDelegation[]
+
+  @@unique([grantId, appId])
+  @@map("tinycloud_native_stepup")
+}
+
+// TC-3569: one delegation a step-up signed and put in front of an app (at the
+// exchange or at a renewal), kept until it expires so that a revoke can reach
+// it on the node. Only identifiers and where to send the revocation: no
+// signature and no delegation header. A database trigger sets
+// revokeRequestedAt when the step-up is revoked, by any path; the revoke sweep
+// clears the row once the node confirms or the delegation has expired.
+model TinyCloudNativeStepUpDelegation {
+  id                String    @id
+  grantId           String
+  appId             String
+  delegationCid     String    @unique
+  tinycloudHost     String
+  address           String
+  siweDomain        String
+  expiresAt         DateTime
+  revokeRequestedAt DateTime?
+  lastAttemptAt     DateTime?
+  createdAt         DateTime  @default(now())
+
+  stepUp TinyCloudNativeStepUp @relation(fields: [grantId, appId], references: [grantId, appId], onDelete: Cascade)
+
+  @@index([grantId, appId])
+  @@index([revokeRequestedAt])
+  @@map("tinycloud_native_stepup_delegation")
 }
 
 // Deliberately independent of oauth_consent: deleting and recreating consent
@@ -1071,4 +1283,53 @@ model OrgKeyRegistration {
   grant KeyGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
 
   @@map("org_key_registrations")
+}
+
+// Operator-owned bindings survive fixture account deletion.
+model ReviewerAccount {
+  store String @id
+  email String @unique
+  userId String? @unique
+  installEpoch Int @default(0)
+  clientId String?
+  redirectUri String?
+  resource String?
+  callbackUri String?
+  nodeHost String?
+  sessionDid String?
+  keyId String?
+  spaceId String?
+  seededAt DateTime?
+  readyAt DateTime?
+  grantSessionId String?
+  // SHA-256 (hex) of the installed review code; cleared by every hold. Never the code itself.
+  codeDigest String?
+  seedRun Json?
+  seedStartedAt DateTime?
+  writerExpiresAt DateTime?
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  @@map("reviewer_account")
+}
+
+// Retired reviewer authority is never available to authentication or generic signers.
+// No FK to the deleted owner: cleanup must survive account deletion.
+model ReviewerCleanup {
+  id String @id
+  store String
+  ownerUserId String
+  address String
+  spaceId String @unique
+  nodeHost String
+  sealedBlob String?
+  sealingContext String?
+  retiredAt DateTime
+  tombstoneUntil DateTime
+  boundExceeded Boolean @default(false)
+  initialWipedAt DateTime?
+  completedAt DateTime?
+  retryAt DateTime @default(now())
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  @@index([retryAt, completedAt], map: "reviewer_cleanup_due")
+  @@map("reviewer_cleanup")
 }

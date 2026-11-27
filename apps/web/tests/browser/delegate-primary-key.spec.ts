@@ -6,6 +6,8 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const CAPS_READ = 'tinycloud.capabilities/read';
 const KV_GET = 'tinycloud.kv/get';
@@ -23,6 +25,7 @@ function preparedFor(address: string) {
   const space = `tinycloud:pkh:eip155:1:${address}:default`;
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:',
@@ -59,6 +62,7 @@ async function mock(page: Page, keys: unknown[], delegation: Record<string, unkn
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return prepared;
 }
 
@@ -113,7 +117,7 @@ test.describe('TC-703 primary key picker', () => {
     await expect(page.getByText('Select a key to authorize:')).toBeVisible();
     await expect(keyButton(page, 'Key 1')).toContainText('Requested');
     await expect(keyButton(page, 'Key 0')).toContainText('Primary');
-    // The named-owner path keeps its own override; no primary-key gate.
+    // The named-owner path has no primary-key gate and no override.
     await expect(keyButton(page, 'Key 0')).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
@@ -132,11 +136,12 @@ test.describe('TC-703 primary key picker', () => {
   });
 
   test('the paste code carries the primary flag from the API unchanged', async ({ page }) => {
+    await recordClipboard(page);
     await mock(page, threeKeys, { primary: true });
     await page.goto(noOwner);
     await keyButton(page, 'Key 0').click();
     await approve(page).click();
-    const code = await page.locator('textarea').inputValue();
+    const code = await fullCodeFromBox(page);
     const payload = JSON.parse(Buffer.from(code, 'base64').toString('utf8')) as Record<string, unknown>;
     expect(payload.primary).toBe(true);
   });
@@ -153,7 +158,7 @@ test.describe('TC-703 primary key picker', () => {
     await page.goto(`${noOwner}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
     await keyButton(page, 'Key 0').click();
     await approve(page).click();
-    await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
     expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
     expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
@@ -169,13 +174,71 @@ test.describe('TC-703 primary key picker', () => {
     await expect(keyButton(page, 'Key 0')).toHaveCount(0);
   });
 
+  test('a signing key for a different wallet than the request names cannot approve, with no override', async ({ page }) => {
+    await mock(page, []);
+    const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
+    const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
+    await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
+    await expect(page.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Generate Key' })).toHaveCount(0);
+    await expect(approve(page)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /different wallet anyway/ })).toHaveCount(0);
+  });
+
   test('an archived requested owner is not replaced by the active primary', async ({ page }) => {
     const prepared = await mock(page, [{ ...primary, archivedAt: '2026-11-01T00:00:00Z' }, { ...second, isPrimary: true }]);
     const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
     const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
     await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
-    await expect(keyButton(page, 'Key 1')).toBeDisabled();
+    const stop = page.getByTestId('stop-page');
+    await expect(stop.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+    await expect(stop.getByTestId('wallet-comparison')).toContainText('0x2222…2222');
+    await expect(keyButton(page, 'Key 1')).toHaveCount(0);
     await expect(approve(page)).toHaveCount(0);
     expect(prepared).toEqual([]);
+  });
+});
+
+test.describe('Close button on the Authenticated page', () => {
+  const callback = 'http://127.0.0.1:47123/callback';
+  async function openAuthenticated(page: Page) {
+    await mock(page, [primary]);
+    await page.route('**/api/delegate/prepare', route => json(route, 200, preparedFor(primary.address)));
+    let delivered = false;
+    await page.route(`${callback}**`, (route) => {
+      if (route.request().method() === 'POST') delivered = true;
+      return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' }, body: '{"success":true}' });
+    });
+    await page.goto(`${noOwner}&${new URLSearchParams({ callback })}`);
+    await approve(page).click();
+    await expect.poll(() => delivered).toBe(true);
+    await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
+  }
+
+  test('the browser closes the window: Close calls window.close and the page stays as it is', async ({ page }) => {
+    await page.addInitScript(() => {
+      let closed = false;
+      Reflect.set(window, '__closeCalls', 0);
+      window.close = () => { Reflect.set(window, '__closeCalls', Number(Reflect.get(window, '__closeCalls')) + 1); closed = true; };
+      Object.defineProperty(window, 'closed', { get: () => closed });
+    });
+    await openAuthenticated(page);
+    await page.getByRole('button', { name: 'Close this tab', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Number(Reflect.get(window, '__closeCalls')))).toBe(1);
+    // The window is gone, so nothing else is shown or needed; outlast the 300 ms check.
+    await page.waitForTimeout(600);
+    await expect(page.getByText('Your browser kept this tab open.')).toHaveCount(0);
+  });
+
+  test('the browser refuses (a tab the owner opened): the button is replaced by a status line and focus moves to it', async ({ page }) => {
+    await openAuthenticated(page);
+    // A top-level tab the owner opened: the browser ignores window.close().
+    await page.getByRole('button', { name: 'Close this tab', exact: true }).click();
+    const refusal = page.getByRole('status').filter({ hasText: 'Your browser kept this tab open. Close it from your browser.' });
+    await expect(refusal).toBeVisible();
+    await expect(refusal).toBeFocused();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Close this tab', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
   });
 });

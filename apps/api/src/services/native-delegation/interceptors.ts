@@ -1,3 +1,4 @@
+import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser } from '../reviewer-accounts';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
 import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MCP_SCOPE } from '../../oauth-config';
@@ -41,7 +42,7 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw' | '$executeRaw' | 'reviewerAccount' | 'user' | 'termsAcceptance'>;
 
 type Refusal = { status: 400 | 401 | 429 | 503; error: string; description: string; retryAfter?: number };
 /**
@@ -183,6 +184,32 @@ export interface ProviderInterceptorOptions {
     find: (identifier: string) => Promise<{ value: string; createdAt?: Date | string } | null>;
     delete: (identifier: string) => Promise<void>;
   };
+}
+
+async function consentGeneration(database: Pick<PrismaClient, '$queryRaw'>, userId: string, clientId: string): Promise<bigint> {
+  const rows = await database.$queryRaw<{ generation: bigint }[]>`
+    SELECT generation FROM tinycloud_native_consent_generation WHERE "userId" = ${userId} AND "clientId" = ${clientId}`;
+  return rows[0]?.generation ?? 0n;
+}
+
+/**
+ * Puts a consent row back the way it was before the provider's consent step rewrote its scopes (TC-3569). One
+ * UPDATE, applied only if the row still holds exactly what the provider wrote for a step-up
+ * (`['tinycloud:delegation']`) and the consent generation is still the one read with `before`. A withdrawal or an
+ * update-consent after the provider's write either deletes the row, replaces its scopes, or moves the
+ * generation, so none of them is undone, and nothing withdrawn is recreated. A snapshot that did not hold the
+ * delegation scope is never restored.
+ */
+export async function restoreStepUpConsent(
+  database: Pick<PrismaClient, '$executeRaw'>,
+  before: { id: string; userId: string; clientId: string; scopes: string[]; updatedAt: Date; generation: bigint },
+): Promise<void> {
+  if (!before.scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) return;
+  await database.$executeRaw`
+    UPDATE oauth_consent SET scopes = ${before.scopes}::text[], "updatedAt" = ${before.updatedAt}
+    WHERE id = ${before.id} AND scopes = ARRAY[${TINYCLOUD_DELEGATION_SCOPE}]::text[]
+      AND COALESCE((SELECT generation FROM tinycloud_native_consent_generation
+        WHERE "userId" = ${before.userId} AND "clientId" = ${before.clientId}), 0) = ${before.generation}`;
 }
 
 type RefreshTokenMatch = { clientId: string; native: boolean };
@@ -394,6 +421,42 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
       const stale = await refuseStaleMcpCode(params.get('code'));
       if (stale) return stale;
     }
+    try {
+      let reviewerSubject: { userId: string; sessionId: string | null; reviewerEpoch?: number; clientId?: string; scopes?: string[] } | null = null;
+      if (grantType === 'authorization_code' && params.get('code')) {
+        const identifier = await storedToken(tokens, params.get('code')!, 'authorization_code');
+        const verification = await authorizationCodes.find(identifier);
+        if (verification) {
+          try {
+            const value = JSON.parse(verification.value);
+            if (typeof value.userId === 'string') reviewerSubject = { ...value, clientId: value.query?.client_id };
+          } catch { /* Invalid provider codes are rejected by the provider. */ }
+        }
+      } else if (grantType === 'refresh_token' && params.get('refresh_token')) {
+        const stored = await storedRefreshToken(tokens, params.get('refresh_token')!);
+        if (stored) reviewerSubject = await database.oauthRefreshToken.findUnique({ where: { token: stored } });
+      }
+      if (reviewerSubject) {
+        const binding = await reviewerForUser(database as PrismaClient, reviewerSubject.userId);
+        if (binding) {
+          const clients = requestClients(c.req.raw, params);
+          const session = reviewerSubject.sessionId
+            ? await database.session.findUnique({ where: { id: reviewerSubject.sessionId } }) : null;
+          if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
+            || !session || session.expiresAt.getTime() <= Date.now()
+            || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
+            || reviewerSubject.clientId !== binding.clientId || 'status' in clients || clients.effective !== binding.clientId
+            || (binding.store === 'apple' ? params.has('resource') || grantType !== 'authorization_code' : params.get('resource') !== binding.resource)
+            || (grantType === 'authorization_code' && reviewerSubject.reviewerEpoch !== binding.installEpoch)
+            || (grantType === 'refresh_token' && !reviewerSubject.scopes?.includes(TINYCLOUD_MCP_SCOPE))) {
+            return { status: 400, error: 'invalid_grant', description: 'the review connection has ended' };
+          }
+          captureReviewer(binding, session!.id, session!.createdAt.getTime() + 3600_000);
+        }
+      }
+    } catch {
+      return { status: 503, error: 'temporarily_unavailable', description: 'the review connection could not be checked', retryAfter: 5 };
+    }
     if (grantType !== 'refresh_token' && !params.has('resource')) return null;
     const clients = requestClients(c.req.raw, params);
     if ('status' in clients) return clients;
@@ -547,10 +610,38 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     c.res = new Response(null, { status: 200, headers });
   }
 
+  /**
+   * TC-3569: the provider's consent step overwrites the user's `oauth_consent` scopes with the scopes of the
+   * request being accepted. A step-up request carries only `tinycloud:delegation`, so accepting it narrows the
+   * Home sign-in's consent (`openid offline_access tinycloud:delegation`). A step-up never changes consent, so
+   * once the provider has answered, the scopes are put back (`restoreStepUpConsent`): one conditional UPDATE
+   * that applies only to the provider's own write and only if the consent generation has not moved since.
+   * Home's renewal reads only the delegation scope and the provider's refresh never reads consent, so the
+   * narrower scopes in the instant before the restore, or after a crash, cost nothing; they heal at the next
+   * sign-in's consent.
+   */
+  async function keepConsentForStepUp(c: Context, next: () => Promise<void>): Promise<void> {
+    const body = await parseProviderJson(c.req.raw);
+    const query = typeof body?.oauth_query === 'string' ? new URLSearchParams(body.oauth_query) : null;
+    const requestId = query?.get('tinycloud_request');
+    const row = requestId ? await database.tinyCloudNativeRequest.findUnique({ where: { id: requestId }, select: { kind: true, clientId: true } }) : null;
+    const userId = row?.kind === 'STEPUP' ? await getSessionUserId(c.req.raw.headers) : null;
+    if (!row || !userId) return next();
+    // The generation is read before the row: a withdrawal in between leaves the snapshot behind, so nothing is restored.
+    const generation = await consentGeneration(database, userId, row.clientId);
+    const consent = await database.oauthConsent.findFirst({ where: { userId, clientId: row.clientId }, select: { id: true, scopes: true, updatedAt: true } });
+    try {
+      await next();
+    } finally {
+      if (consent) await restoreStepUpConsent(database, { ...consent, userId, clientId: row.clientId, generation });
+    }
+  }
+
   // Other auth routes go straight to better-auth without an async hop.
   return (c, next) => {
     const path = providerPath(c.req.url);
     const post = c.req.method === 'POST';
+    if (post && path === '/oauth2/consent') return keepConsentForStepUp(c, next);
     const guard: ((c: Context) => Promise<Decision>) | null = path === '/oauth2/authorize' ? guardAuthorize
       : post && path === '/sign-in/social' ? guardSocialSignIn
       : post && path === '/oauth2/token' ? guardToken

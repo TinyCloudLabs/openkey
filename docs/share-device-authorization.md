@@ -71,6 +71,12 @@ do not support device transactions: any request to them that carries
 
 The default and maximum lifetime is 30 days, counted from approval.
 
+When `/delegate` mints a short code, both the page and broker use
+`@openkey/delegation-code-fields` as the single public-field allowlist.
+Completion response fields not sent to the broker are classified separately
+in `NEVER_SENT_TO_BROKER_FIELDS`; classify every new response field in one of
+those lists with a reason so the API contract test can detect omissions.
+
 ## Durable approval-result codes
 
 Durable approval completion responses include optional `approvalCode` delivery
@@ -121,8 +127,8 @@ the page limits what it does with one:
   HTTPS origin plus exact path, with any query
   (`REGISTERED_CALLBACK_ENDPOINTS` in
   `apps/web/src/lib/delegate-link-policy.ts`, currently
-  `https://mcp.tinycloud.xyz/connect/callback` and
-  `https://mcp.tinycloud.xyz/chatgpt/connect/callback`, plus
+  `https://mcp.tinycloud.xyz/connect/callback` and the same path under
+  `/chatgpt`, `/claude`, `/grok` and `/muse`, plus
   `VITE_DELEGATE_CALLBACK_URLS` for other deployments). Any other callback
   refuses the request before a key is prepared. The page POSTs with
   `redirect: 'error'`, so a redirect cannot forward the delegation. Without a
@@ -319,7 +325,7 @@ signature, the page stops approving and shows:
 > Ask your agent for a new link.
 
 When consent already identified the requester, its name is kept in the heading
-(for example, “TinyCloud CLI's request expired”). The terminal screen reuses the
+(for example, “This request from TinyCloud CLI expired.”). The terminal screen reuses the
 confirmation card and key icon, sits near the top on narrow screens, and does
 not add viewport-height scrolling when its content fits.
 

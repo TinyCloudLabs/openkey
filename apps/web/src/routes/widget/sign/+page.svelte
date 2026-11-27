@@ -1,8 +1,13 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { legacySignOrigin, legacySignReadyOrigin } from '$lib/legacy-sign-origin';
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
+  } from '$lib/approval-passkey';
   import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
   import { parseSIWE } from '$lib/siwe-parser';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -10,29 +15,47 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
+  import {
+    carryPopupSignFlow, forgetPopupSignFlow, popupSignFlowId, releaseWebSignFlow, webSignFlowHeaders,
+  } from '$lib/web-sign-flow';
+  import {
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
+  import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
-  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { serverActionId } from '$lib/delegate-review-selection';
+  import { expiryAt, renewalWindowExpiryAt } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
+  import { isOnceTier, renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
+    RENEWAL_ONLY_COPY,
     parseSiweChainId,
     defaultSelection,
     annotateAppScopedGrants,
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    REGISTRY_RECORD_SIGN_REFUSED,
+    registryRecordSignRefusal,
     isSiweShaped,
+    siweExpirationTime,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
+  import AccountSetupCard from '$lib/components/signing/account-setup-card.svelte';
+  import { ACCOUNT_SETUP_COMPLETED, hostSigningRefusal } from '$lib/account-setup';
+  import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
     type WidgetTransport,
   } from '$lib/widget-transport';
+  import type { WidgetRenewalAsk } from '$lib/widget-transport';
 
   const session = authClient.useSession();
 
@@ -59,6 +82,10 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   let keyProblem = $state<'missing' | 'transient' | null>(null);
   let keyReadGeneration = 0;
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
+  const claimedView = $derived.by(() => {
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
+    return claimed ? claimedPresentationView(claimed) : null;
+  });
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -70,6 +97,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // path (compat) does not carry a requestId — it uses direct postMessage.
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  let legacyOrigin = $state<string | null>(null);
   // Sol MAJOR-9 (per-request immutable state): once a request lands we
   // never mutate its bound state. A follow-up transport request creates
   // a NEW logical request. If a versioned request is already in-flight
@@ -77,8 +105,12 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // requests are refused server-side by our own state machine so the
   // response cannot escape to the wrong parent.
   let requestSealed = $state(false);
-  // Background previews seal the current selection and exact bytes before Approve is enabled.
-  let heldPreview = $state<SigningPreview | null>(null);
+  // Background previews seal the current selection and exact bytes before Approve is enabled. TC-3442: each carries
+  // the API's passkey offer for those bytes (null when the reply had none: Approve then goes without an assertion).
+  type HeldPreview = SigningPreview & { passkey: ApprovalPasskeyNeed | null };
+  let heldPreview = $state<HeldPreview | null>(null);
+  // TC-3442: a passkey refusal's text stays on screen while the next preview fetches a new offer.
+  let keepPasskeyRefusal = false;
   const previewSignedMessage = $derived(heldPreview?.signedMessage ?? null);
   let previewToken = $state<string | null>(null);
   let contextDeadline = 0;
@@ -87,6 +119,10 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
+  // TC-2927: the extra permissions (decrypt, key creation, or blocking and unblocking keys on the encryption network
+  // or on keys outside the app's own area) the owner allowed on the warning screen. The preview records them and
+  // signing refuses an undecided one.
+  let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
   // approval time. Instead it emits an `openkey:externalSign:approve`
@@ -95,6 +131,50 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // externalSignature.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
+  // TC-2933: the app's renewal ask (only ever with expiryChangeable), sent at prepare. The box shows only where the
+  // prepare answer offers it (`renewalMaxLeaseMs`); `renewalLeaseMs` is the owner's lease, null while unticked.
+  let renewalAsk: WidgetRenewalAsk | null = null;
+  let renewalOnlyResources: string[] | undefined;
+  let renewalTurnedOff = $state(false);
+  let renewalMaxLeaseMs = $state<number | null>(null);
+  let renewalLeaseMs = $state<number | null>(null);
+  // The app asked for renewal and the prepare answer has not arrived: the face holds its access line until it does.
+  let renewalAnswerPending = $state(false);
+  // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
+  let renewalConfirmed = $state(false);
+  let renewalDefaulted = false;
+  // The owner's choice as the preview seals it; null when the box is not offered.
+  function renewalChoiceBody() {
+    if (renewalMaxLeaseMs === null) return null;
+    if (renewalLeaseMs === null) return { choice: 'finite' };
+    return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
+  }
+  // Adopt the prepare answer's offer. The first offer sets the default tick (spec D11/D12, never the Once tier).
+  function adoptRenewalOffer(offer: unknown) {
+    renewalAnswerPending = false;
+    const seconds = renewalAsk && offer && typeof offer === 'object' && 'leaseLifetimeSeconds' in offer
+      ? offer.leaseLifetimeSeconds
+      : undefined;
+    if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0) {
+      renewalMaxLeaseMs = null;
+      renewalLeaseMs = null;
+      return;
+    }
+    const maxLeaseMs = Math.min(seconds * 1000, MAX_LEASE_MS);
+    renewalMaxLeaseMs = maxLeaseMs;
+    if (renewalLeaseMs !== null) renewalLeaseMs = Math.min(renewalLeaseMs, maxLeaseMs);
+    if (renewalDefaulted) return;
+    renewalDefaulted = true;
+    if (reviewModel && renewalStartsTicked(renewalAsk?.purpose, reviewModel.permissions)) renewalLeaseMs = defaultLeaseMs(maxLeaseMs);
+  }
+  // A changed lease (and, from the sensitive-access step, the window) is a new preview carrying both.
+  function changeRenewal(leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) {
+    renewalTurnedOff = leaseMs === null;
+    renewalLeaseMs = leaseMs;
+    renewalConfirmed = leaseMs !== null && (sensitiveConfirmed === true || renewalConfirmed);
+    if (windowMs !== undefined) expiryChoiceMs = windowMs;
+    invalidatePreviewForSelectionEdit();
+  }
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -104,12 +184,19 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // metadata and exact-byte preview updates rebuild the display model but
   // must not silently reset a user's narrowed selection.
   let reviewSourceMessage = $state<string | null>(null);
+  // A request in the one-hour tier (a grant that reaches all secrets or all encrypted data) offers the lifetime
+  // control whatever the app sent: the server treats it as expiry-changeable and defaults the signature to one
+  // hour when the owner picks nothing.
+  const onceTierRequest = $derived(reviewModel !== null && isOnceTier(reviewModel.permissions));
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
   // Presentation envelope forwarded by the SDK. Display-only. The widget
   // NEVER treats it as verified — trust is decided by the server prepare
   // response.
   let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // The `presentation` of a plain signMessage() request: what the app says about itself. Display-only; read only by
+  // `claimedView`, which decides what may be shown. It is not sent to the API, the signer or the opener.
+  let plainPresentation = $state<unknown>(null);
   // Server-decided trust for the presentation envelope. Populated after
   // /authorize-sign-prepare returns. Starts null so we fail closed to the
   // `unsigned` model until the server responds.
@@ -138,6 +225,30 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
+  // returns from the login page by a client-side navigation and can create this page more than once in the same
+  // document, so the id the user left with, carried in this tab, is read once and kept for the document.
+  const webFlowId = popupSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap reached a covered offer before it counted.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  // Set while the offer is fetched again without the flow id, so a second tap cannot start a second approval.
+  let coverRefetch = $state<'preview' | 'exact' | null>(null);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
+  let coverShown: ReviewSnapshot | null = null;
+  function withdrawCover(approved: HeldPreview | null) {
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
+    coverWithdrawn = true;
+    error = '';
+    coverRefetch = approved ? 'preview' : 'exact';
+    if (approved) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -160,6 +271,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           transport = createWidgetTransport({
             origin,
             container,
+            showsPresentation: true,
             onRequest: handleTransportRequest,
             onClose: handleTransportClose,
             onInvalid: (reason, event) => {
@@ -181,10 +293,10 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // the unversioned envelope. Only emit under the wildcard-origin
       // compatibility path — versioned callers get the transport's ready.
       if (origin === '*') {
-        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-        if (window.opener) {
+        const targetOrigin = legacySignReadyOrigin();
+        if (targetOrigin && window.opener) {
           window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-        } else if (window.parent !== window) {
+        } else if (targetOrigin && window.parent !== window) {
           window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
         }
       }
@@ -195,6 +307,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   $effect(() => {
     return () => {
       previewStopped = true;
+      window.removeEventListener('message', handleMessage);
       transport?.destroy();
       transport = null;
     };
@@ -243,6 +356,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
     // approval shows no expiry control and the app's own expiry is signed.
     expiryChangeable = data.expiryChangeable === true;
+    renewalAsk = data.renewal && typeof data.renewal === 'object' ? (data.renewal as WidgetRenewalAsk) : null;
+    renewalOnlyResources = Array.isArray(data.renewalOnlyResources) ? data.renewalOnlyResources : undefined;
+    renewalTurnedOff = false;
+    renewalMaxLeaseMs = null;
+    renewalLeaseMs = null;
+    renewalConfirmed = false;
+    renewalDefaulted = false;
+    renewalAnswerPending = renewalAsk !== null;
     // Capture the caller-supplied presentation envelope. It has already
     // been validated + size-bounded by the widget transport; here we only
     // stash the resulting object so the review model can render it. Trust
@@ -251,6 +372,8 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       data.presentation && typeof data.presentation === 'object'
         ? (data.presentation as Record<string, unknown>)
         : null;
+    // A TinyCloud authorization request carries its own envelope (above); the app's own words belong to a plain signMessage().
+    plainPresentation = null;
     // Server-decided trust is not known yet — starts null, populated after
     // the first /authorize-sign-prepare call. Editing/reset invalidates
     // the preview but keeps the trust decision (which is bound into the
@@ -441,11 +564,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
     console.log('[sign widget] received message:', event.data?.type, event.data);
     if (event.data?.type === 'openkey:sign:request') {
+      const requestOrigin = legacySignOrigin(event.origin);
+      if (!requestOrigin || (legacyOrigin && legacyOrigin !== requestOrigin)) return;
       // Sol MAJOR-9: refuse overlapping legacy request too.
       if (requestSealed) {
         console.warn('[sign widget] refusing overlapping legacy request');
         return;
       }
+      legacyOrigin = requestOrigin;
       console.log('[sign widget] sign request received, message:', event.data.message?.substring(0, 100), 'keyId:', event.data.keyId);
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
@@ -453,14 +579,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
-      // Legacy path: envelope forwarding. The legacy path has weaker
-      // origin/version guarantees, so we only accept `presentation` as
-      // display-only and never upgrade trust off of it — the server
-      // prepare call remains the sole trust authority.
+      // A plain signMessage() (no protocol version) carries the app's own words in `presentation`; they are shown only
+      // after `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = incomingProtocolVersion === null;
       requestPresentation =
-        event.data.presentation && typeof event.data.presentation === 'object'
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
           : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false; // Reset so effect can run
@@ -597,6 +723,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
         },
         editable: canEdit,
+        renewalOnlyResources,
         metadataTrust: effectiveTrust,
         reason: envelopeReasonText
           ? { text: envelopeReasonText, source: 'caller' }
@@ -642,7 +769,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // visible through the approval that actually signs them.
       // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpirationTime(previewSignedMessage) ?? nextReviewModel.expiry }
         : expiryChoiceMs !== null
           ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
           : nextReviewModel;
@@ -678,16 +805,15 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     return reviewModel.protocol !== 'malformed-recap';
   }
 
-  // Convert the current review selection to canonical action IDs.
-  function currentSelectedActionIds(): string[] {
-    return requestedActionIds(reviewModel, reviewSelection);
-  }
+  const renewalOnlyNeedsPreview = $derived(
+    reviewModel?.permissions.some((grant) => grant.renewalOnly) === true && !canUseAuthorizeSignFn(),
+  );
 
   // A stable value avoids refetching when display-only metadata rebuilds the review model.
   const previewInput = $derived.by(() =>
     key && canUseAuthorizeSignFn() && !siweRefusal
       ? JSON.stringify([currentRequestId, key.id, message,
-          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+          requestedActionIds(reviewModel, reviewSelection).sort(), expiryChoiceMs, elevatedAllowed])
       : null,
   );
 
@@ -706,7 +832,46 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     return () => clearTimeout(timer);
   });
 
-  function currentPreview(): SigningPreview | null {
+  // TC-3442: the exact-byte path asks whether Approve needs the passkey for exactly this key, message and site. An
+  // external key never gets an offer; a passkey refusal spends the challenge, so the revision fetches a new one.
+  // Approve sends nothing until the offer for the current input has landed: it waits while the fetch is in flight and
+  // fetches again after a failure.
+  const exactBytePasskeyInput = $derived.by(() =>
+    key && key.keyType === 'MANAGED' && !externalSignMode && message && reviewModel && !siweRefusal && !canUseAuthorizeSignFn()
+      ? JSON.stringify([key.id, message, origin === '*' ? null : origin])
+      : null,
+  );
+  let exactBytePasskey = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let exactBytePasskeyRevision = $state(0);
+  let exactBytePasskeyFetch = $state<PasskeyOfferFetch>('idle');
+  const exactByteGate = $derived(approvalPasskeyGate({
+    input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
+  }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
+  $effect(() => {
+    const input = exactBytePasskeyInput;
+    void exactBytePasskeyRevision;
+    if (input === null) {
+      exactBytePasskeyFetch = 'idle';
+      return;
+    }
+    const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
+    let current = true;
+    exactBytePasskeyFetch = 'pending';
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
+      (need) => {
+        if (!current) return;
+        exactBytePasskey = { input, need };
+        exactBytePasskeyFetch = 'idle';
+      },
+      () => { if (current) exactBytePasskeyFetch = 'failed'; },
+    );
+    return () => { current = false; };
+  });
+  const offerFailure = $derived(exactBytePasskeyFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
+
+  function currentPreview(): HeldPreview | null {
     const preview = heldPreview;
     return !previewStopped && !signing && !previewing && preview &&
       preview.input === previewInput && preview.revision === previewRevision &&
@@ -721,10 +886,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     if (!canUseAuthorizeSignFn()) return;
     if (signing || previewStopped) return;
     const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
-    const selectedIds = currentSelectedActionIds();
-    const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
     previewing = true;
-    error = '';
+    if (keepPasskeyRefusal) keepPasskeyRefusal = false;
+    else error = '';
     try {
       // Issue a bound context if we don't have one yet. We keep the same
       // token across selection edits until the user approves — token TTL
@@ -756,6 +920,8 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
               requestOrigin: origin === '*' ? undefined : origin,
               // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
               ...(expiryChangeable ? { expiryChangeable: true } : {}),
+              // TC-2933: the app's renewal ask; the answer says whether the box is offered.
+              ...(renewalAsk ? { renewal: { version: 1, leaseLifetimeSeconds: renewalAsk.leaseLifetimeSeconds } } : {}),
             }),
           },
         );
@@ -773,6 +939,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           throw new Error('authorize-sign-prepare did not return a context token');
         }
         previewToken = token;
+        adoptRenewalOffer(prepareResult.renewal);
         // Adopt the server-decided trust decision + verified manifest
         // fields. The review model rebuild is reactive on these state
         // fields so the UI relabels itself once trust arrives.
@@ -859,18 +1026,27 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
         }
       }
       if (!isCurrent()) return;
+      // Resolve the renewal offer before narrowing the selection for this preview.
+      const selectedIds = requestedActionIds(reviewModel, reviewSelection, renewalLeaseMs !== null);
+      // TC-3821: a confirmed sensitive renewal counts the window from the message's own start, as the node renews it.
+      const requestedExpiry = expiryChoiceMs === null
+        ? null
+        : renewalConfirmed && renewalLeaseMs !== null ? renewalWindowExpiryAt(expiryChoiceMs, message) : expiryAt(expiryChoiceMs);
       const previewStarted = performance.now();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            ...(elevatedAllowed.length === 0 ? {} : { elevatedDecision: { allowed: elevatedAllowed } }),
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
             ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
+            // TC-2933: where the box is offered, its state is always sealed with the preview.
+            ...(renewalMaxLeaseMs === null ? {} : { renewal: renewalChoiceBody() }),
           }),
         },
       );
@@ -896,10 +1072,16 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
         input, revision, authorizationContextToken: token,
         previewApprovalToken: previewResult.previewApprovalToken,
         signedMessage: previewResult.signedMessage, selectedActionIds: selectedIds, deadline,
+        // TC-3442: the API's passkey offer for these bytes; a reply without one leaves it unknown (null).
+        passkey: typeof (previewResult.passkey as { required?: unknown } | null | undefined)?.required === 'boolean'
+          ? previewResult.passkey as ApprovalPasskeyNeed
+          : null,
       };
     } catch (e: any) {
       if (!isCurrent()) return;
-      if (e instanceof ServerRefusalError) refuse(e);
+      renewalAnswerPending = false;
+      if (accountSetupRefusal(e)) { /* the card or the refusal is on screen */ }
+      else if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
@@ -915,9 +1097,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
   // The click captures one current preview; later state changes cannot replace its bytes or token.
   async function approveAndSign() {
-    if (refused) return;
+    if (refused || renewalOnlyNeedsPreview) return;
     if (!key || !message) return;
-    if (signing || previewStopped) return;
+    if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -933,8 +1115,35 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       if (!previewing) invalidatePreviewForSelectionEdit();
       return;
     }
+    // Without the offer for these bytes nothing is sent: Approve waits for the fetch in flight, or fetches again.
+    let passkeyNeed: ApprovalPasskeyNeed | null = null;
+    if (!externalSignMode) {
+      if (approved) passkeyNeed = approved.passkey;
+      else if (exactByteGate.action === 'send') passkeyNeed = exactByteGate.need;
+      else {
+        if (exactByteGate.action === 'retry') exactBytePasskeyRevision++;
+        return;
+      }
+    }
+    // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
+    // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved);
+      return;
+    }
     signing = true;
     error = '';
+    // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
+    // offer (and preview) stays for the next tap.
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
+    try {
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e: unknown) {
+      error = (e as Error).message;
+      signing = false;
+      return;
+    }
+    let passkeyRefused = false;
     try {
       if (approved) {
         const { authorizationContextToken, previewApprovalToken, signedMessage } = approved;
@@ -960,7 +1169,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
@@ -969,6 +1178,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
               previewApprovalToken,
               selectedActionIds,
               protocolVersion: 1,
+              passkeyAssertion,
             }),
           },
         );
@@ -993,6 +1203,8 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           signedMessage: authorizeResult.signedMessage,
           selectedActionKeys: authorizeResult.selectedActionKeys,
           permissions: authorizeResult.permissions,
+          ...(authorizeResult.renewalChoice === undefined ? {} : { renewalChoice: authorizeResult.renewalChoice }),
+          ...(authorizeResult.renewal === undefined ? {} : { renewal: authorizeResult.renewal }),
         });
         sendClose();
         return;
@@ -1001,7 +1213,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // Legacy exact-byte path: signs the caller's exact `message`. The
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
-      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
+      const result = await api.signMessage(
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
+      );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -1023,15 +1237,26 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       });
       sendClose();
     } catch (e: any) {
-      if (e instanceof ServerRefusalError) refuse(e);
+      if (accountSetupRefusal(e)) { /* the card or the refusal is on screen */ }
+      else if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Signing failed';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced below.
+      passkeyRefused = isPasskeyApprovalRefusal(e);
     } finally {
       signing = false;
       if (approved && !previewStopped) {
         previewToken = null;
         contextDeadline = 0;
         heldPreview = null;
+        if (passkeyRefused) {
+          keepPasskeyRefusal = true;
+          invalidatePreviewForSelectionEdit();
+        }
+      }
+      if (!approved && passkeyRefused) {
+        exactBytePasskey = null;
+        exactBytePasskeyRevision++;
       }
     }
   }
@@ -1041,6 +1266,23 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     previewRevision++;
   }
 
+  // The fresh offer a withdrawn cover waits for. When it lands for exactly the request the owner saw at the tap, that
+  // tap goes on to the passkey prompt. A request that differs stays on screen for a new tap, and a failed fetch shows
+  // the failure so that the next tap tries again.
+  $effect(() => {
+    const waiting = coverRefetch;
+    if (waiting === null) return;
+    const preview = waiting === 'preview' ? currentPreview() : null;
+    const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
+    const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
+    if (!landed && !failed) return;
+    const fresh = preview
+      ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
+    coverRefetch = null;
+    if (landed && sameReview(coverShown, fresh)) untrack(() => { void approveAndSign(); });
+  });
+
   function retryPreview() {
     if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
     invalidatePreviewForSelectionEdit();
@@ -1048,11 +1290,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
   // origin (or arrives unattributed) is never signed and has no override.
+  // Hardening: registry record signing is refused the same way, unless the requester is TinyCloud One / Home.
   // Every signing path below re-checks this; the server enforces it too.
   const siweRefusal = $derived.by(() => {
     if (!message) return null;
+    const registry = registryRecordSignRefusal(message, origin);
+    if (registry) return { registry: true as const, code: REGISTRY_RECORD_SIGN_REFUSED.code, message: registry.message };
     const check = checkSiweOrigin(message, origin);
-    return check.siwe && !check.ok ? check : null;
+    return check.siwe && !check.ok ? { registry: false as const, code: check.code, message: check.message } : null;
   });
   let refusalReported = false;
   $effect(() => {
@@ -1063,7 +1308,10 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
-      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+      error: {
+        code: 'UNKNOWN',
+        message: siweRefusal.registry ? 'REGISTRY_RECORD_SIGN_REFUSED' : `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}`,
+      },
     });
   });
 
@@ -1071,6 +1319,41 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // tell the host once, without any reply content.
 
   let refusalMessage = $state<string | null>(null);
+
+  // A host message refused because the owner's TinyCloud account is not set up shows the account setup card. Once the
+  // owner has set the account up, the widget asks the API once more; a second host-signing refusal tells the app the
+  // account is set up (ACCOUNT_SETUP_COMPLETED), so it repeats its request without hosting the account's spaces.
+  let accountSetupNeeded = $state(false);
+  let accountSetupDone = false;
+
+  function accountSetupRefusal(failure: unknown): boolean {
+    const refusal = hostSigningRefusal(failure, origin);
+    if (!refusal) return false;
+    if (accountSetupDone) {
+      accountSetupNeeded = false;
+      refusalMessage = 'Your TinyCloud account is set up. Return to the app to continue.';
+      refused = true;
+      error = refusalMessage;
+      if (!refusalSent) {
+        refusalSent = true;
+        sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: ACCOUNT_SETUP_COMPLETED } });
+      }
+      return true;
+    }
+    if (refusal !== 'setup') return false;
+    accountSetupNeeded = true;
+    error = '';
+    return true;
+  }
+
+  function accountSetupFinished() {
+    accountSetupNeeded = false;
+    accountSetupDone = true;
+    previewToken = null;
+    heldPreview = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
 
   function unreadableReply(status: number) {
     replyFailureStatus = status;
@@ -1100,11 +1383,18 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if ($session.data) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1117,6 +1407,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   }
 
   function cancel() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1183,30 +1474,33 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       }
       return;
     }
-    // Legacy compatibility path (wildcard origin or unversioned caller).
+    // Legacy replies stay bound to the first accepted request's browser origin.
+    if (!legacyOrigin) return;
     if (window.opener) {
-      window.opener.postMessage(data, origin);
+      window.opener.postMessage(data, legacyOrigin);
     } else if (window.parent !== window) {
-      window.parent.postMessage(data, origin);
+      window.parent.postMessage(data, legacyOrigin);
     }
   }
 
   function sendClose() {
+    forgetPopupSignFlow();
     previewStopped = true;
     heldPreview = null;
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request so the SDK doesn't tear down a subsequent request when a
     // stale close arrives late.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    const targetOrigin = currentRequestId ? origin : (legacyOrigin ?? (origin !== '*' ? origin : null));
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
     if (window.opener) {
-      window.opener.postMessage(closeMsg, origin);
+      if (targetOrigin) window.opener.postMessage(closeMsg, targetOrigin);
       window.close();
     } else if (window.parent !== window) {
-      window.parent.postMessage(closeMsg, origin);
+      if (targetOrigin) window.parent.postMessage(closeMsg, targetOrigin);
     }
   }
 
@@ -1224,13 +1518,22 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   </header>
 
   {#if siweRefusal}
-    <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {#if siweRefusal.registry}
+      <RegistryRecordRefusal variant="popup" onclose={closeRefused} />
+    {:else}
+      <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {/if}
   {:else if replyFailureStatus !== null}
     <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
+  {:else if accountSetupNeeded && key}
+    <AccountSetupCard keyId={key.id} requestOrigin={origin} ondone={accountSetupFinished} oncancel={cancel} />
   {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
-      <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}>Sign In</Button>
+      <Button
+        href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}
+        onclick={() => carryPopupSignFlow(webFlowId)}
+      >Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
@@ -1279,9 +1582,13 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       initialSelection={reviewSelection}
       transport={{
         approving: signing,
+        approveVisibility: coverOffered ? approveVisibility : undefined,
+        passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
-        error,
-        approveBlockedReason: refusalMessage,
+        error: error || offerFailure,
+        approveBlockedReason: refusalMessage ?? (renewalOnlyNeedsPreview
+          ? RENEWAL_ONLY_COPY.previewRequired(originAuthority(origin) ?? RENEWAL_ONLY_COPY.appFallback)
+          : null),
         refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: currentPreview() !== null,
@@ -1293,16 +1600,33 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           // (e.g. sendResponse) still see the up-to-date selection.
           reviewSelection = next;
         },
-        expiry: canUseAuthorizeSignFn() && expiryChangeable
+        expiry: canUseAuthorizeSignFn() && (expiryChangeable || onceTierRequest)
           ? {
               chosenMs: expiryChoiceMs,
+              onceDefault: true,
+              oncePickCapped: true,
               onChange: (ms) => {
                 expiryChoiceMs = ms;
                 invalidatePreviewForSelectionEdit();
               },
             }
           : undefined,
+        renewal: canUseAuthorizeSignFn() && renewalMaxLeaseMs !== null
+          ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, turnedOff: renewalTurnedOff, onChange: changeRenewal }
+          : undefined,
+        renewalPending: renewalAnswerPending && !refused && !siweRefusal && !error,
+        // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
+        // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the
+        // next preview (or the exact-byte sign) and the server refuses to sign an extra permission that is not among them.
+        elevated: {
+          splittable: canUseAuthorizeSignFn(),
+          onDecide: (allowed) => {
+            elevatedAllowed = allowed.map(serverActionId).sort();
+            invalidatePreviewForSelectionEdit();
+          },
+        },
         invalidatePreview: invalidatePreviewForSelectionEdit,
+        claimedPresentation: claimedView,
       }}
     />
   {:else}

@@ -44,7 +44,8 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
 }, originalFetch);
 
 const EVENTS = {
-  better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
+  better_auth: true, otp_delivery_unconfigured: true, otp_delivery_failed: true, auth_key_generated: true,
+  auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
   auth_social_continuation_cleanup_failed: true, auth_social_token_revoke_failed: true, auth_social_signup_confirmed: true,
   auth_social_notice_failed: true, auth_social_email_review_required: true, auth_apple_revoke_failed: true,
@@ -54,16 +55,20 @@ const EVENTS = {
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
-  delegate_session_activation_warning: true, delegate_session_activation_failed: true,
+  delegate_session_activation_warning: true, delegate_session_activation_failed: true, delegate_session_revoke_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
-  delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
-  approval_code_allocation_failed: true, approval_code_cleanup_failed: true,
+  delegate_origin_bind_failed: true, delegate_own_page_authority_unconfirmed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
+  approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true, signin_renewal_failed: true,
+  signin_renewal_lease_signed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
+  native_stepup_renew_failed: true, native_stepup_revoke_pending_refused: true,
+  native_stepup_revoke_pending: true, native_stepup_revoke_pending_failed: true, native_stepup_revoke_pending_sweep_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   oauth_client_secret_rotated: true,
   session_cap_unapplied: true,
+  reviewer_sign_in: true, reviewer_admin: true, reviewer_boot_failed: true, reviewer_cleanup: true,
   resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
   revoked_token_record_failed: true, revoked_token_sweep_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
@@ -71,16 +76,20 @@ const EVENTS = {
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
   tinycloud_bootstrap_sweep_reaped: true,
   tinycloud_bootstrap_sweep_failed: true,
+  renewal_lease_sweep_stopped: true, renewal_lease_sweep_wallet_required: true,
+  renewal_lease_sweep_not_stopped: true, renewal_lease_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   account_origin_refused: true,
+  legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
   sign_origin_refused: true,
+  approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
-const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
+const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true, TERMS_RELEASE: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
@@ -88,7 +97,12 @@ const ERROR_CODES: Record<string, true> = {
   tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true, tinycloud_bootstrap_reclaim_failed: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
-  quote_format_invalid: true,
+  quote_format_invalid: true, TERMS_RELEASE: true,
+  passkey_approval_required: true, passkey_approval_invalid: true, passkey_not_step_up_capable: true,
+  config_invalid: true, epoch_mismatch: true, response_invalid: true, signature_invalid: true, kms_refused: true,
+  canary_failed: true, reseal_config: true, reseal_canary_missing: true, reseal_canary_mismatch: true,
+  reseal_canary_not_pending: true, reseal_row_unreadable: true, reseal_row_mismatch: true,
+  reseal_old_unseal_failed: true, reseal_swap_failed: true, reseal_verify_failed: true, reseal_quarantine_limit: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {
@@ -132,6 +146,55 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+export function logManifestOriginBindFailed(reason: string): void {
+  // A placeholder error may carry a manifest-supplied field name.
+  const detail = reason.startsWith('{owner} placeholder is not allowed in ')
+    ? '{owner} placeholder is not allowed in this field'
+    : reason;
+  emit('warn', 'delegate_origin_bind_failed', { reason: detail });
+}
+
+/** TC-3554: the one-time re-seal at boot. Counts only; never ids, addresses, paths or keys. */
+export function logLegacyReseal(counts: { total: number; migrated: number; alreadyCurrent: number; quarantined: number }): void {
+  emit('info', 'legacy_reseal_done', counts);
+}
+
+/** One line per row left untouched: table, opaque database id, reason. Bounded by the quarantine limit. */
+export function logLegacyResealQuarantined(row: { source: string; id: string; reason: string }): void {
+  const { source, id, reason } = row;
+  const ok = (source === 'ethereum_key' || source === 'nostr_key' || source === 'reviewer_cleanup')
+    && /^[A-Za-z0-9_-]{1,64}$/.test(id) && (reason === 'unreadable' || reason === 'unopenable' || reason === 'mismatch');
+  if (ok) emit('warn', 'legacy_reseal_quarantined', { source, row_id: id, reason });
+}
+
+/** Rows migrated so far (counts only), logged every batch so a long first boot is visible. */
+export function logLegacyResealProgress(progress: { done: number; pending: number; total: number }): void {
+  emit('info', 'legacy_reseal_progress', progress);
+}
+
+/** The failed row's table and database id (an opaque cuid), so an operator can find it. Never keys or paths. */
+export function logLegacyResealFailed(error: unknown): void {
+  const fields: Record<string, string | undefined> = {};
+  if (typeof error === 'object' && error !== null) {
+    const { code, source, rowId } = error as { code?: unknown; source?: unknown; rowId?: unknown };
+    if (typeof code === 'string' && Object.hasOwn(ERROR_CODES, code)) fields.error_code = code;
+    if (source === 'ethereum_key' || source === 'nostr_key' || source === 'reviewer_cleanup') fields.source = source;
+    if (typeof rowId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(rowId)) fields.row_id = rowId;
+  }
+  emit('error', 'legacy_reseal_failed', fields);
+}
+
+/** Reviewer operations are read by the API operations team. Fields are fixed: never ids, addresses or codes. */
+export function logReviewer(
+  event: 'reviewer_sign_in' | 'reviewer_admin',
+  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'boot_restored' | 'reset' | 'audience_pinned' | 'ready'
+    | 'deleted' | 'delete_failed' | 'delete_intent_failed',
+  store: string,
+): void {
+  const knownStore = ['openai', 'google', 'apple', 'all'].includes(store) ? store : 'unknown';
+  emit('info', event, { store: knownStore, result });
 }
 
 /** Event with numeric fields only (status, count): never ids, addresses or tokens. */
@@ -194,6 +257,17 @@ export type SessionJwkRoute =
  */
 export function logSessionJwk(route: SessionJwkRoute, privateMembers: boolean): void {
   emit('info', 'delegate_session_jwk', { route, private_members: privateMembers === true });
+}
+
+/** Release operators count these events to track adoption of public session keys. */
+export function countPrivateSessionJwk(route: SessionJwkRoute): void {
+  process.stdout.write(`${JSON.stringify({
+    ts: new Date().toISOString(),
+    level: 'info',
+    event: 'delegate_private_session_jwk',
+    route,
+    count: 1,
+  })}\n`);
 }
 
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -285,6 +359,14 @@ export function logTinyCloudBootstrapSweep(
   });
 }
 
+/**
+ * A renewal lease signed at an app sign-in, which OpenKey keeps no other record of: its CID, whether OpenKey's managed
+ * key or the owner's wallet signed it, and its lifetime. Never the owner, the grant or the lease itself.
+ */
+export function logSignInLeaseSigned(leaseCid: string, signer: 'managed' | 'wallet', leaseLifetimeSeconds: number): void {
+  emit('info', 'signin_renewal_lease_signed', { lease_cid: leaseCid, signer, lease_lifetime_seconds: leaseLifetimeSeconds });
+}
+
 /** Approval delivery failures expose request identifiers and error class, never code or error details. */
 export function logApprovalCodeAllocationFailure(approvalRequestId: string, error: unknown): void {
   emit('warn', 'approval_code_allocation_failed', {
@@ -297,6 +379,26 @@ export function logApprovalCodeCleanupFailure(approvalRequestId: string, error: 
   emit('warn', 'approval_code_cleanup_failed', {
     approval_request_id: approvalRequestId,
     error_name: safeErrorFields(error).error_name ?? 'Unknown',
+  });
+}
+
+const PROVIDER_ERROR_NAMES: Record<string, true> = {
+  invalid_idempotency_key: true, validation_error: true, missing_api_key: true, restricted_api_key: true,
+  invalid_api_key: true, not_found: true, method_not_allowed: true, invalid_idempotent_request: true,
+  concurrent_idempotent_requests: true, invalid_attachment: true, invalid_from_address: true, invalid_access: true,
+  invalid_parameter: true, invalid_region: true, missing_required_field: true, monthly_quota_exceeded: true,
+  daily_quota_exceeded: true, rate_limit_exceeded: true, security_error: true, application_error: true,
+  internal_server_error: true,
+};
+
+/** Email provider failure: its error name (closed set, else `other`) and HTTP status only. */
+export function logOtpDeliveryFailed(error: unknown): void {
+  const { name, statusCode } = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
+  emit('error', 'otp_delivery_failed', {
+    error_name: typeof name === 'string' && Object.hasOwn(PROVIDER_ERROR_NAMES, name) ? name : 'other',
+    status: typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+      ? statusCode
+      : undefined,
   });
 }
 
@@ -386,3 +488,8 @@ export const apiErrorHandler: ErrorHandler<ApiEnv> = (error, c) => {
   });
   return c.json({ error: 'Internal server error' }, 500);
 };
+
+/** Operations owns retries of retired synthetic spaces; never log SDK errors. */
+export function logReviewerCleanup(result: 'initial_wipe' | 'complete' | 'retry' | 'bound_exceeded' | 'parked', spaceId: string): void {
+  emit(result === 'parked' ? 'warn' : result === 'retry' || result === 'bound_exceeded' ? 'error' : 'info', 'reviewer_cleanup', { result, space_id: spaceId, cleanup_dependency: 'TC-2817' });
+}

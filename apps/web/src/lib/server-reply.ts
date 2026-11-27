@@ -3,10 +3,13 @@
 // fields the next step needs. An empty body, text that is not JSON, or an
 // object without those fields is an unreadable reply: nothing is approved.
 
+import { isTermsRequired } from './terms';
+import { termsRefused } from './terms-gate';
+
 /** String 20: shown when a reply cannot be read. The HTTP status is not part of it. */
 export const SERVER_REPLY_TITLE = "OpenKey couldn't finish this request";
 export const SERVER_REPLY_BODY =
-  "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.";
+  "OpenKey couldn't read the server's reply, so nothing was approved. Try again. If it keeps happening, contact the app.";
 
 /** The failure code and message the widget reports to the host. No reply content. */
 export const SERVER_REPLY_ERROR = { code: 'UNKNOWN', message: 'SERVER_REPLY_UNREADABLE' } as const;
@@ -99,10 +102,15 @@ export async function readReply(
         ? failure.error
         : `HTTP ${response.status}`;
     const code = failure !== null && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : '';
+    // The account owes the current Terms (a release went live during the request): the Terms show in place.
+    if (isTermsRequired(response.status, failure)) termsRefused();
     if (isDefiniteRefusal(response.status, code)) {
       throw new ServerRefusalError(text, response.status, code);
     }
-    throw Object.assign(new Error(text), { status: response.status, code });
+    // A host-signing refusal for an account that is not set up says so: the sign widget offers account setup.
+    const accountSetup = failure !== null && typeof failure === 'object' && 'accountSetup' in failure && failure.accountSetup === 'required'
+      ? { accountSetup: 'required' as const } : {};
+    throw Object.assign(new Error(text), { status: response.status, code, ...accountSetup });
   }
   let parsed: unknown;
   try {

@@ -19,6 +19,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
 
+      # Pre-release security check: neither publish to npm nor open a version PR unless every
+      # check in .github/required-checks.json passed on this exact SHA (waits up to 40 min).
+      - name: Require green checks on the released commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -62,15 +69,30 @@ jobs:
             echo "Found publishable changesets — will create version PR"
           fi
 
+      - name: Check major release authorization
+        run: |
+          if [ -f .changeset/pre.json ]; then
+            node .github/scripts/check-major-release-signoff.mjs beta
+            node .github/scripts/check-major-release-signoff.mjs stable
+          else
+            node .github/scripts/check-major-release-signoff.mjs release
+          fi
+
+      # changesets/action v1 treated every directory in .changeset/ as a
+      # version-1 changeset and opened <dir>/changes.md. Changesets 3 keeps
+      # the changesets it has already versioned in .changeset/pre/, so v1
+      # failed with ENOENT on .changeset/pre/changes.md whenever a publishable
+      # changeset was waiting. v2 dropped the version-1 support and reads the
+      # layout this repo's @changesets/cli 3 writes. Pinned to the v2.1.2 commit.
       - name: Create Release Pull Request
         if: steps.check.outputs.has_changesets == 'true'
-        uses: changesets/action@v1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          version: bun changeset version
-          commit: "chore: version packages"
-          title: "chore: version packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          version-script: bun changeset version
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          github-token: ${{ secrets.GH_TOKEN }}
+          push-with-git-cli: true
 
       - name: Publish to npm
         if: steps.check.outputs.has_changesets == 'false'

@@ -28,7 +28,7 @@ const keyRecord = {
 };
 const spaceId = (name: string, owner: string = account.address) => `tinycloud:pkh:eip155:1:${owner}:${name}`;
 const SPACES = ['default', 'applications', 'account', 'secrets', 'public', 'agents'];
-const ORIGIN = 'https://app.example.test';
+const ORIGIN = 'https://home.tinycloud.xyz';
 
 interface StateRow {
   id: string;
@@ -180,7 +180,7 @@ function siweFor(options: {
   return prepareSession({
     address: options.address ?? account.address,
     chainId: 1,
-    domain: options.domain ?? 'app.example.test',
+    domain: options.domain ?? 'home.tinycloud.xyz',
     issuedAt: new Date().toISOString(),
     expirationTime: new Date(Date.now() + (options.expiresInMs ?? 3_600_000)).toISOString(),
     spaceId: options.space,
@@ -457,16 +457,16 @@ describe('an account whose setup keeps failing', () => {
   });
 });
 
-// TC-2247 x TC-2285: the own-sites gate runs before the bootstrap, so a sign it refuses hosts nothing.
-describe('a sign the own-sites gate refuses', () => {
+// TC-2927 x TC-2285: the decision on an extra permission runs before the bootstrap, so a sign it refuses hosts nothing.
+describe('a sign the extra-permission decision refuses', () => {
   const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default`;
   const decryptOnNetwork = { [network]: ['tinycloud.encryption/decrypt'] };
 
-  test('from a site that is not first-party: refused 403, nothing hosted, no setup state, nothing signed', async () => {
+  test('without the owner\'s decision: refused 403, nothing hosted, no setup state, nothing signed', async () => {
     const signed = await sign(siweFor({ space: spaceId('applications'), rawAbilities: decryptOnNetwork }));
 
     expect(signed.status).toBe(403);
-    expect(signed.body).toMatchObject({ code: 'app_key_grant_refused' });
+    expect(signed.body).toMatchObject({ code: 'elevated_not_decided' });
     expect(signed.body.signature).toBeUndefined();
     expect(node.hostPosts).toEqual([]);
     expect(node.peerGets).toEqual([]);
@@ -475,10 +475,10 @@ describe('a sign the own-sites gate refuses', () => {
     expect(state).toBeNull();
   });
 
-  test('the same message from a first-party site passes the gate and then hosts the signer\'s own space', async () => {
+  test('the same message once the owner decided passes the gate and then hosts the signer\'s own space', async () => {
     const signed = await sign(
-      siweFor({ space: spaceId('applications'), rawAbilities: decryptOnNetwork, domain: 'share.tinycloud.xyz' }),
-      { requestOrigin: 'https://share.tinycloud.xyz' },
+      siweFor({ space: spaceId('applications'), rawAbilities: decryptOnNetwork }),
+      { elevatedAcknowledged: true },
     );
 
     expect(signed.status).toBe(200);

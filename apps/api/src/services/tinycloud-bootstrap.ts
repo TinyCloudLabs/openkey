@@ -33,6 +33,7 @@ import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeou
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
 import { isTinyCloudSiweForSigner, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from './tinycloud-siwe';
+import { mayProvision, retryableStoredAuthorities, storedProvisionAuthority, type ProvisionAuthority, type StoredProvisionAuthority } from './provision-authority';
 
 // The SIWE reading lives in tinycloud-siwe.ts (the signing route reads it without loading this module).
 export { isTinyCloudSiweForSigner, parseTinyCloudSiwe };
@@ -61,7 +62,7 @@ const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
 
-type PrismaLike = Pick<PrismaClient, 'user' | 'tinyCloudBootstrapState'>;
+export type PrismaLike = Pick<PrismaClient, 'user' | 'tinyCloudBootstrapState'>;
 
 interface BootstrapStateRecord {
   id: string;
@@ -80,12 +81,22 @@ export interface EnsureTinyCloudBootstrapInput {
   prisma: PrismaLike;
   userId: string;
   key: TinyCloudBootstrapKey;
-  privateKey: string;
+  /** Resolved inside the lock, so a sign-in for an account that is already complete never unseals the key. */
+  privateKey: string | (() => Promise<string>);
   message: string;
   format: 'raw' | 'personal_sign';
+  /** Who asked, as the server bound it to the approved request. Required: no run starts without one. */
+  authority: ProvisionAuthority;
+  /**
+   * For a caller that needs the account to exist and sets nothing up: a request that is not first-party is answered
+   * `complete` when the account's setup is already recorded complete, and `skipped` otherwise. Reads the database only.
+   */
+  acceptCompleteRow?: true;
 }
 
 export interface EnsureTinyCloudBootstrapInputCore {
+  /** Who asked, as the server bound it to the approved request. Required: no run starts without one. */
+  authority: ProvisionAuthority;
   prisma: PrismaLike;
   userId: string;
   key: TinyCloudBootstrapKey;
@@ -220,9 +231,26 @@ function isSupportedTinyCloudChainId(chainId: number): boolean {
   return SUPPORTED_TINYCLOUD_CHAIN_IDS.has(chainId);
 }
 
+async function hasCompleteDefaultHostRow(input: EnsureTinyCloudBootstrapInput): Promise<boolean> {
+  try {
+    return await isTinyCloudBootstrapComplete(input.prisma, { keyId: input.key.id, chainId: 1, host: trustedTinyCloudBootstrapHost() });
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
 ): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
+  // Only TinyCloud's own apps make OpenKey set up an account on the node as a side effect of a signature. This is
+  // the single entry for both the own-space and the full-bootstrap paths, so it comes before anything reads the
+  // node. A caller whose signature needs an account that is already set up (and sets none up) may accept a complete
+  // row; it is never set up here.
+  if (!mayProvision(input.authority)) {
+    if (input.acceptCompleteRow && await hasCompleteDefaultHostRow(input)) return { status: 'complete' };
+    return { status: 'skipped' };
+  }
+
   // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
   // POST /api/delegate/sign instead; this hook only compensates for older
   // clients. Disable once /delegate/sign traffic replaces widget signs.
@@ -352,6 +380,11 @@ export async function isTinyCloudBootstrapComplete(
 export async function ensureTinyCloudBootstrap(
   input: EnsureTinyCloudBootstrapInputCore & { chainId?: number },
 ): Promise<TinyCloudBootstrapOutcome> {
+  // The one place every run reaches the node from: approvals, the own-space wait, the managed continuation and the
+  // sweep all come through here, so a request that is not first-party never provisions, whichever path it took.
+  if (!mayProvision(input.authority)) return { status: 'skipped' };
+  // A sweep authority is the claim the sweep holds, and this run must be the one that claim is for.
+  if (input.authority.kind === 'sweep' && input.authority.claim !== input.sweepClaim) return { status: 'skipped' };
   if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off') return { status: 'skipped' };
   const chainId = input.chainId ?? 1;
   if (!isSupportedTinyCloudChainId(chainId)) return { status: 'skipped' };
@@ -399,6 +432,7 @@ export async function ensureTinyCloudBootstrap(
     chainId,
     tinycloudHost,
     sweep: input.sweepClaim?.observed,
+    authority: storedProvisionAuthority(input.authority),
   });
 
   if (!locked) {
@@ -496,6 +530,8 @@ async function acquireBootstrapLock(
     chainId: number;
     tinycloudHost: string;
     sweep?: TinyCloudBootstrapSweepClaim['observed'];
+    /** Stored on the row; null on the sweep's claim, which keeps the row's own. */
+    authority: StoredProvisionAuthority | null;
   },
 ): Promise<boolean> {
   const now = new Date();
@@ -517,6 +553,8 @@ async function acquireBootstrapLock(
         checkedAt: observed.checkedAt,
         attemptId: observed.attemptId,
         failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
+        // Only a row a first-party approval made: a row with no stored authority is never retried.
+        authority: { in: retryableStoredAuthorities() },
         ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
         user: { is: { autoSignEnabled: true } },
         key: { is: { custody: 'PERSONAL', keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
@@ -543,6 +581,7 @@ async function acquireBootstrapLock(
           attemptId: input.attemptId,
           lockExpiresAt,
           checkedAt: now,
+          authority: input.authority,
         },
       });
       return true;
@@ -577,6 +616,8 @@ async function acquireBootstrapLock(
       checkedAt: now,
       // Approval claims start a fresh sweep budget.
       sweepAttempts: 0,
+      // The approval that took the row over is the one now on record, so a retry stays inside what it was allowed.
+      authority: input.authority,
     },
   });
 

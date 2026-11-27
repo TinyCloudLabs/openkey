@@ -3,8 +3,9 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import { api } from '$lib/api';
-  import { setSessionToken } from '$lib/embed-passkey';
+  import { readSignedSessionToken, setSessionToken } from '$lib/embed-passkey';
   import { newAccountSignupToken } from '$lib/email-signup';
   import {
     loadConfiguredSocialProviders,
@@ -17,6 +18,10 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
+  import TermsStep from '$lib/components/auth/terms-step.svelte';
+  import { checkTerms, type TermsStatus } from '$lib/terms';
+  import { termsCheckedFirst } from '$lib/terms-release';
 
   let { data } = $props();
 
@@ -29,6 +34,35 @@
   let registeredSessionToken = $state<string | null>(null);
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
+  // TC-3232: a new account accepts the Terms before the passkey offer or anything else.
+  let terms = $state<{ status: TermsStatus; email: string; next: () => void | Promise<void> } | null>(null);
+  // The status couldn't be read: Try again runs the check again, then `next`. Sign-up never continues past it.
+  let termsRetry = $state<(() => void | Promise<void>) | null>(null);
+
+  async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    if (!termsCheckedFirst()) return false;
+    const result = await checkTerms();
+    if (result.state === 'accepted') return false;
+    if (result.state !== 'required') {
+      termsRetry = next;
+      return true;
+    }
+    const session = await authClient.getSession().catch(() => null);
+    terms = { status: result.status, email: session?.data?.user.email ?? email, next };
+    return true;
+  }
+
+  async function retryTermsCheck() {
+    const next = termsRetry;
+    termsRetry = null;
+    if (next && !await askTermsFirst(next)) await next();
+  }
+
+  async function termsAccepted() {
+    const next = terms?.next;
+    terms = null;
+    await next?.();
+  }
 
   // Detect if opened as a popup from the embed SDK flow
   const isEmbedPopup = $derived(typeof window !== 'undefined' && !!window.opener && data.isEmbed);
@@ -72,16 +106,7 @@
   }
 
   async function readSessionToken() {
-    const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Accept': 'application/json' },
-    });
-    const sessionBody = await sessionRes.json().catch(() => null);
-    const sessionToken =
-      sessionRes.headers.get('set-auth-token') ||
-      sessionBody?.session?.token ||
-      sessionBody?.token;
+    const sessionToken = await readSignedSessionToken();
     if (!sessionToken) {
       throw new Error('Passkey registered, but no session token was returned.');
     }
@@ -94,7 +119,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
-        error = authErrorMessage(result.error, 'Failed to send code');
+        error = sendCodeErrorMessage(result.error, { email, passkey: false, fallback: 'Failed to send code' });
       } else {
         step = 'otp';
       }
@@ -118,7 +143,7 @@
         : result;
       if (outcome.error) {
         error = authErrorMessage(outcome.error, 'Invalid code');
-      } else {
+      } else if (!await askTermsFirst(() => { step = 'passkey'; })) {
         step = 'passkey';
       }
     } catch (e: any) {
@@ -150,6 +175,7 @@
     try {
       // Explicit sign-up intent: the popup creates the account without asking again, unless Apple hides the email.
       await signInWithSocialPopup(provider, undefined, 'signup');
+      if (await askTermsFirst(async () => { await ensureKeyExists(); await continueAfterRegistration(); })) return;
       await ensureKeyExists();
       await continueAfterRegistration();
     } catch (e: any) {
@@ -272,6 +298,18 @@
   />
 {/if}
 
+{#if terms}
+  <TermsStep
+    status={terms.status}
+    surface="web"
+    returnTo={initialReturnTo}
+    email={terms.email}
+    onaccepted={termsAccepted}
+    onsignin={() => { terms = null; otp = ''; error = ''; step = 'email'; }}
+  />
+{:else if termsRetry}
+  <TermsCheckFailed onretry={retryTermsCheck} />
+{:else}
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">
     <!-- Logo mark -->
@@ -428,3 +466,4 @@
     </Card>
   </div>
 </div>
+{/if}

@@ -1,5 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -56,6 +58,7 @@ async function setup(page: Page, options: { keyId?: string; callback?: string; n
     if (path === '/api/delegate/authorize-sign') return json(route, 200, { ...(options.narrowed ? narrowedResult : rawResult), deliveryState: state, selectedKeyId: preparedKeyId });
     return json(route, 404, { error: `unexpected ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const input = { transportVersion: 2, request: { protocolVersion: 1, siwe: options.siwe ?? siwe, jwk, host, sessionDid: 'did:key:cli-session', ...options.keyId ? { keyId: options.keyId } : {} }, delivery: { handoffId, state, cancelSecret, ...options.callback ? { callback: options.callback } : {} } };
   const url = `/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`;
   if (options.entry === 'conflict') {
@@ -77,6 +80,7 @@ async function setup(page: Page, options: { keyId?: string; callback?: string; n
 }
 
 test('v2 displays original and exact preview, signs the bound context, and pastes an unchanged S3 result', async ({ page }) => {
+  await recordClipboard(page);
   const calls = await setup(page, { keyId: key.id });
   await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
@@ -98,7 +102,7 @@ test('v2 displays original and exact preview, signs the bound context, and paste
   await expectExactBlock(page, 'Original SIWE message', siwe);
   await expectExactBlock(page, 'Exact candidate signedMessage', siwe);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  const code = await page.locator('textarea').inputValue();
+  const code = await fullCodeFromBox(page);
   const envelope = JSON.parse(Buffer.from(code, 'base64url').toString('utf8'));
   expect(envelope).toEqual({ transportVersion: 2, state: 'A'.repeat(43), selectedKeyId: key.id, result: rawResult });
   expect(calls.filter(c => c.path === '/api/delegate/prepare')).toHaveLength(0);
@@ -110,14 +114,15 @@ test('v2 distinguishes the approval request expiry from the exact SIWE grant exp
   await page.clock.setFixedTime(new Date('2026-10-16T17:00:00.000Z'));
   await setup(page);
   const ticketExpiry = new Date('2026-10-16T17:05:00.000Z').toLocaleString();
-  const grantExpiry = new Date('2026-10-23T17:00:00.000Z').toLocaleString();
   await expect(page.getByText('Approval request expires')).toBeVisible();
-  await expect(page.getByText('Access granted until')).toBeVisible();
   await expect(page.getByText(ticketExpiry)).toBeVisible();
-  await expect(page.getByText(`${grantExpiry} (in 7 days)`)).toBeVisible();
+  // The grant's length is the expiry line; its exact end is shown once, inside the open fold.
+  await expect(page.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await page.getByText('How long it lasts').click();
+  await expect(page.getByText('Oct 23, 2026, 5:00 PM UTC')).toHaveCount(1);
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await expect(page.getByText('Approval request expires')).toBeVisible();
-  await expect(page.getByText(`${grantExpiry} (in 7 days)`)).toBeVisible();
+  await expect(page.getByText('Oct 23, 2026, 5:00 PM UTC')).toHaveCount(1);
 });
 
 test('v2 warns when the exact SIWE has no expiration rather than implying the ticket TTL is a grant TTL', async ({ page }) => {
@@ -129,7 +134,7 @@ test('v2 warns when the exact SIWE has no expiration rather than implying the ti
 
 test('v2 explains an unavailable API before claiming and never enters legacy signing', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   let claims = 0;
   await page.route('**/api/delegate/handoffs/available', route => json(route, 404, { error: 'Not found' }));
   await page.route('**/api/delegate/handoffs/claim', route => {
@@ -141,7 +146,8 @@ test('v2 explains an unavailable API before claiming and never enters legacy sig
     user: { id: 'u', email: 'owner@example.test' },
   }));
   await page.goto('/delegate?transportVersion=2');
-  await expect(page.getByRole('alert')).toContainText('Prepared CLI sign-in is not available yet');
+  await expect(page.getByRole('heading', { name: 'This request can’t be found' })).toBeVisible();
+  await expect(page.locator('[data-support-line]')).toHaveText('HTTP 404');
   expect(claims).toBe(0);
   expect(calls.filter(call => call.path === '/api/delegate/prepare' || call.path === '/api/delegate/authorize-sign')).toHaveLength(0);
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
@@ -149,7 +155,7 @@ test('v2 explains an unavailable API before claiming and never enters legacy sig
 
 test('v2 keeps the cleared fragment only in tab storage through sign-in and removes it after claim', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).not.toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
@@ -163,7 +169,7 @@ test('v2 keeps the cleared fragment only in tab storage through sign-in and remo
 for (const continuation of ['same-tab', 'auth-return'] as const) {
   test(`auth refresh on a signed-out request waits for deliberate ${continuation} continuation`, async ({ page }) => {
     const calls = await setup(page, { authenticated: false });
-    await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
     await page.route('**/api/auth/get-session', route => json(route, 200, {
       session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' },
       user: { id: 'u', email: 'owner@example.test' },
@@ -173,10 +179,10 @@ for (const continuation of ['same-tab', 'auth-return'] as const) {
       const { authClient } = await import(modulePath);
       authClient.$store.notify('$sessionSignal');
     });
-    await expect(page.getByRole('button', { name: 'Continue to approval' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Review the request' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Cancel this request' })).toBeVisible();
     expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
-    if (continuation === 'same-tab') await page.getByRole('button', { name: 'Continue to approval' }).click();
+    if (continuation === 'same-tab') await page.getByRole('button', { name: 'Review the request' }).click();
     else await page.goto('/delegate?transportVersion=2');
     await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
     expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
@@ -196,7 +202,7 @@ for (const entry of ['client', 'hash', 'conflict'] as const) {
 
 test('an explicit v1 link replaces pending v2 after sign-in', async ({ page }) => {
   await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   const legacyJwk = Buffer.from(JSON.stringify(jwk)).toString('base64url');
   await page.goto(`/delegate?did=did:key:z6MkLegacy&jwk=${legacyJwk}`);
   await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
@@ -244,7 +250,7 @@ test('a newly navigated v2 fragment replaces the previous pending request', asyn
     document.body.append(link);
   }, fragment);
   await page.locator('#replacement-v2-link').click();
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBe(fragment);
 });
@@ -268,12 +274,12 @@ test('a failed new-fragment storage write cannot resume the previous request', a
     document.body.append(link);
   }, { value: fragment, storageKey: pendingKey });
   await page.getByRole('link', { name: 'Replace prepared sign-in' }).click();
-  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  await expect(page.getByRole('heading', { name: 'This browser can’t hold on to the request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey).catch(() => 'navigating')).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   await page.reload();
-  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  await expect(page.getByRole('heading', { name: 'This browser can’t hold on to the request' })).toBeVisible();
 });
 
 test('the document bootstrap also discards a previous request when storage replacement fails', async ({ page }) => {
@@ -291,7 +297,7 @@ test('the document bootstrap also discards a previous request when storage repla
     };
   }, { value: fragment, storageKey: pendingKey });
   await page.goto(`/delegate${fragment}`);
-  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  await expect(page.getByRole('heading', { name: 'This browser can’t hold on to the request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
@@ -299,35 +305,37 @@ test('the document bootstrap also discards a previous request when storage repla
 
 test('cancel before authenticated claim clears only tab-scoped request data', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(page.getByRole('alert')).toContainText('Approval cancelled');
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel this request' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Cancelled. Nothing was approved.' })).toBeVisible();
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   await page.reload();
-  await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+  await expect(page.getByRole('heading', { name: 'This link is missing its last part' })).toBeVisible();
 });
 
 test('invalid fragments fail explicitly and leave no pending request', async ({ page }) => {
   await page.route('**/api/auth/get-session', route => json(route, 200, { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u' } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/delegate#tv2=not-a-json-request');
-  await expect(page.getByRole('alert')).toContainText(/invalid|unsupported|restart/i);
+  await expect(page.getByRole('heading', { name: 'This link is cut off' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
 });
 
 test('an unauthenticated pending request is erased when its five-minute claim window expires', async ({ page }) => {
   await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   await page.clock.fastForward(300_001);
-  await expect(page.getByRole('alert')).toContainText(/expired|restart/i);
+  await expect(page.getByRole('heading', { name: 'This request expired' })).toBeVisible();
+  await expect(page.getByTestId('stop-page')).toContainText('This sign-in was open for 5 minutes and ran out. Run the command again.');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
 });
 
 for (const fullReload of [false, true]) {
   test(`pending v2 tab data expires during ${fullReload ? 'full-document' : 'client'} sign-in navigation`, async ({ page }) => {
     const calls = await setup(page, { authenticated: false });
-    await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
     if (!fullReload) await page.evaluate(() => { (window as Window & { __sameDocument?: boolean }).__sameDocument = true; });
     await page.getByRole('link', { name: 'Continue with email' }).click();
     await expect(page).toHaveURL(/\/auth\/login\?redirect=/);
@@ -339,7 +347,7 @@ for (const fullReload of [false, true]) {
     await page.clock.fastForward(300_001);
     await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
     await page.goto(returnTo!);
-    await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+    await expect(page.getByRole('heading', { name: 'This link is missing its last part' })).toBeVisible();
     expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   });
 }
@@ -351,22 +359,24 @@ test('oversized fragment and retired ticket-query transport never fall through t
     return json(route, 200, { session: null });
   });
   await page.goto(`/delegate#tv2=${'A'.repeat(8193)}`);
-  await expect(page.getByRole('alert')).toContainText(/too large|restart/i);
+  await expect(page.getByRole('heading', { name: 'This link is cut off' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   await page.goto('/delegate?transportVersion=2&ticket=retired-ticket');
-  await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+  await expect(page.getByRole('heading', { name: 'OpenKey doesn’t know this kind of link' })).toBeVisible();
   expect(paths).not.toContain('/api/delegate/prepare');
 });
 
 test('v2 rejects a different requested key rather than invoking legacy prepare', async ({ page }) => {
   const calls = await setup(page, { keyId: 'different-key' });
-  await expect(page.getByText(/requested signing key is not available/i)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'That key isn’t available any more' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close this tab' })).toBeVisible();
   expect(calls.filter(c => c.path === '/api/delegate/prepare' || c.path === '/api/delegate/authorize-sign-prepare')).toHaveLength(0);
 });
 
 test('v2 permits choosing an account-matching key when no keyId was requested', async ({ page }) => {
   const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
+  await recordClipboard(page);
   const calls = await setup(page, { keys: [key, second] });
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
   await page.getByText('Original SIWE message', { exact: true }).click();
@@ -375,7 +385,7 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   expect(calls.find(call => call.path === '/api/delegate/authorize-sign-prepare')?.body).toMatchObject({ keyId: second.id });
-  const envelope = JSON.parse(Buffer.from(await page.locator('textarea').inputValue(), 'base64url').toString('utf8'));
+  const envelope = JSON.parse(Buffer.from(await fullCodeFromBox(page), 'base64url').toString('utf8'));
   expect(envelope.selectedKeyId).toBe(second.id);
   expect(envelope.result).toEqual(rawResult);
 });
@@ -432,6 +442,7 @@ for (const width of [375, 1280]) {
 }
 
 test('v2 narrowing previews the exact candidate and never signs a second time', async ({ page }) => {
+  await recordClipboard(page);
   const calls = await setup(page, { narrowed: true });
   await page.getByRole('checkbox', { name: 'tinycloud.kv/sync' }).uncheck();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
@@ -440,7 +451,7 @@ test('v2 narrowing previews the exact candidate and never signs a second time', 
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   expect(calls.find(c => c.path === '/api/delegate/authorize-sign-preview')?.body).toMatchObject({ selectedActionIds: [fullKey], ticket: handoffId });
   expect(calls.find(c => c.path === '/api/delegate/authorize-sign')?.body).toMatchObject({ selectedActionIds: [fullKey], ticket: handoffId });
-  const narrowedCode = await page.locator('textarea').inputValue();
+  const narrowedCode = await fullCodeFromBox(page);
   expect(JSON.parse(Buffer.from(narrowedCode, 'base64url').toString('utf8')).result).toEqual(narrowedResult);
   await page.reload();
   expect(calls.filter(c => c.path === '/api/delegate/authorize-sign')).toHaveLength(1);
@@ -456,7 +467,7 @@ test('v2 callback delivers the envelope without exposing a paste code after CLI 
   await setup(page, { callback });
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.getByText('CLI accepted your sign-in. You can close this window.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Signed in. Go back to your terminal.' })).toBeVisible();
   expect(delivered).toEqual({ transportVersion: 2, state: 'A'.repeat(43), selectedKeyId: key.id, result: rawResult });
   await expect(page.locator('textarea')).toHaveCount(0);
 });
@@ -468,11 +479,12 @@ test('v2 failed callback offers the same signed result as paste without re-signi
     attempted = route.request().postDataJSON();
     return json(route, 422, { accepted: false });
   });
+  await recordClipboard(page);
   const calls = await setup(page, { callback });
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.getByText(/Could not reach the CLI automatically/)).toBeVisible();
-  const paste = JSON.parse(Buffer.from(await page.locator('textarea').inputValue(), 'base64url').toString('utf8'));
+  await expect(page.getByText('OpenKey couldn’t reach your terminal by itself. Paste this code there instead.')).toBeVisible();
+  const paste = JSON.parse(Buffer.from(await fullCodeFromBox(page), 'base64url').toString('utf8'));
   expect(paste).toEqual(attempted);
   expect(paste.result).toEqual(rawResult);
   expect(calls.filter(call => call.path === '/api/delegate/authorize-sign')).toHaveLength(1);
@@ -481,7 +493,7 @@ test('v2 failed callback offers the same signed result as paste without re-signi
 test('v2 cancellation revokes the claimed handoff before signing', async ({ page }) => {
   const calls = await setup(page);
   await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(page.getByText(/Approval cancelled/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Cancelled. Nothing was approved.' })).toBeVisible();
   expect(calls.filter(c => c.path === '/api/delegate/handoffs/cancel-claimed')).toEqual([
     { path: '/api/delegate/handoffs/cancel-claimed', body: { ticket: handoffId } },
   ]);
@@ -499,10 +511,11 @@ test('v2 external wallet signs the preview bytes and sends externalSignature', a
       throw new Error(`Unexpected wallet call ${method}`);
     } } });
   }, { owner: address });
+  await recordClipboard(page);
   const calls = await setup(page, { external: true });
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.locator('textarea')).toBeVisible();
+  await fullCodeFromBox(page);
   expect(await page.evaluate(() => (window as Window & { signedText?: unknown }).signedText)).toBe(siwe);
   expect(calls.find(c => c.path === '/api/delegate/authorize-sign')?.body).toMatchObject({
     externalSignature: '0xwallet-signature',
@@ -521,9 +534,9 @@ test('v2 wallet rejection leaves the unsigned ticket cancellable', async ({ page
   const calls = await setup(page, { external: true });
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.getByText('User rejected wallet approval')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText('Your wallet turned down the signature. Nothing was approved. Press Approve to try again.');
   await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(page.getByText(/Approval cancelled/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Cancelled. Nothing was approved.' })).toBeVisible();
   expect(calls.filter(call => call.path === '/api/delegate/authorize-sign')).toHaveLength(0);
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/cancel-claimed')).toHaveLength(1);
 });

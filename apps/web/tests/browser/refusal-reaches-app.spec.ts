@@ -4,6 +4,7 @@
 import { test, expect } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
@@ -16,6 +17,7 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
     await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
     await page.route('**/api/keys/**', (r) => r.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } }));
     await page.route('**/api/auth/get-session**', (r) => r.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.route('**/api/delegate/authorize-sign-prepare', (r) => r.fulfill({ status: prepareStatus, json: prepareBody }));
     await page.goto('/__parity_harness');
     await page.evaluate((path) => {
@@ -43,6 +45,7 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
   test(`${route}: a 403 refusal rejects the app's request with its refusal identifier and turns Approve off`, async ({ page }) => {
     const frame = await open(page, 403, { error: WORDS, code: 'app_key_grant_refused' });
     await expect.poll(() => responses(page)).toEqual([expect.objectContaining({ success: false, error: { code: 'UNKNOWN', message: 'APP_KEY_GRANT_REFUSED' } })]);
+    await expect(frame.locator('[role="alert"], [role="status"]').filter({ hasText: WORDS })).toHaveCount(1);
     await expect(frame.getByRole('alert')).toHaveText(WORDS);
     await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
   });

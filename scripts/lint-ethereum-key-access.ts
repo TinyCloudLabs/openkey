@@ -43,6 +43,21 @@ export const ALLOWLIST: AllowEntry[] = [
     includes: '*',
     reason: 'global admin metric aggregates over all keys (count only); returns no user data',
   },
+  {
+    file: 'services/legacy-reseal-boot.ts',
+    includes: 'where: { sealedBlob: { not: null } }',
+    reason: 'TC-3554 boot re-seal walks every sealed key row of any custody by design (ORG rows carry a random sealingContext, so they count as current and are never rewritten); it returns no key material to a caller',
+  },
+  {
+    file: 'services/legacy-reseal-boot.ts',
+    includes: 'where: { id: row.id, sealedBlob: row.sealed }',
+    reason: 'TC-3554 re-seal swap is a compare-and-set on the exact row and ciphertext the walk above read',
+  },
+  {
+    file: 'services/legacy-reseal-boot.ts',
+    includes: "where: { address: { equals: canaryAddress, mode: 'insensitive' }, keyType: 'MANAGED', sealedBlob: { not: null } }",
+    reason: 'TC-3554 canary lookup by the operator-pinned internal test address; the unsealed key must derive exactly that address',
+  },
 ];
 
 function balancedArgs(source: string, openIndex: number): string {

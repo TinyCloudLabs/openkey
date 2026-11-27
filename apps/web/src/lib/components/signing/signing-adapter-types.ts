@@ -19,6 +19,40 @@
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
 
+import type { ApproveVisibility } from '$lib/approve-visibility';
+import type { ClaimedPresentationView } from "$lib/claimed-presentation";
+
+/** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
+export interface RenewalChoice {
+  /** The lease the owner chose, in ms from approval; null when the box is unticked. */
+  leaseMs: number | null;
+  /** The longest lease the requester signed (never more than a year). */
+  maxLeaseMs: number;
+  /** The owner unticked the renewal checkbox during this review. */
+  turnedOff?: boolean;
+  deviceSignIn?: true;
+  /**
+   * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the
+   * same step (null: back to what the app asked for), so the preview is prepared once with both.
+   * `sensitiveConfirmed` is true only from the "Renew sensitive access?" confirm (TC-3821); the server refuses a lease
+   * on a grant reaching secrets without it. Unticking clears it; a later lease change keeps it.
+   */
+  onChange: (leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) => void;
+}
+
+/** Starting lifetime and copy for a signed approval request. */
+export interface ShortenOnlyExpiry {
+  startMs: number;
+  /**
+   * What the app asked for before the 7-day limit on secrets and decrypt (`startMs` is that ask, cut to the limit).
+   * The one-time choice reads "(the longest allowed)" only where this is more than `startMs`.
+   */
+  askedMs: number;
+  limitNote: (ms: number) => string;
+  /** Under the access line of a request for a secret's own key: its start and the most it can be. */
+  lengthNote: (startMs: number, maxMs: number) => string;
+}
+
 /** Transport injected by the CLI (`/delegate`) route. */
 export interface CliSigningTransport {
   /**
@@ -55,20 +89,28 @@ export interface CliSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+  /** Server-supplied reason for `error`, shown collapsed under it; absent or null when there is none. */
+  errorDetail?: string | null;
 
   /**
-   * The "Approval expires" choice (TC-2272). `bounded` is true for a signed
+   * How long the approval lasts (TC-2272, TC-2933). `bounded` is true for a signed
    * CLI approval request or a device approval, whose requester signed the
    * longest lifetime it accepts. `onChange` re-issues `/api/delegate/prepare`
    * so the bytes that get signed carry the choice.
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     bounded: boolean;
+    /** A signed approval request can shorten its starting expiry. */
+    shortenOnly?: ShortenOnlyExpiry | null;
     /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
     maxMs?: number | null;
     onChange: (ms: number | null) => void;
   };
+  /** The renewal checkbox; set only on an approval request that signed a renewal request. */
+  renewal?: RenewalChoice;
   /**
    * Set while the prepared authorization does not match the visible
    * selection (a narrowing `/prepare` failed or never ran). Approve stays
@@ -84,6 +126,8 @@ export interface CliSigningTransport {
 export interface WidgetSigningTransport {
   /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
   approveBlockedReason?: string | null;
+  /** Reports whether Approve is in plain view, for the one-passkey cover; see `approve-visibility.ts`. */
+  approveVisibility?: ApproveVisibility;
   /**
    * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
    * approval looks the node key up only there, and only if it is a known node (TC-2309).
@@ -100,6 +144,9 @@ export interface WidgetSigningTransport {
 
   /** True while a current, unexpired token sealed to the visible selection is held. */
   previewReady: boolean;
+
+  /** True while the passkey offer Approve needs is still being fetched: Approve waits, as it does for a preview. */
+  passkeyPending?: boolean;
 
   /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
@@ -135,13 +182,44 @@ export interface WidgetSigningTransport {
   refused?: boolean;
 
   /**
-   * The "Approval expires" choice (TC-2272). Set only when the signing path
+   * How long the approval lasts (TC-2272, TC-2933). Set only when the signing path
    * is the server-authoritative one, which writes the choice into the signed
    * message; unset on the exact-byte path, where the line is not shown.
    * `onChange` must invalidate any approved preview.
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
+    /** The server limits an owner's pick on a one-time approval to 7 days here (the popup and frame preview), so the one-time choice offers no more. */
+    oncePickCapped?: boolean;
     onChange: (ms: number | null) => void;
   };
+  /**
+   * The renewal checkbox (TC-2933); set only where the app's sign-in asked for renewal and the server offered it.
+   * `onChange` must make the next preview carry the choice (and the window, when given).
+   */
+  renewal?: RenewalChoice;
+  /**
+   * Set while the app's sign-in asked for renewal and the prepare answer has not arrived: the access line reads
+   * "Checking renewal…" instead of a length. Clears when the answer lands (offer or not) or the prepare fails.
+   */
+  renewalPending?: boolean;
+
+  /**
+   * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
+   * encryption network, or on keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
+   * `splittable` is false on the exact-byte path, where the request can only be approved or cancelled whole.
+   * `onDecide` receives the action ids the owner allowed and must make the next preview (or sign) carry them.
+   */
+  elevated?: {
+    splittable: boolean;
+    onDecide: (allowed: string[]) => void;
+  };
+
+  /**
+   * What the app says about a plain `signMessage()` request, already cleaned and decided by `claimedPresentation`.
+   * Display-only: the approval shows it under the verified origin and nothing here reaches the signer or the API.
+   */
+  claimedPresentation?: ClaimedPresentationView | null;
 }

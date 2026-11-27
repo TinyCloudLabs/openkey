@@ -1,25 +1,48 @@
 <script lang="ts">
   import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { daysOverTwoDays, defaultLeaseMs, formatDuration, formatEndDay, LEASE_PRESETS, leaseLimitNote } from '$lib/approval-expiry';
+  import { formatLocalAccessEnd } from '$lib/access-end';
+  import { isTermsRequired } from '$lib/terms';
+  import { termsRefused } from '$lib/terms-gate';
+  import DurationChoice from '$lib/components/signing/duration-choice.svelte';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
-    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading, renderSiweLiteral,
+    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading, parseSiweFields, renderSiweLiteral,
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
+  import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
+  import NativeStepUpConsent from './NativeStepUpConsent.svelte';
+  import { isStepUpPreview, stepUpAppName, type StepUpSpace } from '$lib/native-stepup';
 
   let { requestId, clientId, email, ready }: {
     requestId: string; clientId: string; email?: string;
     /** The session has resolved; the request is only prepared once it has. */
     ready: boolean;
   } = $props();
+  type LeasedChoice = { choice: 'leased'; leaseLifetimeSeconds: number; sensitiveConfirmed?: true };
+  type RenewalChoice = { choice: 'finite' } | LeasedChoice;
+  const finiteChoice: RenewalChoice = { choice: 'finite' };
   type Preview = {
     requestId: string; revision: number; digest: string; sessionSiwe: string;
     hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null;
     client: { name: string; icon?: string | null; organization?: string | null };
     address: string; keyId: string; redirectScheme: string; tinycloudHost: string;
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
+    renewal?: RenewalChoice;
+    renewalAvailable?: boolean;
+    renewalMaxLeaseLifetimeSeconds?: number;
+    renewalPurpose?: 'standing' | 'task';
+    renewalSensitiveConfirmationRequired?: boolean;
+    /** TC-3442: whether Approve needs the passkey, with the challenge for this revision. */
+    passkey?: ApprovalPasskeyNeed;
+    /** The request kind: SIGNIN, or STEPUP (with `stepUp`, `spaces` and `reactivation`). */
+    kind?: string;
+    stepUp?: { grantId: string; appId: string };
+    spaces?: StepUpSpace[];
+    reactivation?: boolean;
   };
   let preview = $state<Preview | null>(null);
   let model = $state<CapabilityReviewModel | null>(null);
@@ -28,10 +51,23 @@
   let loading = $state(true);
   let submitting = $state(false);
   let approved = $state(false);
+  let confirmingLeaseMs = $state<number | null>(null);
+  let renewalCheckbox = $state<HTMLInputElement | null>(null);
+  let renewalConfirm = $state<HTMLHeadingElement | null>(null);
   let error = $state('');
+  /** The API refused to prepare or approve a step-up because a space it needs is not hosted (`space_not_hosted`). */
+  let unhosted = $state(false);
+  /** The API sent a kind this page cannot show (none, an unknown one, or a STEPUP that names no app or spaces). */
+  let refused = $state(false);
   let serial = 0;
-  const blocked = $derived(model && preview && !preparedMatchesSelection(model, baselineOptions, selection, preview.selectedActionKeys)
+  const leased = $derived(preview?.renewal?.choice === 'leased' ? preview.renewal : null);
+  const leaseMaxMs = $derived((preview?.renewalMaxLeaseLifetimeSeconds ?? 0) * 1000);
+  const stepUpPreview = $derived(preview && isStepUpPreview(preview) ? preview : null);
+  // A step-up has no optional actions: every capability is requested and none can be switched off.
+  const blocked = $derived(model && preview && !stepUpPreview && !preparedMatchesSelection(model, baselineOptions, selection, preview.selectedActionKeys)
     ? 'The selected permissions have not been prepared yet.' : null);
+  const failedWith = (cause: unknown, code: string) => (cause as { errorCode?: unknown } | null)?.errorCode === code;
+  const preparedKeys = () => (stepUpPreview ? undefined : reviewSelectionToActionKeys(model!, baselineOptions, selection));
 
   function oauthQuery(): string | undefined {
     const params = new URLSearchParams(window.location.search);
@@ -45,18 +81,38 @@
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
+    if (isTermsRequired(response.status, data)) termsRefused();
+    if (!response.ok) {
+      const failure = new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
+      throw Object.assign(failure, { code: typeof data.code === 'string' ? data.code : undefined, errorCode: typeof data.error === 'string' ? data.error : undefined });
+    }
     return data;
   }
-  async function prepare(actionKeys?: string[]) {
+  async function prepare(actionKeys?: string[], renewal?: RenewalChoice, reapply?: LeasedChoice) {
     const turn = ++serial;
     loading = true;
     error = '';
+    unhosted = false;
+    refused = false;
     try {
-      const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
+      const data = await route('prepare', { ...(actionKeys && { actionKeys }), ...(renewal && { renewal }) }) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
       if ('status' in data) { approved = true; return; }
-      if (!model) {
+      // An explicit kind decides the screen, with no default: SIGNIN renders the sign-in screen, STEPUP the step-up
+      // screen, and anything else is an error with no Allow: no kind (a preview that carries `stepUp` or `spaces`
+      // without one is not a sign-in), an unknown kind, or a STEPUP that does not name its app and spaces. The API
+      // sends a kind on every preview, so the web must not be deployed before it.
+      if (data.kind === 'STEPUP' ? !isStepUpPreview(data) : data.kind !== 'SIGNIN') {
+        // Nothing of an earlier prepare stays on screen: no model and no preview to Allow from, only the way back.
+        preview = null;
+        model = null;
+        refused = true;
+        return;
+      }
+      // A step-up is always read afresh from the text it will sign: its list is what that text says, never an older
+      // prepare's. (A sign-in keeps its first parse, which holds the user's selection across re-prepares.)
+      const initialPreview = !model;
+      if (!model || data.kind === 'STEPUP') {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
           signer: { label: 'Canonical OpenKey key', address: data.address, chainId: 1, provenance: 'managed' },
@@ -71,10 +127,23 @@
         baselineOptions = data.permissionOptions;
         selection = defaultSelection(parsed);
       } else {
-        model = { ...model, rawMessage: data.sessionSiwe };
+        const parsed = parseSiweFields(data.sessionSiwe);
+        model = { ...model, rawMessage: data.sessionSiwe, expiry: parsed.ok ? parsed.fields.expirationTime ?? null : null };
       }
       preview = data;
-    } catch (cause) { if (turn === serial) error = cause instanceof Error ? cause.message : 'Preparation failed'; }
+      if (data.renewalAvailable && !data.renewalSensitiveConfirmationRequired && data.renewalMaxLeaseLifetimeSeconds) {
+        const leaseSeconds = reapply?.leaseLifetimeSeconds ??
+          (initialPreview && data.renewalPurpose === 'standing' ? defaultLeaseMs(data.renewalMaxLeaseLifetimeSeconds * 1000) / 1000 : null);
+        if (leaseSeconds !== null) await prepare(actionKeys, {
+          choice: 'leased', leaseLifetimeSeconds: Math.min(leaseSeconds, data.renewalMaxLeaseLifetimeSeconds),
+        });
+      }
+    } catch (cause) {
+      if (turn !== serial) return;
+      error = cause instanceof Error ? cause.message : 'Preparation failed';
+      // This step-up asks for a space the account does not host yet; the screen says so instead of a generic failure.
+      if (failedWith(cause, 'space_not_hosted')) unhosted = true;
+    }
     finally { if (turn === serial) loading = false; }
   }
   async function providerConsent(accept: boolean) {
@@ -83,26 +152,73 @@
       body: JSON.stringify({ accept, oauth_query: oauthQuery() }),
     });
     const data = await response.json().catch(() => ({}));
+    if (isTermsRequired(response.status, data)) termsRefused();
     if (!response.ok) throw new Error(data.error ?? data.message ?? 'Consent failed');
     const target = safeOAuthNavigationUrl(data.uri ?? data.url ?? (typeof data.redirect === 'string' ? data.redirect : undefined));
     if (!target) throw new Error('The application returned an unsafe redirect URI');
     window.location.href = target;
   }
+  function setRenewal(renewal: RenewalChoice) {
+    return prepare(preparedKeys(), renewal);
+  }
+  function useLease(leaseMs: number, sensitiveConfirmed?: true) {
+    return setRenewal({ choice: 'leased', leaseLifetimeSeconds: Math.round(leaseMs / 1000),
+      ...(sensitiveConfirmed && { sensitiveConfirmed }) });
+  }
+  function toggleRenewal(event: Event) {
+    const checkbox = event.currentTarget as HTMLInputElement;
+    const checked = checkbox.checked;
+    checkbox.checked = leased !== null;
+    if (!checked) { void setRenewal(finiteChoice); return; }
+    if (preview?.renewalSensitiveConfirmationRequired) {
+      confirmRenewal(defaultLeaseMs(leaseMaxMs));
+      return;
+    }
+    void useLease(defaultLeaseMs(leaseMaxMs));
+  }
+  function confirmRenewal(ms: number) {
+    confirmingLeaseMs = ms;
+    queueMicrotask(() => renewalConfirm?.focus());
+  }
+  function changeLeaseDuration(ms: number) {
+    if (preview?.renewalSensitiveConfirmationRequired && ms > (leased?.leaseLifetimeSeconds ?? 0) * 1000) {
+      confirmRenewal(ms);
+    } else {
+      void useLease(ms, leased?.sensitiveConfirmed);
+    }
+  }
+  function closeRenewalConfirm(confirmed: boolean) {
+    const ms = confirmingLeaseMs;
+    confirmingLeaseMs = null;
+    if (confirmed && ms !== null) void useLease(ms, true);
+    queueMicrotask(() => renewalCheckbox?.focus());
+  }
   async function approve() {
-    if ((!approved && (!preview || blocked)) || submitting) return;
+    if ((!approved && (!preview || blocked || loading || confirmingLeaseMs !== null)) || submitting) return;
     submitting = true; error = '';
+    const current = preview;
     try {
       if (!approved) {
-        const current = preview;
         if (!current) throw new Error('Preparation missing');
+        // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture.
+        const passkeyAssertion = await answerApprovalPasskey(current.passkey);
         await route('approve', { revision: current.revision, digest: current.digest,
-          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}) });
+          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}),
+          ...(current.renewal && { renewal: current.renewal }), ...(passkeyAssertion ? { passkeyAssertion } : {}) });
         approved = true;
       }
       await providerConsent(true);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Approval failed';
-      if (error === 'preparation_superseded') await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+      // The API withdrew this approval because a space the app needs is not hosted: there is nothing left to Allow.
+      if (failedWith(cause, 'space_not_hosted')) unhosted = true;
+      else if (error === 'preparation_superseded') await prepare(preparedKeys(), current?.renewal);
+      // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
+      else if (isPasskeyApprovalRefusal(cause) || (failedWith(cause, 'renewal_failed') && current?.passkey?.required)) {
+        const refusal = error;
+        await prepare(preparedKeys(), current?.renewal);
+        error = refusal;
+      }
       submitting = false;
     }
   }
@@ -120,13 +236,16 @@
   }
   function changeSelection(next: Set<string>) {
     selection = next;
-    if (model) prepare(reviewSelectionToActionKeys(model, baselineOptions, next));
+    confirmingLeaseMs = null;
+    if (!model) return;
+    const actionKeys = reviewSelectionToActionKeys(model, baselineOptions, next);
+    if (leased) void prepare(actionKeys, finiteChoice, leased.sensitiveConfirmed ? undefined : leased);
+    else void prepare(actionKeys, preview?.renewal);
   }
-  const duration = (seconds: number) => {
-    const [count, unit] = seconds % 86400 === 0 ? [seconds / 86400, 'day']
-      : seconds % 3600 === 0 ? [seconds / 3600, 'hour'] : [Math.round(seconds / 60), 'minute'];
-    return `${count} ${unit}${count === 1 ? '' : 's'}`;
-  };
+  const duration = (seconds: number) => formatDuration(seconds * 1000);
+  // Over two days the day the longest grant ends too: "30 days, until 17 Dec,".
+  const lifetime = (seconds: number) =>
+    daysOverTwoDays(seconds * 1000) === null ? duration(seconds) : `${duration(seconds)}, until ${formatEndDay(seconds * 1000)},`;
   let started = false;
   $effect(() => { if (ready && !started) { started = true; prepare(); } });
   const summary = $derived(model && preview ? nativeAccessSummary(model, selection, preview.client.name) : null);
@@ -144,13 +263,33 @@
     `${grant.space}${grant.resourceService ? `/${grant.resourceService}` : ''}${grant.path ? `/${grant.path}` : ''}`;
 </script>
 
-<NativeShell {clientId} heading={(name) => `${name} wants access`} name={preview?.client.name ?? null}>
-  {#if !ready || (loading && !preview)}
+<NativeShell {clientId} name={preview ? preview.client.name : unhosted || refused ? undefined : null}
+  heading={(name) => unhosted || refused ? 'This app can’t be allowed yet' : stepUpPreview ? `Give ${stepUpAppName(stepUpPreview.stepUp.appId)} more access` : `${name} wants access`}>
+  {#if !ready || (loading && !preview && !unhosted && !refused)}
     <p class="nb-lede" role="status">Preparing your request…</p>
+  {:else if refused}
+    <section class="panel" aria-label="Request not supported">
+      <p class="sentence" role="alert">This request needs a newer version of the app.</p>
+      <p class="note">Nothing was allowed. Update the app, then try again.</p>
+    </section>
+    {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+    <div class="nb-stack actions-row">
+      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Back to the app</button>
+    </div>
+  {:else if unhosted}
+    <section class="panel" aria-label="Space not set up">
+      <p class="sentence" role="alert">One of the spaces this app needs is not set up on your TinyCloud account yet, so it can’t be allowed yet.</p>
+      <p class="note">Nothing was allowed. Go back to the app; it can ask again once the space is set up.</p>
+    </section>
+    <div class="nb-stack actions-row">
+      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Back to the app</button>
+    </div>
   {:else if approved}
     <p class="nb-lede">Your delegation was approved. Continue to return to the app.</p>
     {#if error}<p role="alert" class="nb-error">{error}</p>{/if}
     <button type="button" class="nb-button nb-primary" disabled={submitting} onclick={approve}>Continue to app</button>
+  {:else if stepUpPreview && model}
+    <NativeStepUpConsent preview={stepUpPreview} {model} {email} {error} {malformed} {loading} {submitting} onapprove={approve} ondeny={deny} />
   {:else if preview && model && summary}
     <p class="nb-lede signed-in">Signed in as <strong>{email}</strong></p>
 
@@ -159,7 +298,43 @@
       {#each summary.warnings as warning}
         <p class="note warning" role="status">{warning}</p>
       {/each}
-      <p class="note">Access lasts up to {duration(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
+      {#if leased}
+        {#if leased.leaseLifetimeSeconds > preview.ttlSeconds}
+          <p class="note">Your TinyCloud node renews this access for up to {duration(leased.leaseLifetimeSeconds)}.</p>
+        {:else}
+          <p class="note">Access lasts {duration(preview.ttlSeconds)}.</p>
+        {/if}
+      {:else}
+        <p class="note">Access lasts up to {lifetime(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
+      {/if}
+      {#if preview.renewalAvailable}
+        <div class="renewal-options">
+          {#if confirmingLeaseMs !== null}
+            <div role="alertdialog" tabindex="-1" aria-labelledby="native-renewal-heading" aria-describedby="native-renewal-description"
+              onkeydown={(event) => { if (event.key === 'Escape') closeRenewalConfirm(false); }}>
+              <h2 id="native-renewal-heading" tabindex="-1" bind:this={renewalConfirm}>Renew sensitive access?</h2>
+              <p id="native-renewal-description" class="note">This lets {preview.client.name} keep the sensitive access listed here for up to {formatDuration(confirmingLeaseMs)}. You can stop renewal under Renewing permissions in Settings.</p>
+              <div class="renewal-actions">
+                <button type="button" class="nb-button" onclick={() => closeRenewalConfirm(false)}>Don't renew</button>
+                <button type="button" class="nb-button nb-primary" onclick={() => closeRenewalConfirm(true)}>Turn on renewal</button>
+              </div>
+            </div>
+          {:else}
+            <label class="action-toggle">
+              <input type="checkbox" checked={leased !== null} disabled={loading || submitting} bind:this={renewalCheckbox} onchange={toggleRenewal} />
+              <span>Renew access automatically</span>
+            </label>
+            {#if leased}
+              <details class="renewal-length">
+                <summary class="nb-details-summary">Renewal duration</summary>
+                <DurationChoice id="native-renewal-lease" legend="Renews for up to" presets={LEASE_PRESETS}
+                  valueMs={leased.leaseLifetimeSeconds * 1000} maxMs={leaseMaxMs} limitNote={leaseLimitNote}
+                  disabled={loading || submitting} onChoose={changeLeaseDuration} />
+              </details>
+            {/if}
+          {/if}
+        </div>
+      {/if}
       {#if preview.hostPlan}
         <p class="note">First sign-in: this also lets your TinyCloud node host your data.</p>
       {/if}
@@ -176,8 +351,12 @@
           <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
           <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
-          {#if model.expiry}<dt>Expires</dt><dd>{model.expiry}</dd>{/if}
-          <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
+          {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
+          {#if leased}
+            <dt>Each renewal lasts</dt><dd>Each renewal lasts up to {duration(preview.ttlSeconds)}.</dd>
+          {:else}
+            <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
+          {/if}
         </dl>
         {#if model.metadataTrust.reason}
           <p class="note">{model.metadataTrust.reason}</p>
@@ -238,7 +417,7 @@
     {/if}
 
     <div class="nb-stack actions-row">
-      <button type="button" class="nb-button nb-primary" onclick={approve} disabled={submitting || loading || malformed || Boolean(blocked)}>
+      <button type="button" class="nb-button nb-primary" onclick={approve} disabled={submitting || loading || confirmingLeaseMs !== null || malformed || Boolean(blocked)}>
         {submitting ? 'Working…' : 'Allow'}
       </button>
       <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Don't allow</button>
@@ -273,6 +452,25 @@
     font-size: 14px;
     line-height: 1.45;
     color: var(--nb-muted);
+  }
+
+  .renewal-options {
+    margin-top: 12px;
+  }
+
+  .renewal-options h2 {
+    margin-bottom: 0;
+  }
+
+  .renewal-length {
+    margin-top: 4px;
+  }
+
+  .renewal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
   }
 
   .warning {

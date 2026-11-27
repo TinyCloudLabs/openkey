@@ -38,6 +38,8 @@ export type {
   NativeFetchResponse,
   NativeSessionJwk,
   NativeDelegationPermission,
+  NativeRenewalAsk,
+  NativeRenewalReceipt,
   TinyCloudDelegationRequest,
   TinyCloudDelegation,
   OpenKeyServerMetadata,
@@ -53,6 +55,17 @@ export type {
   RenewDelegationOptions,
   RenewDelegationResult,
   RevokeDelegationOptions,
+  NativeStepUpPermission,
+  NativeStepUpSpace,
+  NativeStepUpSpaceRef,
+  NativeStepUpRejection,
+  NativeStepUpRenewal,
+  TinyCloudStepUp,
+  RequestStepUpOptions,
+  NativeStepUpHomeBinding,
+  ValidateStepUpOptions,
+  ExchangeStepUpCodeOptions,
+  RevokeStepUpOptions,
   SleepFn,
 } from './native-delegation';
 export {
@@ -81,6 +94,15 @@ export {
   exchangeDelegationCode,
   renewDelegation,
   revokeDelegation,
+  NATIVE_STEP_UP_SPACES,
+  isNativeStepUpAppId,
+  nativeStepUpHomeBinding,
+  requestStepUp,
+  validateTinyCloudStepUp,
+  exchangeStepUpCode,
+  revokeStepUp,
   parseRetryAfterSeconds,
   delegationNeedsRenewalNow,
 } from './native-delegation';
+
+export { sameTinyCloudHost } from './tinycloud-host';

@@ -3,6 +3,7 @@
 import { test, expect } from '@playwright/test';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const owner = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
 const shareId = '3f9c1a7e5b2d48a09c6e1f7a2b4d8c03';
@@ -28,6 +29,7 @@ test('a 32-hex key id in an approval row wraps: no sideways scroll, the Sensitiv
     label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
   } } }));
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: { authorizationContextToken: 'context-token' } }));
   await page.goto('/__parity_harness');
   await page.evaluate(() => {

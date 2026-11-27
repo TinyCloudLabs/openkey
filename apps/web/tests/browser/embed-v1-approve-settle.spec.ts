@@ -6,19 +6,21 @@
 import { test, expect, type Page } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
 
 type Parent = 'sdk-modal' | 'never-resizes' | 'resizes-forever';
 
-async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0) {
+async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0, clickOnFirstSight = false) {
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', async (route) => {
     if (keyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, keyDelayMs));
     await route.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: {
     authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString(),
   } }));
@@ -34,8 +36,8 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
     } });
   });
   await page.goto('/__parity_harness');
-  await page.evaluate(([mode, protocol, message]) => {
-    const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number };
+  await page.evaluate(([mode, protocol, message, clickFirst]) => {
+    const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number; firstClick?: { disabled: boolean; t: number } };
     w.frameLog = [];
     w.resizeCount = 0;
     // The SDK modal: a flex-centred card around a 400px frame with a 200ms height transition (index.ts:587).
@@ -69,17 +71,46 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
       let flip = false;
       setInterval(() => { flip = !flip; frame.style.transition = 'none'; frame.style.height = flip ? '380px' : '420px'; }, 40);
     }
-    // Sample the Approve button's page position and enabled state every animation frame.
+    // Sample the Approve button's page position and enabled state every animation frame. Every change of its
+    // `disabled` attribute is also recorded as it happens: a parent that resizes the frame faster than a frame
+    // interval can leave Approve enabled for less than one sample, and a sampler alone would miss that.
+    const watched = new WeakSet<Document>();
+    const watch = (doc: Document) => {
+      // A document that is still being replaced has no root yet; the next frame tries again.
+      if (watched.has(doc) || !doc.documentElement) return;
+      watched.add(doc);
+      new MutationObserver((records) => {
+        for (const record of records) {
+          const target = record.target as HTMLButtonElement;
+          if (!target.matches('button.approve')) continue;
+          const box = frame.getBoundingClientRect();
+          w.frameLog.push({
+            t: Math.round(performance.now() - t0),
+            top: Math.round((box.top + target.getBoundingClientRect().top) * 10) / 10,
+            enabled: !target.disabled,
+          });
+        }
+      }).observe(doc.documentElement, { attributes: true, attributeFilter: ['disabled'], subtree: true });
+    };
     const sample = () => {
+      if (frame.contentDocument) watch(frame.contentDocument);
       const button = frame.contentDocument?.querySelector('button.approve') as HTMLButtonElement | null;
       const box = frame.getBoundingClientRect();
       const top = button ? Math.round((box.top + button.getBoundingClientRect().top) * 10) / 10 : NaN;
-      w.frameLog.push({ t: Math.round(performance.now() - t0), top, enabled: button ? !button.disabled : null });
+      const t = Math.round(performance.now() - t0);
+      // Opt-in: a scripted click in the very frame the button is first seen, before the settle gate can have opened.
+      if (clickFirst && button && !w.firstClick) {
+        w.firstClick = { disabled: button.disabled, t };
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      }
+      w.frameLog.push({ t, top, enabled: button ? !button.disabled : null });
       w.sampleTimer = requestAnimationFrame(sample);
     };
     sample();
-  }, [parent, version, siwe] as const);
+  }, [parent, version, siwe, clickOnFirstSight] as const);
 }
+
+const firstClick = (page: Page) => page.evaluate(() => (window as unknown as Window & { firstClick?: { disabled: boolean; t: number } }).firstClick);
 
 const samples = (page: Page) => page.evaluate(() => (window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }> }).frameLog);
 
@@ -175,17 +206,12 @@ test('a v1 frame that has settled: a click made by a script approves', async ({ 
 
 test('a v1 frame that is still moving: a click made by a script does nothing, and approves once it has settled', async ({ page }) => {
   const approvals = await approvalRequests(page);
-  await openEmbed(page, 'sdk-modal');
+  await openEmbed(page, 'sdk-modal', 1, 0, true);
   await reviewShown(page);
-  // At first display the frame is still animating: Approve is disabled.
+  // At first display the frame is still animating: Approve is disabled. The harness clicked it in that same frame.
   const approvalCount = approvals.length;
-  const disabledAfterClick = await approveFrame(page).evaluate(() => {
-    const button = document.querySelector('button.approve') as HTMLButtonElement;
-    const disabled = button.disabled;
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return disabled;
-  });
-  expect(disabledAfterClick).toBe(true);
+  await expect.poll(() => firstClick(page), { timeout: 45_000 }).toBeDefined();
+  expect((await firstClick(page))!.disabled).toBe(true);
   await page.waitForTimeout(250);
   expect(approvals).toHaveLength(approvalCount);
   await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();

@@ -18,6 +18,12 @@ export interface DelegateErrorResponse {
   code: DelegateErrorCode;
   message: string;
   details?: DelegateErrorDetail[];
+  /**
+   * Wallet address that owns the requested space, as written in the request.
+   * Present only when a requested space belongs to a different wallet than the
+   * signing key.
+   */
+  requestedSpaceOwner?: string;
 }
 
 export class DelegateRequestError extends Error {
@@ -25,6 +31,7 @@ export class DelegateRequestError extends Error {
     public code: DelegateErrorCode,
     message: string,
     public details?: DelegateErrorDetail[],
+    public requestedSpaceOwner?: string,
   ) {
     super(message);
     this.name = 'DelegateRequestError';
@@ -46,6 +53,9 @@ export function delegateErrorResponse(
   if (err instanceof DelegateRequestError && err.details?.length) {
     response.details = err.details;
   }
+  if (err instanceof DelegateRequestError && err.requestedSpaceOwner) {
+    response.requestedSpaceOwner = err.requestedSpaceOwner;
+  }
 
   return response;
 }
@@ -63,14 +73,4 @@ export function normalizeDelegateReason(reason: unknown): string | undefined {
   if (!normalized) return undefined;
 
   return normalized.slice(0, 500);
-}
-
-/**
- * The Expiration Time of a SIWE message. Response expiry fields come only
- * from the signed bytes, never from caller-supplied metadata (TC-547).
- */
-export function signedSiweExpirationTime(siwe: unknown): string | undefined {
-  if (typeof siwe !== 'string') return undefined;
-  const expirationTime = siwe.match(/^Expiration Time:\s*(.+)$/im)?.[1]?.trim();
-  return expirationTime && !Number.isNaN(Date.parse(expirationTime)) ? expirationTime : undefined;
 }

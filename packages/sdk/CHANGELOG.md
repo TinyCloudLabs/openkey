@@ -1,5 +1,80 @@
 # @openkey/sdk
 
+## 0.13.0-beta.4
+
+### Patch Changes
+
+- 20f3efb: Approval pages end on one code page, where the code box copies itself and counts down, or one done page with a short receipt and nothing to copy.
+
+  Details: TC-3441
+
+- 911925f: Add the `@openkey/sdk/approval-copy` entry point: the texts of the approval pages, the table that maps a server reply to one of them, and `fill()` for the `{placeholders}`.
+
+  Details: TC-3441
+
+- 6800837: The approval copy line for requests that can open all your secrets or all your encrypted data says they start at 1 hour and can be made longer, up to what the app asked for.
+
+  Details: TC-3111
+
+- b7a3937: Approval copy has a line for the 1-hour start on requests that can open all your secrets or all your encrypted data, and a line for the limit in the duration picker.
+
+  Details: TC-3510
+
+- 4f3532d: When an approval can't continue, OpenKey shows one Stop page with the next step, for delegate approvals, prepared sign-in and revoke.
+
+  Details: TC-3441
+
+- 5520118: Approval copy has the heading, the line under it and the decrypt-row note for a one-tap request to use one named secret (`ONE_SECRET`).
+
+  Details: TC-3695
+
+- e952d08: The Google and Apple sign-in window and the revoke review match the other approval pages. The revoke review shows the full permission ID, which can be copied, with Cancel and Revoke buttons.
+
+  Details: TC-3441
+
+- 233c73c: `signMessage()` accepts an optional `presentation` (`SignMessagePresentationV1`: `displayName`, `reason`, `onBehalfOf`, `iconUrl`). The OpenKey window shows it under the verified origin as the app's own, unchecked words; the signed bytes don't include it. The request carries `presentation` only to an OpenKey window whose `openkey:ready` message says `presentation: 1`, and a window without that flag never receives it. `OpenKey.signMessagePresentation` is `1`, a marker that this client sends it. `OpenKey.signMessageShowsApproval` is true when `signMessage()` opens the OpenKey approval screen and false when it goes straight to the person's own wallet.
+
+  Details: TC-3706
+
+- 377d81f: `signOut({ onProgress })` can report when the sign-out dialog is ready and when the owner confirms.
+
+  Details: TC-2792
+
+- 353cfa8: Approval copy for secret keys: `ONE_SECRET.decryptNote` is "Lets it open only this secret.", and `APPROVAL_EXPIRY` has `lengthen` and `lengthFixed`, the length line of a request for a secret's own key.
+
+  Details: TC-3800
+
+- 98a11cf: An approval for access that can open all your secrets or all your encrypted data starts at 1 hour. Under "How long" the owner picks "1 hour" or the length the app asked for, for example "7 days (what the app asked)". When the server limits the length, that option reads "7 days (the longest allowed)". The longer length applies only once the owner picks it, and the length shown is the length signed. A request for 1 hour or less shows no choice. A line under the choice says what the access can open: "This access can open all your encrypted data.", "This access can open all your secrets." or "This access can open a wide range of your data." The choice appears on the sign-in popup, the embedded sign-in and the approval link page. Removing the broad access and adding it back sets the length to 1 hour. `@openkey/capability-review` exports `grantOnceReach` and the `OnceReach` type. `APPROVAL_EXPIRY.onceStart` in `@openkey/sdk` is deprecated.
+
+  Details: TC-4156
+
+- c913aad: The delegate page shows the API's `renewal_refused` words inline (approval-copy stop `renewalRefused`) when a renewal lease on a grant that reaches secrets is refused.
+
+  Details: TC-3821
+
+## 0.13.0-beta.3
+
+### Minor Changes
+
+- cb63731: Signing requests the server refuses now reject with their own error code instead of `UNKNOWN`: `APP_KEY_GRANT_REFUSED` (the request asks for an encryption key this website can't be granted), `KEY_DELETE_NOT_GRANTABLE` or `INVALID_SIWE_RECAP`. The codes are exported as the `OpenKeyRefusalCode` type, and the messages are unchanged. Apps that check `code === 'UNKNOWN'` for these refusals need to check the new codes instead.
+
+  Details: TC-2928
+
+### Patch Changes
+
+- Updated dependencies [5ee1a51]
+  - @openkey/core@0.13.0-beta.3
+
+## 0.13.0-beta.2
+
+### Minor Changes
+
+- 4e43d91: `authorizeTinyCloud` takes `renewal: { version: 1, leaseLifetimeSeconds, purpose? }` beside `expiryChangeable: true` (TC-2872). It asks OpenKey's sign-in window to offer automatic renewal. The result carries the owner's `renewalChoice` and, when renewal was left on, the owner-signed lease as `renewal` (the approval-renewal codec). OpenKey doesn't send the lease to the node: the app registers the grant, then has the node admit the lease with `admitOwnerRenewalLease`. With an external wallet, the wallet signs the lease after the grant, and declining it fails the sign-in. A malformed ask, or one without `expiryChangeable: true`, throws before anything opens.
+
+### Patch Changes
+
+- ffa679d: The `expiryChangeable` doc now describes the approval screen's new line: OpenKey shows "This permission expires in …", with the time changed under "How long it lasts" (TC-2933). No code change.
+
 ## 0.13.0-beta.1
 
 ### Patch Changes

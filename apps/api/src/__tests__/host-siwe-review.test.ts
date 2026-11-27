@@ -49,6 +49,7 @@ function hostSiwe(opts: { uri?: string | string[]; spaces?: string[]; expiry?: s
     `${domain} wants you to sign in with your Ethereum account:`,
     OWNER,
     '',
+    '',
     ...uris.map((uri) => `URI: ${uri}`),
     'Version: 1',
     'Chain ID: 1',
@@ -106,17 +107,18 @@ describe('readSpaceHostFacts', () => {
     expect(readSpaceHostFacts(review('not a sign-in message'))).toBeNull();
   });
 
-  test("another owner's space has no facts", () => {
-    expect(readSpaceHostFacts(review(hostSiwe({ spaces: [space('default', OTHER_OWNER)] })))).toBeNull();
+  test("another owner's space has host facts like the signer's own", () => {
+    const facts = readSpaceHostFacts(review(hostSiwe({ spaces: [space('default', OTHER_OWNER)] })));
+    expect(facts?.spaces.map((s) => s.spaceId)).toEqual([space('default', OTHER_OWNER)]);
+    expect(facts?.peerDid).toBe(PEER);
   });
 
-  test('a URI that is not exactly one node key gives no node key but keeps the space', () => {
-    for (const uri of ['https://app.example/', 'did:web:example.com', 'did:key:abc', 'did:key:z6Mk bad']) {
+  test('a URI that is not one node key gives no node key; a SIWE with a bad or second URI line is not reviewable', () => {
+    for (const uri of ['https://app.example/', 'did:web:example.com', 'did:key:abc']) {
       expect(readSpaceHostFacts(review(hostSiwe({ uri })))?.peerDid).toBeNull();
     }
-    const twice = readSpaceHostFacts(review(hostSiwe({ uri: [PEER, OTHER_PEER] })));
-    expect(twice?.peerDid).toBeNull();
-    expect(twice?.spaces).toHaveLength(1);
+    expect(readSpaceHostFacts(review(hostSiwe({ uri: 'did:key:z6Mk bad' })))).toBeNull();
+    expect(readSpaceHostFacts(review(hostSiwe({ uri: [PEER, OTHER_PEER] })))).toBeNull();
   });
 
   test('a time-limited SIWE is read the same way (the key may then be a session key)', () => {

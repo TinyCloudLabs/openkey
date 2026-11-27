@@ -3,6 +3,49 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-22
+
+- API deploys (deploy-api.yml, tc-492-production-cutover.yml) write the image into the compose only
+  by digest, fail on any tag-only or `${VAR}` image, attest build provenance, and publish the
+  measured app-compose on the release `openkey-api-<commit>` (TC-3837).
+
+## 2026-11-21
+
+- Share sender smoke now follows production Pages check completion instead of
+  polling on every push. Unpublished web does not fail smoke; the newest completed
+  non-cancelled attempt decides after retries. API-deploy smoke is unchanged (TC-3683).
+
+## 2026-11-20
+
+- CI: the Dependabot Changeset workflow cancels superseded runs for the same PR.
+  Web browser tests isolate non-PR runs by run ID so pending main runs cannot
+  replace one another.
+
+## 2026-11-16
+
+- Hosted app-review accounts (TC-2775): the native-grant column guard, both migration
+  checksum registries and the reviewer policy were corrected, and the operator steps are in
+  `docs/deployment.md` under "Hosted app-review accounts". `agent.dev.md` notes the two
+  registries that pin a migration checksum and the count-only reserved-address preflight.
+  It also notes that an applied migration's file and checksum pins are frozen, so a feature
+  that added a column to it is backed out in code only.
+- Added the Claude, Grok and Muse personal-record MCP audiences and their exact
+  delegation callbacks alongside the broad and ChatGPT ones. Release needs the API
+  and web changes, the connector's token-status client registered for the new
+  resources, and the SDK candidate. No default-branch integration or deployment
+  without explicit owner approval.
+
+## 2026-11-13
+
+- The API tests workflow gained a `renewal-lease-postgres` job: the renewal lease integration
+  test also runs against a throwaway Postgres (`OPENKEY_TEST_POSTGRES_URL`), for lock and race
+  cases PGlite cannot show. Noted in `CLAUDE.md` under API Tests. Tracked in TC-2946.
+
+## 2026-11-11
+
+- Added administrator-managed hosted app-review sign-in and fixture account operations
+  for OpenAI and Google connectors (TC-2775).
+
 ## 2026-10-21
 
 - Added the public personal-record MCP audience and exact delegation callback
@@ -50,3 +93,7 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 - Added initial agent development notes covering project context, related repositories, build and
   testing expectations, debugging guidance, and additional repo-specific operating context. Tracked
   in TC-1389.
+
+## 2026-11-27 — accurate compatibility classification
+
+Permit major changesets for breaking stable API changes while retaining authorization for actual version bumps and releases. Remove the instruction to label breaking changes as minor.

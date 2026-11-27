@@ -64,9 +64,39 @@ export function passkeysQueryFlag(passkeysSupported: boolean): string {
   return passkeysSupported ? '' : '&passkeys=false';
 }
 
+/**
+ * What the app says about a `signMessage()` request, for OpenKey's sign screen to show as the app's own words. It is
+ * display-only: the signed bytes are the `message` and nothing here is signed or stored. OpenKey shows it beneath the
+ * verified origin, marked as unchecked, and leaves out any part it does not accept (a name that imitates OpenKey or a
+ * TinyCloud product, an image that is not a small PNG, JPEG or WebP data URI).
+ */
+export type SignMessagePresentationV1 = Pick<CapabilityPresentationEnvelopeV1, 'protocolVersion' | 'displayName' | 'reason'> & {
+  /** Who the grant is for, such as "Notes in Acme". */
+  onBehalfOf?: string;
+  /** A `data:image/png|jpeg|webp;base64,...` URI of at most 32768 characters. */
+  iconUrl?: string;
+};
+
 export interface SignMessageRequest {
   message: string;
   keyId?: string; // If not provided, user selects
+  /** Sent only to an OpenKey window that reports it can show it (`openkey:ready` with `presentation: 1`). */
+  presentation?: SignMessagePresentationV1;
+}
+
+/** The fields of a `signMessage()` presentation that go on the wire; nothing else the caller attached is sent. */
+function signMessagePresentationField(presentation: SignMessagePresentationV1): SignMessagePresentationV1 {
+  const { protocolVersion, displayName, reason, onBehalfOf, iconUrl } = presentation;
+  return { protocolVersion, displayName, reason, onBehalfOf, iconUrl };
+}
+
+/**
+ * A plain sign request (one with no `protocolVersion`; the TinyCloud authorization request carries its own
+ * presentation) keeps its `presentation` only for an OpenKey window whose `openkey:ready` says `presentation: 1`.
+ */
+function messageForWidget(message: object, ready: { presentation?: unknown }): object {
+  if (ready.presentation === 1 || !('presentation' in message) || 'protocolVersion' in message) return message;
+  return Object.fromEntries(Object.entries(message).filter(([field]) => field !== 'presentation'));
 }
 
 export interface SignTypedDataRequest {
@@ -94,6 +124,15 @@ export interface AuthResult {
 }
 
 /**
+ * What {@link OpenKey.setupAccount} resolves with. `published`: OpenKey set the account up on TinyCloud hosting and
+ * published its location record. `present`: the account has a location record; nothing was written.
+ * Neither carries the account's address or node: the app reads the registry itself.
+ */
+export interface AccountSetupResult {
+  outcome: 'published' | 'present';
+}
+
+/**
  * Confirmation returned by {@link OpenKey.signOut}. `requestId` is generated
  * by the SDK and echoed by the OpenKey-owned widget, so callers can associate
  * the acknowledgement with the sign-out they initiated.
@@ -108,12 +147,29 @@ export interface SignOutAcknowledgement {
   revoked: boolean;
 }
 
+/**
+ * The server's definite refusals of a signing request. Asking again with the same request cannot succeed.
+ * `APP_KEY_GRANT_REFUSED`: the request asks for an encryption key this website may not be granted.
+ * `ACCOUNT_SETUP_COMPLETED`: the owner set the account up from the sign widget and the request is refused a second
+ * time: setup created the account's spaces, so the app asks without hosting them.
+ */
+export type OpenKeyRefusalCode = 'APP_KEY_GRANT_REFUSED' | 'KEY_DELETE_NOT_GRANTABLE' | 'INVALID_SIWE_RECAP' | 'ACCOUNT_SETUP_COMPLETED';
+
 export interface OpenKeyError {
-  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
+  code:
+    | 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH'
+    | 'ACCOUNT_SETUP_FAILED' | 'ACCOUNT_SETUP_UNAVAILABLE' | OpenKeyRefusalCode;
   message: string;
   /** On `POPUP_BLOCKED`: `'embedded-webview'` when the page runs in an app WebView that cannot open popups. */
   reason?: 'embedded-webview';
+  /** On `ACCOUNT_SETUP_UNAVAILABLE`: where the owner finishes setup (TinyCloud One). */
+  setupUrl?: string;
 }
+
+/** The widget reports a definite refusal as `{ code: 'UNKNOWN', message: <refusal code> }`. */
+const REFUSAL_CODES: ReadonlySet<string> = new Set<OpenKeyRefusalCode>([
+  'APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP', 'ACCOUNT_SETUP_COMPLETED',
+]);
 
 // ======= OAuth 2.1 Types =======
 
@@ -184,11 +240,49 @@ export interface TinyCloudAuthorizationRequestV1 {
   presentation?: CapabilityPresentationEnvelopeV1;
   /**
    * Set only when the caller accepts a signed message whose `Expiration Time`
-   * differs from `siwe` (shorter or longer): OpenKey then shows "Approval
-   * expires … (Change)" and signs the time the user picks. Read the signed
+   * differs from `siwe` (shorter or longer): OpenKey then shows "This app's access
+   * to your data lasts …" with the time under "How long it lasts", and signs the time the user picks. Read the signed
    * expiry from the returned `signedMessage`. Forwarded only when literally `true`.
    */
   expiryChangeable?: boolean;
+  /**
+   * Asks OpenKey to offer the owner automatic renewal for this grant, for up to `leaseLifetimeSeconds` (at most one
+   * year). Needs `expiryChangeable: true`: renewing sensitive access shortens the signed expiry to 7 days. OpenKey
+   * shows its renewal checkbox only where renewal is available; `purpose: 'standing'` (ongoing access, such as an app
+   * sign-in) lets the box start ticked, `'task'` or none leaves it unticked. The owner decides; read `renewalChoice`
+   * and `renewal` from the result.
+   */
+  renewal?: TinyCloudRenewalRequestV1;
+}
+
+export interface TinyCloudRenewalRequestV1 {
+  version: 1;
+  /** The longest renewal the app accepts, in seconds. */
+  leaseLifetimeSeconds: number;
+  purpose?: 'standing' | 'task';
+}
+
+/**
+ * The owner-signed renewal lease for a renewing grant, in the shape of the js-sdk approval-renewal codec
+ * (`parseApprovalRenewal` in `@tinycloud/share-envelope`). The lease lets the node's renewer renew exactly
+ * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else. Signed, not admitted: OpenKey has not sent
+ * it to the node, and records it so the owner's stops can revoke it (`receipt` is the codec's field name). Once the
+ * grant is registered with its node, the app has the node admit the lease by passing these fields to
+ * `admitOwnerRenewalLease` in `@tinycloud/sdk-core`, which returns the same values. Until then nothing renews.
+ */
+export interface TinyCloudSignedRenewalLeaseV1 {
+  version: 1;
+  approvedLeaseLifetimeSeconds: number;
+  approvedAt: string;
+  receipt: {
+    originalCid: string;
+    leaseCid: string;
+    leaseAuthorization: string;
+    leaseExpiresAt: string;
+    leaseGeneration: 1;
+    /** The node's renewer identity as it publishes it at `/.well-known/tinycloud/node-keys`. */
+    nodeIdentity: { nodeDid: string; renewerDid: string; renewerPublicKey: string; renewerEpoch: number };
+  };
 }
 
 export interface TinyCloudAuthorizationResultV1 {
@@ -208,6 +302,43 @@ export interface TinyCloudAuthorizationResultV1 {
     path: string;
     actions: string[];
   }>;
+  /**
+   * Set when the request asked for renewal and OpenKey offered it: `'leased'` (the owner turned renewal on; `renewal`
+   * holds the signed lease for the app to have its node admit) or `'finite'` (the grant ends at its signed expiry).
+   * Unset when renewal was not offered.
+   */
+  renewalChoice?: 'finite' | 'leased';
+  renewal?: TinyCloudSignedRenewalLeaseV1;
+}
+
+const MAX_RENEWAL_LEASE_SECONDS = 365 * 86_400;
+
+/**
+ * The widget's copy of `request.renewal`, checked here so a malformed ask fails in the app, not in the window.
+ * Renewing sensitive access shortens the window, so renewal needs `expiryChangeable: true`.
+ */
+function renewalRequestField(request: Pick<TinyCloudAuthorizationRequestV1, 'renewal' | 'expiryChangeable'>): { renewal?: TinyCloudRenewalRequestV1 } {
+  const value = request.renewal;
+  if (value === undefined) return {};
+  if (request.expiryChangeable !== true) throw new Error('authorizeTinyCloud: renewal needs expiryChangeable: true');
+  const seconds = value?.leaseLifetimeSeconds;
+  const purpose = value?.purpose;
+  if (value?.version !== 1 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0 ||
+    seconds > MAX_RENEWAL_LEASE_SECONDS || (purpose !== undefined && purpose !== 'standing' && purpose !== 'task')) {
+    throw new Error('authorizeTinyCloud: renewal must be { version: 1, leaseLifetimeSeconds (up to one year), purpose? }');
+  }
+  return { renewal: { version: 1, leaseLifetimeSeconds: seconds, ...(purpose ? { purpose } : {}) } };
+}
+
+/** The renewal part of an authorization result. A leased choice without its lease is a protocol error. */
+function signInRenewalResult(raw: { renewalChoice?: unknown; renewal?: unknown }): Pick<TinyCloudAuthorizationResultV1, 'renewalChoice' | 'renewal'> {
+  if (raw.renewalChoice === 'finite') return { renewalChoice: 'finite' };
+  if (raw.renewalChoice !== 'leased') return {};
+  const renewal = raw.renewal as Partial<TinyCloudSignedRenewalLeaseV1> | null | undefined;
+  if (renewal?.version !== 1 || typeof renewal.receipt?.leaseAuthorization !== 'string' || typeof renewal.receipt.originalCid !== 'string') {
+    throw new Error('authorizeTinyCloud: OpenKey turned renewal on but returned no renewal lease');
+  }
+  return { renewalChoice: 'leased', renewal: renewal as TinyCloudSignedRenewalLeaseV1 };
 }
 
 export interface CapabilityPresentationEnvelopeV1 {
@@ -250,7 +381,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; presentation?: SignMessagePresentationV1; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1 }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -307,13 +438,17 @@ type MessageType =
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:use-external-wallet'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:sign-out:request'; requestId: string; protocolVersion: 1 }
+  | { type: 'openkey:sign-out:confirmed'; requestId: string; protocolVersion: 1 }
   | { type: 'openkey:sign-out:response'; success: true; requestId: string; protocolVersion: 1; revoked: boolean }
   | { type: 'openkey:sign-out:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
+  | { type: 'openkey:account-setup:request'; requestId: string; protocolVersion: 1; keyId?: string }
+  | { type: 'openkey:account-setup:response'; success: true; requestId: string; protocolVersion: 1; outcome: 'published' | 'present' }
+  | { type: 'openkey:account-setup:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number; requestId?: string; protocolVersion?: number; layoutId?: number }
   | { type: 'openkey:layout-applied'; height: number; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:layout-ready'; requestId: string; protocolVersion: 2; layoutId: number }
   | { type: 'openkey:layout-invalidated'; requestId: string; protocolVersion: 2; layoutId: number }
-  | { type: 'openkey:ready'; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:ready'; requestId?: string; protocolVersion?: number; presentation?: 1 }
   | { type: 'openkey:close'; requestId?: string; protocolVersion?: number };
 
 type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
@@ -884,6 +1019,7 @@ export class OpenKey {
   private config: OpenKeyConfig;
   private popup: Window | null = null;
   private lastAuth: AuthResult | null = null;
+  private signOutProgress = new Map<string, (progress: 'ready' | 'confirmed') => void>();
   private discoveredProviders: EIP6963ProviderDetail[] = [];
   /** Cancels widget flows that could outlive a sign-out on this instance. */
   private activeFlowCancellations = new Set<() => void>();
@@ -895,6 +1031,26 @@ export class OpenKey {
    * the OpenKey-origin iframe for the whole lifetime of this client.
    */
   readonly nostr: OpenKeyNostr;
+  /**
+   * Marker for the TinyCloud web SDK: this client sends `SignMessageRequest.presentation` to an OpenKey window that
+   * reports it can show it. A client without the marker drops the field.
+   */
+  readonly signMessagePresentation = 1 as const;
+
+  /** The key type of the connected key: `null` when not connected or when the connect response named no known type. */
+  private connectedKeyType(): 'MANAGED' | 'EXTERNAL' | null {
+    const keyType = this.lastAuth?.keyType;
+    return keyType === 'MANAGED' || keyType === 'EXTERNAL' ? keyType : null;
+  }
+
+  /**
+   * True when `signMessage()` opens the OpenKey approval screen: the client is connected with a key OpenKey holds
+   * (a managed key). False when it goes straight to the person's own wallet (an external key), when the client is not
+   * connected and when the key type is not known.
+   */
+  get signMessageShowsApproval(): boolean {
+    return this.connectedKeyType() === 'MANAGED';
+  }
 
   constructor(config: OpenKeyConfig = {}) {
     this.config = config;
@@ -986,6 +1142,8 @@ export class OpenKey {
 
   /**
    * Signs the active OpenKey account out through the OpenKey-owned widget.
+   * `onProgress` reports when the dialog is ready and when the owner confirms,
+   * so callers can bound transport waits separately from the owner's decision.
    *
    * The OpenKey-owned widget revokes the OpenKey session it holds itself;
    * the SDK never holds an OpenKey session token. Local SDK state is cleared
@@ -998,7 +1156,7 @@ export class OpenKey {
    * Remote revocation did not happen then, so clearing any app session is the
    * caller's decision.
    */
-  async signOut(opts?: { mode?: OpenKeyMode }): Promise<SignOutAcknowledgement> {
+  async signOut(opts?: { mode?: OpenKeyMode; onProgress?: (progress: 'ready' | 'confirmed') => void }): Promise<SignOutAcknowledgement> {
     const requestId = `ok-signout-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     // Redirect flows intentionally never resolve. Sign-out needs to return a
     // correlated acknowledgement, so use the OpenKey popup boundary instead.
@@ -1010,20 +1168,25 @@ export class OpenKey {
     // A failed/blocked widget must never leave this SDK instance authenticated.
     this.lastAuth = null;
 
-    const acknowledgement = await this.openFlow<SignOutAcknowledgement>(
-      'sign-out',
-      {
-        type: 'openkey:sign-out:request',
-        requestId,
-        protocolVersion: 1,
-      },
-      mode,
-    );
+    if (opts?.onProgress) this.signOutProgress.set(requestId, opts.onProgress);
+    try {
+      const acknowledgement = await this.openFlow<SignOutAcknowledgement>(
+        'sign-out',
+        {
+          type: 'openkey:sign-out:request',
+          requestId,
+          protocolVersion: 1,
+        },
+        mode,
+      );
 
-    if (acknowledgement.requestId !== requestId) {
-      throw new Error('OpenKey signOut received an acknowledgement for a different request');
+      if (acknowledgement.requestId !== requestId) {
+        throw new Error('OpenKey signOut received an acknowledgement for a different request');
+      }
+      return acknowledgement;
+    } finally {
+      this.signOutProgress?.delete(requestId);
     }
-    return acknowledgement;
   }
 
   /**
@@ -1062,11 +1225,41 @@ export class OpenKey {
   }
 
   /**
+   * Opens OpenKey's own account setup page, where the owner sets their TinyCloud account up on TinyCloud hosting with
+   * one approval. Call it from a user gesture: it opens a popup. When the popup is blocked, an embedded card opens and
+   * its button opens the same page.
+   *
+   * Resolves with the outcome only. Rejects with `USER_CANCELLED`, `POPUP_BLOCKED` (an app WebView that cannot open
+   * popups), `ACCOUNT_SETUP_FAILED` or `ACCOUNT_SETUP_UNAVAILABLE` (with `setupUrl`, where the owner finishes setup).
+   */
+  async setupAccount(opts?: { keyId?: string }): Promise<AccountSetupResult> {
+    const keyId = opts?.keyId ?? (this.lastAuth?.keyType === 'MANAGED' ? this.lastAuth.keyId : undefined);
+    const message = {
+      type: 'openkey:account-setup:request',
+      requestId: crypto.randomUUID(),
+      protocolVersion: 1,
+      ...(keyId ? { keyId } : {}),
+    };
+    let result: AccountSetupResult;
+    try {
+      result = await this.openFlow<AccountSetupResult>('account-setup', message, 'popup');
+    } catch (error) {
+      const failure = error as OpenKeyError;
+      if (failure?.code !== 'POPUP_BLOCKED' || failure.reason === 'embedded-webview') throw error;
+      result = await this.openFlow<AccountSetupResult>('account-setup', message, 'iframe');
+    }
+    if (result.outcome !== 'published' && result.outcome !== 'present') {
+      throw { code: 'ACCOUNT_SETUP_FAILED', message: 'OpenKey answered account setup with an unknown outcome.' } satisfies OpenKeyError;
+    }
+    return { outcome: result.outcome };
+  }
+
+  /**
    * Sign a message with the user's OpenKey wallet
    * For external keys, routes directly to the user's wallet provider
    */
   async signMessage(request: SignMessageRequest, opts?: { mode?: OpenKeyMode }): Promise<SignResult> {
-    if (this.lastAuth?.keyType === 'EXTERNAL') {
+    if (this.connectedKeyType() === 'EXTERNAL') {
       return this.signWithExternalWallet(request);
     }
     return this.signWithOpenKey(request, opts?.mode);
@@ -1200,6 +1393,8 @@ export class OpenKey {
       signedMessage?: string;
       selectedActionKeys?: string[];
       permissions?: TinyCloudAuthorizationResultV1['permissions'];
+      renewalChoice?: TinyCloudAuthorizationResultV1['renewalChoice'];
+      renewal?: TinyCloudSignedRenewalLeaseV1;
     }>(
       'sign',
       {
@@ -1223,6 +1418,7 @@ export class OpenKey {
         presentation: request.presentation,
         // TC-2272: only an SDK that accepts a different signed expiry opts in; OpenKey then lets the user change it.
         ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
+        ...renewalRequestField(request),
       },
       opts?.mode,
       reserved,
@@ -1254,6 +1450,7 @@ export class OpenKey {
       signedMessage: raw.signedMessage,
       selectedActionKeys: raw.selectedActionKeys,
       permissions: raw.permissions,
+      ...signInRenewalResult(raw),
     };
   }
 
@@ -1318,6 +1515,7 @@ export class OpenKey {
         // server-side origin-binding.
         presentation: request.presentation,
         ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
+        ...renewalRequestField(request),
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render
@@ -1375,6 +1573,10 @@ export class OpenKey {
         'authorizeTinyCloud (external): server signed different bytes than the preview showed',
       );
     }
+    // The owner turned renewal on: the wallet signs the renewal lease too. Declining it fails the sign-in.
+    const renewal = finalize.renewalSignature
+      ? await this.signExternalRenewalLease(provider, walletAddress, finalize.renewalSignature)
+      : signInRenewalResult(finalize);
     return {
       protocolVersion: 1,
       address: finalize.address,
@@ -1382,7 +1584,36 @@ export class OpenKey {
       signedMessage: finalize.signedMessage,
       selectedActionKeys: finalize.selectedActionKeys ?? [],
       permissions: finalize.permissions ?? [],
+      ...renewal,
     };
+  }
+
+  /** The wallet signs the renewal lease /authorize-sign returned; OpenKey returns it signed, for the app to admit. */
+  private async signExternalRenewalLease(
+    provider: EIP1193Provider,
+    walletAddress: string,
+    lease: { message?: unknown; renewalToken?: unknown },
+  ): Promise<Pick<TinyCloudAuthorizationResultV1, 'renewalChoice' | 'renewal'>> {
+    if (typeof lease.message !== 'string' || typeof lease.renewalToken !== 'string') {
+      throw new Error('authorizeTinyCloud (external): OpenKey returned an incomplete renewal lease');
+    }
+    const signature = (await provider.request({
+      method: 'personal_sign',
+      params: [this.toHex(lease.message), walletAddress],
+    })) as string;
+    const res = await fetch(`${this.oauthHost}/api/delegate/authorize-sign-renewal`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ renewalToken: lease.renewalToken, signature }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(body.error || `authorize-sign-renewal failed (${res.status})`);
+    }
+    const result = signInRenewalResult(await res.json());
+    if (result.renewalChoice !== 'leased') throw new Error('authorizeTinyCloud (external): OpenKey returned no renewal lease');
+    return result;
   }
 
   /**
@@ -1496,6 +1727,7 @@ export class OpenKey {
       type: 'openkey:sign:request',
       message: request.message,
       keyId: request.keyId ?? this.lastAuth?.keyId,
+      ...(request.presentation ? { presentation: signMessagePresentationField(request.presentation) } : {}),
     }, mode);
   }
 
@@ -1851,7 +2083,7 @@ export class OpenKey {
               if (data.requestId !== phase.requestId) return;
               modal?.activatePhase(phase.requestId, phase.protocolVersion);
               modal?.postMessage({
-                ...message,
+                ...messageForWidget(message, data),
                 ...phase,
                 ...(action === 'sign' && isVersionedRequest && outgoingProtocolVersion === 1
                   ? { authorizationProtocolVersion: 1 } : {}),
@@ -1865,9 +2097,10 @@ export class OpenKey {
                 isVersionedRequest ? outgoingProtocolVersion as number : null,
               );
               modal?.revealLegacy();
-              modal?.postMessage(message);
+              modal?.postMessage(messageForWidget(message, data));
             }
             readyReceived = true;
+            if (action === 'sign-out') this.signOutProgress?.get(outgoingRequestId as string)?.('ready');
             return;
           }
           if (!readyReceived) return;
@@ -1878,6 +2111,11 @@ export class OpenKey {
           if (activeRequestId !== null) {
             if (!('requestId' in data) || data.requestId !== activeRequestId ||
                 !('protocolVersion' in data) || data.protocolVersion !== activeVersion) return;
+          }
+
+          if (action === 'sign-out' && data.type === 'openkey:sign-out:confirmed') {
+            this.signOutProgress?.get(outgoingRequestId as string)?.('confirmed');
+            return;
           }
 
           if (data.type === 'openkey:close') {
@@ -1911,8 +2149,10 @@ export class OpenKey {
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
+                } else if (data.type === 'openkey:account-setup:response') {
+                  resolve({ outcome: data.outcome } as T);
                 } else if (data.type === 'openkey:sign-out:response') {
-                  resolve({ requestId: data.requestId, revoked: data.revoked } as T);
+                  resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
                 } else if (data.type === 'openkey:externalSign:approve') {
                   resolve({
                     authorizationContextToken: (data as any).authorizationContextToken,
@@ -1928,6 +2168,8 @@ export class OpenKey {
                     signedMessage: (data as any).signedMessage,
                     selectedActionKeys: (data as any).selectedActionKeys,
                     permissions: (data as any).permissions,
+                    renewalChoice: (data as any).renewalChoice,
+                    renewal: (data as any).renewal,
                   } as T);
                 }
               } else {
@@ -1990,6 +2232,7 @@ export class OpenKey {
     if (action === 'sign-typed-data') return type === 'openkey:signTypedData:response';
     if (action === 'link-wallet') return type === 'openkey:link-wallet:response';
     if (action === 'sign-out') return type === 'openkey:sign-out:response';
+    if (action === 'account-setup') return type === 'openkey:account-setup:response';
     return false;
   }
 
@@ -2178,7 +2421,15 @@ export class OpenKey {
 
       if (data.type === 'openkey:ready') {
         // Widget is ready, send our request
-        popup.postMessage(message, this.host);
+        popup.postMessage(messageForWidget(message, data), this.host);
+        if (action === 'sign-out') this.signOutProgress?.get(outgoingRequestId as string)?.('ready');
+        return;
+      }
+
+      if (action === 'sign-out' && data.type === 'openkey:sign-out:confirmed') {
+        if (data.requestId === outgoingRequestId && data.protocolVersion === outgoingProtocolVersion) {
+          this.signOutProgress?.get(outgoingRequestId as string)?.('confirmed');
+        }
         return;
       }
 
@@ -2228,8 +2479,10 @@ export class OpenKey {
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
+          } else if (data.type === 'openkey:account-setup:response') {
+            resolve({ outcome: data.outcome } as T);
           } else if (data.type === 'openkey:sign-out:response') {
-            resolve({ requestId: data.requestId, revoked: data.revoked } as T);
+            resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
           } else if (data.type === 'openkey:externalSign:approve') {
             // Sol MAJOR-3 (continuation): hand the preview payload back
             // to authorizeTinyCloudExternal so it can invoke the wallet.
@@ -2247,6 +2500,8 @@ export class OpenKey {
               signedMessage: (data as any).signedMessage,
               selectedActionKeys: (data as any).selectedActionKeys,
               permissions: (data as any).permissions,
+              renewalChoice: (data as any).renewalChoice,
+              renewal: (data as any).renewal,
             } as T);
           }
           } else {
@@ -2270,6 +2525,9 @@ export class OpenKey {
     // A validated widget response can report that the cached key no longer
     // exists. Drop the selection; only an explicit connect chooses a new key.
     if (error?.code === 'NO_KEY') this.lastAuth = null;
+    if (error?.code === 'UNKNOWN' && REFUSAL_CODES.has(error.message)) {
+      return { ...error, code: error.message as OpenKeyRefusalCode };
+    }
     return error;
   }
 

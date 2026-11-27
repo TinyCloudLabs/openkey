@@ -1,6 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SiweMessage } from 'siwe';
+import { bindSignInRenewalRequest } from './signin-renewal';
+import { RenewalLeaseError, renewalLeasesEnabled, type SignedRenewalRequest } from './renewal-lease';
 import { appKeyRefusalMessage } from './app-key-refusal';
+import { DEVICE_FLOW_ABILITIES, DEVICE_SECRETS_REFUSAL } from './device-flow-abilities';
 import {
   TINYCLOUD_DELEGATED_PATH,
   TINYCLOUD_DELEGATED_PATH_MAX_LENGTH,
@@ -40,36 +43,6 @@ export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.free
   actions: Object.freeze(['tinycloud.capabilities/read']) as string[],
 })]);
 
-/**
- * Device-flow scope policy (TC-539). A device approval is phishable: anyone
- * can start a request and send its code to a victim. Requests are therefore
- * limited to an explicit allowlist of data abilities on one ordinary space:
- *
- * - services: `tinycloud.kv` and `tinycloud.capabilities` only, always fully
- *   qualified. `tinycloud.sql` is deferred: Node authorizes SQL descendant
- *   paths but selects the database by the final path segment, so a grant for
- *   `notes` could reach database `private` through `notes/private`;
- * - abilities: KV get/list/metadata/put/del and capabilities read. SQL,
- *   delegation, space, hooks, encryption, secrets, DuckDB, VFS, and wildcard
- *   abilities are rejected;
- * - spaces: one per request; `account` (account registry), `applications`
- *   (application registry) and `secrets` are rejected;
- * - paths: KV grants name an explicit relative path (no whole-space grants,
- *   no `.`/`..` segments, no `secrets/` or `vault/` roots) and no KV path may
- *   cover another (Node grants cover every path beneath a granted path);
- *   capabilities grants are space-wide (empty path);
- *   the single encryption grant is the approving account's own `default`
- *   network: space `default`, empty path, and only `tinycloud.encryption/decrypt`;
- * - `tinycloud.capabilities/read` is required: every OpenKey delegation
- *   carries it, so it is never optional at consent. One exception: a
- *   decrypt-only request carries no capabilities entry, and the requirement
- *   follows the request baseline as in TC-658 (`delegate-session.ts:236-258`).
- */
-export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'tinycloud.kv': ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'],
-  'tinycloud.capabilities': ['tinycloud.capabilities/read'],
-  'tinycloud.encryption': ['tinycloud.encryption/decrypt'],
-});
 const DEVICE_FLOW_DENIED_SPACES: Record<string, true> = { account: true, applications: true, secrets: true };
 const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: true, path: true, actions: true };
 const DEVICE_SPACE_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
@@ -100,6 +73,7 @@ export interface DeviceAuthorizationRecord {
   delegationTtlSeconds: number;
   /** Lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
   suggestedTtlSeconds?: number;
+  renewal?: SignedRenewalRequest;
   transactionExpiresAt: Date;
   requestedAt: Date;
   requestIpHash: string;
@@ -214,6 +188,7 @@ export type DeviceAuthorizationStart = {
   delegationTtlSeconds?: number;
   /** Optional default lifetime to show: 60 seconds up to `delegationTtlSeconds`; absent means the maximum. */
   suggestedTtlSeconds?: number;
+  renewal?: unknown;
   reason?: string;
 };
 
@@ -423,7 +398,7 @@ function deviceSpaceIdentity(space: unknown): { key: string; name: string } | nu
 }
 
 function assertDevicePath(service: string, path: string, label: string): void {
-  if (service === 'tinycloud.capabilities' || service === 'tinycloud.encryption') {
+  if (service === 'tinycloud.capabilities') {
     if (path !== '') throw scopeError(`${label} must be empty for ${service}`);
     return;
   }
@@ -447,7 +422,6 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     throw scopeError(`permissions must list between 1 and ${DEVICE_AUTH_MAX_PERMISSIONS} explicit capabilities`);
   }
   let requestSpace: string | undefined;
-  let encryptionEntries = 0;
   const granted: Array<{ service: string; segments: string[]; index: number }> = [];
   const permissions = value.map((raw, index) => {
     const label = `permissions[${index}]`;
@@ -456,20 +430,16 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     const unknownField = Object.keys(entry).find((field) => !Object.hasOwn(DEVICE_PERMISSION_FIELDS, field));
     if (unknownField) throw scopeError(`${label}.${unknownField} is not a permission field`);
     const { service, space, path, actions } = entry;
-    if (typeof service !== 'string' || !Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
-      throw scopeError(`${label}.service is not available over device authorization`);
-    }
-    if (service === 'tinycloud.encryption') {
-      encryptionEntries += 1;
-      if (encryptionEntries > 1) throw scopeError('permissions allows one tinycloud.encryption entry');
-      if (space !== 'default') throw scopeError(`${label}.space must be default for tinycloud.encryption`);
+    if (typeof service !== 'string') throw scopeError(`${label}.service is not available over device authorization`);
+    // Device sign-in grants no encryption ability, in any spelling of the service.
+    if (/^(?:tinycloud\.)?encryption$/i.test(service)) {
       if (typeof path === 'string' && /^(?:apps(?:\/|$)|urn:tinycloud:encryption:)/i.test(path)) {
         throw scopeError(appKeyRefusalMessage({ reason: 'apps_key' }, 'non_browser'));
       }
-      if (path !== '') throw scopeError(`${label}.path must be empty for tinycloud.encryption`);
-      if (!Array.isArray(actions) || actions.length !== 1 || actions[0] !== 'tinycloud.encryption/decrypt') {
-        throw scopeError(`${label}.actions must be exactly tinycloud.encryption/decrypt`);
-      }
+      throw scopeError(DEVICE_SECRETS_REFUSAL);
+    }
+    if (!Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
+      throw scopeError(`${label}.service is not available over device authorization`);
     }
     if (typeof space !== 'string') throw scopeError(`${label}.space is required`);
     const spaceIdentity = deviceSpaceIdentity(space);
@@ -504,8 +474,6 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     }
     return { service, space, path, actions: [...unique] };
   });
-  // A decrypt-only request carries no capabilities entry.
-  if (permissions.every((permission) => permission.service === 'tinycloud.encryption')) return permissions;
   if (!permissions.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw scopeError(
       'permissions must include tinycloud.capabilities/read with path "" in the requested space; every OpenKey delegation carries it and it cannot be unchecked',
@@ -561,7 +529,7 @@ function approvedPermissionSubset(requested: DevicePermission[], value: unknown)
     const actions = approvedByResource.get(resourceKey(permission));
     return actions ? [{ ...permission, actions: permission.actions.filter((action) => actions.has(action)) }] : [];
   });
-  if (!requested.every((permission) => permission.service === 'tinycloud.encryption') && !canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
+  if (!canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw new DeviceAuthorizationError('invalid_result', 'approved permissions must keep tinycloud.capabilities/read', 400);
   }
   if (!jsonEqual(canonical, value)) {
@@ -730,6 +698,15 @@ export class DeviceAuthorizationService {
     const suggestedTtlSeconds = requestedSuggestedTtlSeconds(input.suggestedTtlSeconds, delegationTtlSeconds);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
+    let renewal: SignedRenewalRequest | undefined;
+    try {
+      if (!isShareDevicePermissionSet(permissions)) {
+        renewal = bindSignInRenewalRequest(input.renewal, { host: nodeOrigin, handoff: false, expiryChangeable: true });
+      }
+    } catch (error) {
+      if (error instanceof RenewalLeaseError) throw new DeviceAuthorizationError(error.code, error.message, error.status);
+      throw error;
+    }
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
     const recent = await this.store.countRecentByIpHash(requestIpHash, new Date(now.getTime() - DEVICE_AUTH_START_WINDOW_MS));
     if (recent >= DEVICE_AUTH_START_LIMIT) {
@@ -759,6 +736,7 @@ export class DeviceAuthorizationService {
       delegationExpiresAt: new Date(transactionExpiresAt.getTime() + delegationTtlSeconds * 1000),
       delegationTtlSeconds,
       ...(suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds } : {}),
+      ...(renewal ? { renewal } : {}),
       transactionExpiresAt,
       requestedAt: now,
       requestIpHash,
@@ -833,8 +811,12 @@ export class DeviceAuthorizationService {
   }) | null> {
     const record = await this.store.findByUserCode(normalizeUserCode(userCode));
     if (!record || record.transactionExpiresAt <= this.now() || record.status !== 'pending') return null;
-    const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, ...safe } = record;
-    return { ...safe, shareOnly: isShareDevicePermissionSet(record.permissions) };
+    const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, renewal, ...safe } = record;
+    return {
+      ...safe,
+      shareOnly: isShareDevicePermissionSet(record.permissions),
+      ...(renewal && renewalLeasesEnabled() ? { renewal } : {}),
+    };
   }
 
   async approve(transactionId: string, userId: string, value: unknown): Promise<void> {
@@ -875,6 +857,8 @@ export class DeviceAuthorizationService {
     | { status: 'pending'; interval: number }
     | {
         status: 'approved';
+        /** API time to bound client admission after an opaque approved relay has been replayed. */
+        serverTime?: string;
         relay: DeviceRelayEnvelope;
         binding: {
           transactionId: string;
@@ -907,6 +891,7 @@ export class DeviceAuthorizationService {
     // Polling does not spend the result: it stays until the client acknowledges it or retention ends.
     return {
       status: 'approved',
+      ...(record.renewal ? { serverTime: now.toISOString() } : {}),
       relay: (() => {
         try {
           return JSON.parse(record.encryptedResult ?? '') as DeviceRelayEnvelope;

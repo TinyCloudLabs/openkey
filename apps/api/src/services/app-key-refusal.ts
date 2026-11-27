@@ -6,7 +6,8 @@
 // does not depend on how the wasm parser presents a resource. A message whose
 // ReCap cannot be read exactly is refused.
 
-import { isAppsKeyResource, isKeyDeleteAbility, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
+import { elevatedKindOf } from '@openkey/capability-review';
+import { isAppsKeyResource, isEncryptionResource, isKeyDeleteAbility, keyPathOfAnyResource, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
 export type AppKeyRefusalReason =
@@ -14,8 +15,8 @@ export type AppKeyRefusalReason =
   /** An `apps/` grant with no admission: the site does not list it, or the request is not one a site can make. */
   | 'apps_key'
   | 'apps_key_unparsed'
-  /** decrypt or key.create outside `apps/` from a site that is not first-party (TC-2247). Same code as `apps_key`, its own words. */
-  | 'encryption_outside_apps'
+  /** decrypt or key.create on an exact share key (`share/<id>`) that OpenKey did not make for the request (TC-2927). Same code as `apps_key`, its own words. */
+  | 'share_key_not_minted'
   /** The request did not come from a verified https origin of the app's own site. */
   | 'apps_key_origin'
   /** The app id does not belong to the requesting site's host. */
@@ -49,7 +50,7 @@ export interface RecapEntryLike {
 
 const NOT_DECLARED_MESSAGE =
   "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
-const ENCRYPTION_OUTSIDE_APPS_MESSAGE = "This site isn't allowed to request that access.";
+const SHARE_KEY_NOT_MINTED_MESSAGE = "This site isn't allowed to request that access.";
 const ORIGIN_MESSAGE =
   "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
 const APP_ID_MESSAGE =
@@ -67,7 +68,7 @@ const KEY_DELETE_MESSAGE =
 const NON_BROWSER_MESSAGE =
   "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 // The wording the delegate routes already use for a recap they cannot read.
-const UNREADABLE_RECAP_MESSAGE = 'Invalid SIWE recap';
+export const UNREADABLE_RECAP_MESSAGE = "This request's permission list can't be read, so OpenKey didn't approve it.";
 
 const RECAP_RESOURCE = /urn:recap:(\S*)/gi;
 const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
@@ -171,7 +172,7 @@ function refusalForResources(
 }
 
 /** Every resource of every `urn:recap:` resource of a SIWE message with its ability names, or `null` when a ReCap cannot be read exactly. */
-function recapResources(siwe: string): Array<[string, string[]]> | null {
+export function recapResources(siwe: string): Array<[string, string[]]> | null {
   const resources: Array<[string, string[]]> = [];
   if (!isSiweShaped(siwe)) return resources;
   for (const match of siwe.matchAll(RECAP_RESOURCE)) {
@@ -197,12 +198,13 @@ function isKeyBlockAbility(ability: string): boolean {
  * The encryption resources of a SIWE message outside `apps/` that carry
  * `key.block` or `key.unblock`: a bare network, a key or a prefix. The node
  * does not tie these two abilities to the requesting host, so a browser
- * request may name them only under its own `apps/<app id>/`.
+ * request may name them only after the owner decided on the warning screen,
+ * and a ticket request may not name them at all.
  */
 export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]]> {
   return (recapResources(siwe) ?? []).filter(
     ([resource, abilities]) =>
-      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      isEncryptionResource(resource) &&
       !isAppsKeyResource(resource) &&
       abilities.some(isKeyBlockAbility),
   );
@@ -214,32 +216,50 @@ function isEncryptionGrantAbility(ability: string): boolean {
   return name === 'decrypt' || name === 'key.create';
 }
 
+/** An exact share key: `share/<id>`, one segment under `share/` (compared like the other key paths). */
+const EXACT_SHARE_KEY = /^share\/[^/]+$/i;
+
 /**
- * Refusal for a SIWE message whose ReCap names an encryption resource outside
- * `apps/` with `decrypt` or `key.create`: a bare network (no path), a prefix or
- * a key. A website's own sign-in may name these two only under
- * `apps/<app id>/`, which `isAppsKeyResource` does not see for a bare network.
- * A ReCap that cannot be read exactly is refused too, never passed. The
- * prepared-handoff (command line) routes do not call this.
+ * Refusal for a SIWE message whose ReCap asks to `decrypt` or `key.create` on an exact share key (`share/<id>`).
+ * The id of a share is a value the requesting app chooses or guesses, which the owner cannot judge, so an exact
+ * share-key grant is accepted only for an id OpenKey made for the request (TC-2927; for every app, first-party
+ * included, and for every route that signs a message). Until the new-share approval mints ids, none is accepted. The
+ * prefix `share/` and the whole network are not exact keys: they go through the per-permission warning.
+ * A ReCap that cannot be read exactly is refused too, never passed. The prepared-handoff (command line) routes do
+ * not call this.
  */
-export function encryptionOutsideAppsRefusal(siwe: string): AppKeyRefusal | null {
+export function exactShareKeyRefusal(siwe: string): AppKeyRefusal | null {
   const resources = recapResources(siwe);
   if (resources === null) return { reason: 'recap_unreadable' };
-  const outside = resources.some(
-    ([resource, abilities]) =>
-      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
-      !isAppsKeyResource(resource) &&
-      abilities.some(isEncryptionGrantAbility),
-  );
-  return outside ? { reason: 'encryption_outside_apps' } : null;
+  const exact = resources.some(([resource, abilities]) => {
+    const path = keyPathOfAnyResource(resource);
+    return path !== null && EXACT_SHARE_KEY.test(path) && abilities.some(isEncryptionGrantAbility);
+  });
+  return exact ? { reason: 'share_key_not_minted' } : null;
 }
 
 /** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
-export function encryptionOutsideAppsRefusalForMessage(message: string): AppKeyRefusal | null {
-  const direct = encryptionOutsideAppsRefusal(message);
+export function exactShareKeyRefusalForMessage(message: string): AppKeyRefusal | null {
+  const direct = exactShareKeyRefusal(message);
   if (direct) return direct;
   const decoded = decodeHexUtf8(message);
-  return decoded === null ? null : encryptionOutsideAppsRefusal(decoded);
+  return decoded === null ? null : exactShareKeyRefusal(decoded);
+}
+
+/**
+ * Does this message ask for anything the extra warning screen covers: `decrypt`, `key.create`, `key.block` or
+ * `key.unblock` on a whole encryption network, or on a key or prefix outside `apps/` (`elevatedKindOf`, shared with
+ * the screen)? Text and `0x` hex are both read. A ReCap that cannot be read is not elevated here: the refusal checks
+ * report it.
+ */
+export function messageHasElevatedPermissions(message: string): boolean {
+  const hasElevated = (siwe: string): boolean =>
+    (recapResources(siwe) ?? []).some(([resource, abilities]) =>
+      abilities.some((ability) => elevatedKindOf({ service: 'encryption', space: 'encryption', path: resource }, ability) !== null),
+    );
+  if (hasElevated(message)) return true;
+  const decoded = decodeHexUtf8(message);
+  return decoded !== null && hasElevated(decoded);
 }
 
 /**
@@ -250,7 +270,8 @@ export function encryptionOutsideAppsRefusalForMessage(message: string): AppKeyR
  *
  * `entries` are the wasm-parsed entries of the same message, when the caller
  * has them: `space` and `path` of every entry, under any service name, get the
- * same check.
+ * same check, and so does the resource string that `space`, `service` and
+ * `path` make together (the space-path form of an encryption resource).
  *
  * `admitted` lists the `apps/` resources an earlier step admitted for this
  * message. A resource is passed only when it is byte-equal to an admitted one
@@ -265,6 +286,9 @@ export function appKeyRefusalForSiwe(
   if (resources === null) return { reason: 'recap_unreadable' };
   for (const entry of entries ?? []) {
     resources.push([entry.space, [...entry.actions]], [entry.path, [...entry.actions]]);
+    // The same entry as the resource string the text scan reads, so a space-path
+    // resource is classified identically from both views.
+    if (entry.service !== undefined) resources.push([`${entry.space}/${entry.service}/${entry.path}`, [...entry.actions]]);
   }
   return refusalForResources(resources, admitted);
 }
@@ -275,18 +299,6 @@ export function appKeyRefusalForMessage(message: string): AppKeyRefusal | null {
   if (direct) return direct;
   const decoded = decodeHexUtf8(message);
   return decoded === null ? null : appKeyRefusalForSiwe(decoded);
-}
-
-/**
- * Does a message, as written or as UTF-8 when it is `0x` hex, carry `key.block`
- * or `key.unblock` on an encryption resource outside `apps/`? A route that
- * signs a message without a manifest cannot tell which app asks, so it refuses
- * these whatever the origin.
- */
-export function blocksOutsideApps(message: string): boolean {
-  if (blockResourcesOutsideApps(message).length > 0) return true;
-  const decoded = decodeHexUtf8(message);
-  return decoded !== null && blockResourcesOutsideApps(decoded).length > 0;
 }
 
 export function appKeyRefusalCode(refusal: AppKeyRefusal): AppKeyRefusalCode {
@@ -301,7 +313,7 @@ export function appKeyRefusalStatus(refusal: AppKeyRefusal): 400 | 403 {
 export function appKeyRefusalMessage(refusal: AppKeyRefusal, source: AppKeyRequestSource): string {
   if (refusal.reason === 'key_delete') return KEY_DELETE_MESSAGE;
   if (refusal.reason === 'recap_unreadable') return UNREADABLE_RECAP_MESSAGE;
-  if (refusal.reason === 'encryption_outside_apps') return ENCRYPTION_OUTSIDE_APPS_MESSAGE;
+  if (refusal.reason === 'share_key_not_minted') return SHARE_KEY_NOT_MINTED_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_origin') return ORIGIN_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_app_id') return APP_ID_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_manifest') return MANIFEST_MESSAGE;

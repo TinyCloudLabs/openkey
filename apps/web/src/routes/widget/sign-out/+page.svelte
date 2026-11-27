@@ -3,10 +3,14 @@
   import { revokeEmbeddedSession } from '$lib/embed-passkey';
   import { resolveWidgetOrigin } from '$lib/widget-transport';
   import { readSignOutWidgetRequest, type SignOutWidgetRequest } from '$lib/sign-out-widget';
+  import { api } from '$lib/api';
+  import { renewalLeaseCopy } from '$lib/renewal-leases';
 
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   let complete = $state(false);
   let request = $state<SignOutWidgetRequest | null>(null);
+  // Whether the account has renewing permissions: only then does the confirm say signing out leaves them on.
+  let renewing = $state(false);
 
   $effect(() => {
     if (!window.opener || !origin) return;
@@ -18,11 +22,16 @@
   function onMessage(event: MessageEvent) {
     if (complete || request) return;
     request = readSignOutWidgetRequest(event, origin, window.opener);
+    if (request) api.listRenewalLeases().then(({ leases }) => { renewing = leases.length > 0; }, () => {});
   }
 
   async function confirm() {
     if (!request || !origin || complete) return;
     complete = true;
+    window.opener?.postMessage(
+      { type: 'openkey:sign-out:confirmed', requestId: request.requestId, protocolVersion: request.protocolVersion },
+      origin,
+    );
     const revoked = await revokeEmbeddedSession();
     window.opener?.postMessage(
       {
@@ -58,6 +67,9 @@
   {#if request}
     <div class="space-y-4">
       <p class="text-sm text-surface-700">Sign out of OpenKey on this device?</p>
+      {#if renewing}
+        <p class="mx-auto max-w-xs text-xs text-surface-500" data-testid="sign-out-renewal-note">{renewalLeaseCopy.signOutKeepsRenewing} {renewalLeaseCopy.stopRenewalsInSettings}</p>
+      {/if}
       <div class="flex justify-center gap-3">
         <button class="rounded-lg bg-surface-900 px-4 py-2 text-sm text-white" onclick={confirm}>Sign out</button>
         <button class="rounded-lg border border-surface-300 px-4 py-2 text-sm text-surface-700" onclick={cancel}>Cancel</button>

@@ -28,6 +28,7 @@ function matchesGrant(grant: Grant, where: Record<string, unknown>): boolean {
 
 const db: any = {
   $queryRaw: async () => [],
+  renewalLease: { findMany: async () => [], count: async () => 0 },
   $transaction: async (callback: (tx: any) => Promise<unknown>) => {
     const snapshot = structuredClone({ users: [...state.users], grants: state.grants });
     try {

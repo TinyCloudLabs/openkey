@@ -1,11 +1,19 @@
 // The account header's three nav items must all be fully visible at phone width (390 px): none clipped at the
 // right edge, no sideways scroll. Layout only.
 import { test, expect } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
 test('the account header shows every nav item in full at 390 px, with no sideways scroll', async ({ page }) => {
-  await page.goto('/device');
+  await page.route('**/api/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return route.fulfill({ json: path === '/api/auth/get-session'
+      ? { session: { id: 'header-session', userId: 'header-admin', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'header-admin', email: 'admin@example.test' } }
+      : { organizations: [{ id: 'header-organization', role: 'ADMIN' }] } });
+  });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
+  await page.goto('/dashboard');
   const header = page.locator('header');
   await expect(header.getByRole('link', { name: 'Dashboard' })).toBeVisible();
   const links = [

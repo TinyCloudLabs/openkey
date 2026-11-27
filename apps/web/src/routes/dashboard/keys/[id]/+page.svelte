@@ -3,6 +3,10 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
+  } from '$lib/approval-passkey';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -18,6 +22,42 @@
   let message = $state('');
   let signature = $state('');
   let signing = $state(false);
+  // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and message. Fetched once typing
+  // pauses; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends nothing until the
+  // offer for the current key and message has landed: it waits while the fetch is in flight and fetches again after a
+  // failure.
+  const passkeyOfferInput = $derived(
+    key && !key.archivedAt && key.keyType === 'MANAGED' && message.trim() ? JSON.stringify([key.id, message]) : null,
+  );
+  let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferRevision = $state(0);
+  let passkeyOfferFetch = $state<PasskeyOfferFetch>('idle');
+  const passkeyOfferGate = $derived(approvalPasskeyGate({
+    input: passkeyOfferInput, held: passkeyOffer, fetch: passkeyOfferFetch,
+  }));
+  $effect(() => {
+    const input = passkeyOfferInput;
+    void passkeyOfferRevision;
+    if (input === null) {
+      passkeyOfferFetch = 'idle';
+      return;
+    }
+    const [offerKeyId, offerMessage] = JSON.parse(input) as [string, string];
+    let current = true;
+    passkeyOfferFetch = 'pending';
+    const timer = setTimeout(() => {
+      api.signMessagePasskey(offerKeyId, offerMessage).then(
+        (need) => {
+          if (!current) return;
+          passkeyOffer = { input, need };
+          passkeyOfferFetch = 'idle';
+        },
+        () => { if (current) passkeyOfferFetch = 'failed'; },
+      );
+    }, 300);
+    return () => { current = false; clearTimeout(timer); };
+  });
+  const offerFailure = $derived(passkeyOfferFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
 
   // Label editing
   let editingLabel = $state(false);
@@ -59,14 +99,29 @@
 
   async function signMessage() {
     if (!key || !message.trim()) return;
+    const keyId = key.id;
+    const signedText = message;
+    // Without the offer for this key and message nothing is sent: Sign waits for the fetch in flight, or fetches again.
+    const gate = passkeyOfferGate;
+    if (gate.action === 'retry') passkeyOfferRevision++;
+    if (gate.action !== 'send') return;
+    const passkeyNeed = gate.need;
     signing = true;
     error = '';
     signature = '';
     try {
-      const result = await api.signMessage(key.id, message);
+      // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt sends nothing; the same
+      // offer stays for the next tap.
+      const passkeyAssertion: ApprovalPasskeyAssertion | undefined = await answerApprovalPasskey(passkeyNeed);
+      const result = await api.signMessage(keyId, signedText, undefined, undefined, passkeyAssertion);
       signature = result.signature;
     } catch (e: any) {
       error = e.message || 'Failed to sign message';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced.
+      if (isPasskeyApprovalRefusal(e)) {
+        passkeyOffer = null;
+        passkeyOfferRevision++;
+      }
     } finally {
       signing = false;
     }
@@ -160,9 +215,9 @@
     </a>
   </div>
 
-  {#if error}
+  {#if error || offerFailure}
     <div role="alert" class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-600 text-sm">
-      {error}
+      {error || offerFailure}
     </div>
   {/if}
 
@@ -303,7 +358,7 @@
           ></textarea>
         </div>
 
-        <Button onclick={signMessage} disabled={signing || !message.trim()}>
+        <Button onclick={signMessage} disabled={signing || !message.trim() || passkeyOfferGate.action === 'wait'}>
           {signing ? 'Signing...' : 'Sign Message'}
         </Button>
 

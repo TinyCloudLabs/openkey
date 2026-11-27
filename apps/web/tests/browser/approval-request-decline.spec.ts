@@ -3,6 +3,7 @@
 // checked where they are the point of the test (the declined and failure messages).
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const fragment = `#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -16,6 +17,7 @@ const json = (route: Route, status: number, body: unknown) => route.fulfill({ st
 function prepared() {
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:',
@@ -76,6 +78,7 @@ async function serve(page: Page, options: Options = {}) {
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 
@@ -83,7 +86,8 @@ const dismiss = (page: Page) => page.getByTestId('signing-dismiss');
 const decline = (page: Page) => page.getByTestId('signing-decline');
 const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exact: true });
 const denies = <Call extends { path: string }>(calls: Call[]) => calls.filter((call) => call.path === `/api/approval-requests/${id}/deny`);
-const DECLINED = 'Declined. You can close this page.';
+// The declined page is found by its test id, not by its wording.
+const declined = (page: Page) => page.getByTestId('declined');
 
 async function openReview(page: Page, options: Options = {}) {
   const calls = await serve(page, options);
@@ -117,7 +121,9 @@ test.describe('Decline on the approval-request review page', () => {
   test('one press makes exactly one /deny call with the link in the body only, then the page is declined', async ({ page }) => {
     const calls = await openReview(page);
     await decline(page).dblclick();
-    await expect(page.getByText(DECLINED)).toBeVisible();
+    await expect(declined(page)).toBeVisible();
+    // The declined page ends with Close this tab.
+    await expect(declined(page).getByRole('button', { name: 'Close this tab', exact: true })).toBeVisible();
     expect(denies(calls)).toHaveLength(1);
     expect(denies(calls)[0]!.body).toEqual({ reference: path + fragment });
     // The key fragment never travels in a URL.
@@ -136,23 +142,24 @@ test.describe('Decline on the approval-request review page', () => {
     await decline(page).click();
     await expect(page.getByRole('alert')).toContainText('Could not decline right now. Nothing was changed. Try again.');
     await decline(page).click();
-    await expect(page.getByText(DECLINED)).toBeVisible();
+    await expect(declined(page)).toBeVisible();
     expect(denies(calls)).toHaveLength(3);
   });
 
-  test('a request that was already approved cannot be declined, and the card stays', async ({ page }) => {
+  test('a request that was already approved stops without declining', async ({ page }) => {
     await openReview(page, { denyReplies: [{ status: 409, body: { code: 'already_approved' } }] });
     await decline(page).click();
-    await expect(page.getByRole('alert')).toContainText('This request was already approved, so it cannot be declined.');
-    await expect(page.getByText(DECLINED)).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'This request was already answered' })).toBeVisible();
+    await expect(approve(page)).toHaveCount(0);
+    await expect(declined(page)).toHaveCount(0);
   });
 
   test('a request that expired before the decline shows the expired message alone, with no card and no declined page', async ({ page }) => {
     const calls = await openReview(page, { denyReplies: [{ status: 410, body: { code: 'expired_request' } }] });
     await decline(page).click();
-    await expect(page.getByRole('alert')).toContainText('This approval request has expired.');
+    await expect(page.getByRole('heading', { name: /request expired$/i })).toBeVisible();
     await expect(approve(page)).toHaveCount(0);
-    await expect(page.getByText(DECLINED)).toHaveCount(0);
+    await expect(declined(page)).toHaveCount(0);
     expect(denies(calls)).toHaveLength(1);
   });
 
@@ -168,7 +175,7 @@ test.describe('Decline on the approval-request review page', () => {
   test('reopening a declined link shows the declined page, with no review card and nothing prepared', async ({ page }) => {
     const calls = await serve(page, { denied: true });
     await page.goto(path + fragment);
-    await expect(page.getByText(DECLINED)).toBeVisible();
+    await expect(declined(page)).toBeVisible();
     await expect(approve(page)).toHaveCount(0);
     await expect(decline(page)).toHaveCount(0);
     expect(calls.filter((call) => call.path === '/api/delegate/prepare')).toEqual([]);
@@ -183,7 +190,7 @@ for (const [name, viewport] of [['390', { width: 390, height: 844 }], ['1280', {
     await decline(page).scrollIntoViewIfNeeded();
     if (shots) await page.screenshot({ path: `${shots}/decline-1-card-${name}.png`, fullPage: false });
     await decline(page).click();
-    await expect(page.getByText(DECLINED)).toBeVisible();
+    await expect(declined(page)).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/decline-2-declined-${name}.png`, fullPage: false });
   });
 }

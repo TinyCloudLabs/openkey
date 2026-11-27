@@ -3,6 +3,9 @@
  * Extracts structured fields and ReCap capabilities from a SIWE message string.
  */
 
+import { parseSiweFields } from '@openkey/capability-review';
+import { daysOverTwoDays } from './approval-expiry';
+
 export interface SIWEMessage {
   domain: string;
   address: string;
@@ -53,8 +56,10 @@ export function parseSIWE(raw: string): ParsedSIWE | null {
   const version = extractField(raw, 'Version:');
   const chainId = parseInt(extractField(raw, 'Chain ID:') || '1', 10);
   const nonce = extractField(raw, 'Nonce:');
-  const issuedAt = extractField(raw, 'Issued At:');
-  const expirationTime = extractField(raw, 'Expiration Time:');
+  // TC-3826: the times as the node reads them, never a look-alike line in the statement.
+  const fields = parseSiweFields(raw);
+  const issuedAt = fields.ok ? fields.fields.issuedAt : undefined;
+  const expirationTime = fields.ok ? fields.fields.expirationTime : undefined;
 
   // Extract resources
   const resources: string[] = [];
@@ -243,9 +248,10 @@ export function timeUntilExpiry(iso: string): { text: string; expired: boolean }
   const seconds = Math.floor(diff / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
+  // Over two days: whole days, rounded up (the same rule as every other expiry text, `daysOverTwoDays`).
+  const days = daysOverTwoDays(diff);
 
-  if (days > 0) {
+  if (days !== null) {
     return { text: `in ${days} day${days === 1 ? '' : 's'}`, expired: false };
   }
   if (hours > 0) {

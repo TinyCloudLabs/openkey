@@ -32,7 +32,7 @@ afterAll(() => {
 });
 const win = new Window({ url: 'http://localhost:5173/delegate?transportVersion=2' });
 Object.assign(globalThis, {
-  window: win, document: win.document, HTMLElement: win.HTMLElement, Element: win.Element,
+  window: win, document: win.document, HTMLElement: win.HTMLElement, HTMLMediaElement: win.HTMLMediaElement, Element: win.Element,
   Node: win.Node, Text: win.Text, Comment: win.Comment, navigator: win.navigator,
   CustomEvent: win.CustomEvent, Event: win.Event, MouseEvent: win.MouseEvent,
   getComputedStyle: win.getComputedStyle.bind(win), requestAnimationFrame: win.requestAnimationFrame.bind(win),
@@ -56,29 +56,34 @@ const stubs: Record<string, string> = {
 };
 for (const [name, source] of Object.entries(stubs)) writeFileSync(join(out, `${name.replace(/[^A-Za-z0-9]/g, '_')}.mjs`), source);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const component = join(root, 'src/routes/delegate/OwnerRevocationHandoff.svelte');
-const compiled = compile(readFileSync(component, 'utf8'), { generate: 'client', dev: false, filename: component });
-let source = '';
-let cursor = 0;
-for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
-  source += compiled.js.code.slice(cursor, match.index);
-  const specifier = match[1]!;
-  const target = specifier in stubs ? pathToFileURL(join(out, `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)).href
-    : specifier === 'svelte' ? svelteClient
-    : specifier.startsWith('svelte/') ? pathToFileURL(require.resolve(specifier)).href
-    : specifier === '@openkey/capability-review' ? pathToFileURL(join(root, '..', '..', 'packages/capability-review/src/index.ts')).href
-    : specifier.startsWith('$lib/') ? pathToFileURL(join(root, 'src/lib', specifier.slice(5))).href : specifier;
-  source += `from '${target}'`;
-  cursor = match.index! + match[0].length;
+// Compiles a component and, the same way, the `$lib` components it mounts; returns the compiled module's URL.
+function compileTo(component: string, name: string): string {
+  const compiled = compile(readFileSync(component, 'utf8'), { generate: 'client', dev: false, filename: component });
+  let source = '';
+  let cursor = 0;
+  for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+    source += compiled.js.code.slice(cursor, match.index);
+    const specifier = match[1]!;
+    const target = specifier in stubs ? pathToFileURL(join(out, `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)).href
+      : specifier === 'svelte' ? svelteClient
+      : specifier.startsWith('svelte/') ? pathToFileURL(require.resolve(specifier)).href
+      : specifier === '@openkey/capability-review' ? pathToFileURL(join(root, '..', '..', 'packages/capability-review/src/index.ts')).href
+      : specifier === '@openkey/sdk/approval-copy' ? pathToFileURL(join(root, '..', '..', 'packages/sdk/src/approval-copy/index.ts')).href
+      : specifier.startsWith('$lib/') && specifier.endsWith('.svelte') ? compileTo(join(root, 'src/lib', specifier.slice(5)), `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)
+      : specifier.startsWith('$lib/') ? pathToFileURL(join(root, 'src/lib', specifier.slice(5))).href : specifier;
+    source += `from '${target}'`;
+    cursor = match.index! + match[0].length;
+  }
+  source += compiled.js.code.slice(cursor);
+  source = source.replace(
+    "import 'svelte/internal/disclose-version';",
+    `import '${pathToFileURL(require.resolve('svelte/internal/disclose-version')).href}';`,
+  );
+  const output = join(out, name);
+  writeFileSync(output, source);
+  return pathToFileURL(output).href;
 }
-source += compiled.js.code.slice(cursor);
-source = source.replace(
-  "import 'svelte/internal/disclose-version';",
-  `import '${pathToFileURL(require.resolve('svelte/internal/disclose-version')).href}';`,
-);
-const output = join(out, 'owner-review.mjs');
-writeFileSync(output, source);
-const Subject = (await import(pathToFileURL(output).href)).default;
+const Subject = (await import(compileTo(join(root, 'src/routes/delegate/OwnerRevocationHandoff.svelte'), 'owner-review.mjs'))).default;
 const cid = 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe';
 const opaque = (seed: number) => Buffer.alloc(32, seed).toString('base64url');
 const delivery = { handoffId: opaque(1), state: opaque(2), cancelSecret: opaque(3) };
@@ -110,12 +115,13 @@ test('owner review shows exact target and refuses an external wallet on another 
   document.body.append(target);
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
-    await until(() => !!target.querySelector('button')?.textContent?.includes('Revoke'), 'review');
+    const revokeButton = () => [...target.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Revoke');
+    await until(() => !!revokeButton(), 'review');
     expect(target.textContent).toContain('Revoke this permission');
-    expect(target.textContent).toContain(`${cid.slice(0, 10)}…${cid.slice(-6)}`);
+    expect(target.textContent).toContain(cid);
     expect(target.textContent).toContain(address);
     expect(target.textContent).toContain('This cannot be undone.');
-    [...target.querySelectorAll('button')].find(button => button.textContent === 'Revoke')!.click();
+    revokeButton()!.click();
     await until(() => !!target.querySelector('[role="alert"]'), 'owner chain refusal');
     expect(target.querySelector('[role="alert"]')?.textContent).toContain('chain');
     expect(calls.every(path => !path.endsWith('/sign'))).toBe(true);
@@ -139,10 +145,16 @@ test('owner review exposes the entire copyable permission ID for CLI comparison'
   document.body.append(target);
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
-    await until(() => target.querySelector<HTMLInputElement>('input[aria-label="Full permission ID"]')?.value === cid, 'full permission ID');
-    const fullCid = target.querySelector<HTMLInputElement>('input[aria-label="Full permission ID"]');
-    expect(fullCid?.readOnly).toBe(true);
-    expect(fullCid?.value).toBe(cid);
+    const label = () => [...target.querySelectorAll('p')].find(element => element.textContent === 'Full permission ID');
+    await until(() => !!label()?.nextElementSibling, 'full permission ID');
+    // The ID sits right under its label as one untruncated text node, so it reads and copies whole.
+    const value = label()!.nextElementSibling!;
+    expect(value.childNodes.length).toBe(1);
+    expect(value.firstChild?.nodeType).toBe(win.Node.TEXT_NODE);
+    expect(value.firstChild?.nodeValue).toBe(cid);
+    // Copyable: nothing stops the owner selecting it.
+    expect(value.classList.contains('select-none')).toBe(false);
+    expect(getComputedStyle(value).userSelect).not.toBe('none');
     expect(target.textContent).toContain('Match the full permission ID with the one shown by your CLI.');
   } finally {
     unmount(app);
@@ -165,7 +177,7 @@ test('owner review shows the revoke wording when the permission is already being
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
     await until(() => !!target.querySelector('[role="alert"]'), 'busy wording');
-    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This permission is already being revoked. Wait a moment.');
+    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This request is already being approved. Another tab or a second click got there first. Wait a moment, then press Approve again.');
     expect(target.textContent).not.toContain('Handoff is being signed');
   } finally {
     unmount(app);

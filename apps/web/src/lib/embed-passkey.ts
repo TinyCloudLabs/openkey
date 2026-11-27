@@ -54,7 +54,7 @@ export async function embedSendEmailOtp(
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(body?.message || body?.error || 'Failed to send code');
+    throw Object.assign(new Error(body?.message || body?.error || 'Failed to send code'), { code: body?.code });
   }
 }
 
@@ -105,10 +105,7 @@ function persistEmbeddedSession(
   if (!response.ok) {
     throw new Error(body?.message || body?.error || failure);
   }
-  const sessionToken =
-    response.headers.get('set-auth-token')
-    || body?.token
-    || body?.session?.token;
+  const sessionToken = response.headers.get('set-auth-token');
   if (!sessionToken) {
     throw new Error('Email verified, but no embedded session token was returned.');
   }
@@ -118,6 +115,39 @@ function persistEmbeddedSession(
 
 export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
+}
+
+/**
+ * The current cookie session's token in its signed form, the form the
+ * `set-auth-token` header carries, or null when there is no session.
+ */
+export async function readSignedSessionToken(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const response = await fetchImpl(`${API_BASE}/api/auth/session-token`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  if (response.status !== 404) {
+    if (!response.ok) return null;
+    const body = await response.json().catch(() => null) as { token?: unknown } | null;
+    return typeof body?.token === 'string' && body.token ? body.token : null;
+  }
+  // An API without /session-token answers 404: read the session as before.
+  const session = await fetchImpl(`${API_BASE}/api/auth/get-session`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  const body = await session.json().catch(() => null) as { token?: string; session?: { token?: string } } | null;
+  return session.headers.get('set-auth-token') || body?.session?.token || body?.token || null;
+}
+
+/** Whether `token` authenticates as a bearer, with no cookie and no session refresh. */
+async function bearerAuthenticates(token: string, fetchImpl: typeof fetch): Promise<boolean> {
+  const response = await fetchImpl(`${API_BASE}/api/auth/get-session?disableRefresh=true`, {
+    credentials: 'omit',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('Session check failed');
+  return (await response.json().catch(() => undefined)) !== null;
 }
 
 /**
@@ -138,17 +168,20 @@ export async function revokeEmbeddedSession(
     // deleted after the browser cookie has been cleared.
     if (!tokenToVerify) {
       try {
-        const currentSession = await fetchImpl(
-          `${API_BASE}/api/auth/get-session?disableRefresh=true`,
-          { credentials: 'include' },
-        );
-        if (currentSession.ok) {
-          const current = await currentSession.json().catch(() => undefined);
-          tokenToVerify = current?.session?.token ?? null;
-        }
+        tokenToVerify = await readSignedSessionToken(fetchImpl);
       } catch {
         // Still attempt sign-out so local cookie cleanup is not blocked by a
         // failed preflight. Without the old token, revocation stays unverified.
+      }
+    }
+
+    // A token that does not authenticate before sign-out proves nothing by
+    // failing to authenticate after it, so it is not used to verify.
+    if (tokenToVerify) {
+      try {
+        if (!await bearerAuthenticates(tokenToVerify, fetchImpl)) tokenToVerify = null;
+      } catch {
+        tokenToVerify = null;
       }
     }
 
@@ -167,15 +200,7 @@ export async function revokeEmbeddedSession(
     // database session fails. Re-check the previous bearer without cookies or
     // session refresh so `revoked: true` means that exact old session can no
     // longer authenticate, not merely that sign-out was accepted.
-    const verification = await fetchImpl(
-      `${API_BASE}/api/auth/get-session?disableRefresh=true`,
-      {
-        credentials: 'omit',
-        headers: { Authorization: `Bearer ${tokenToVerify}` },
-      },
-    );
-    if (!verification.ok) return false;
-    return (await verification.json().catch(() => undefined)) === null;
+    return !await bearerAuthenticates(tokenToVerify, fetchImpl);
   } catch {
     return false;
   } finally {
@@ -183,7 +208,32 @@ export async function revokeEmbeddedSession(
   }
 }
 
-export async function embedSignInPasskey(): Promise<{ session: any; user: any; sessionToken: string }> {
+/** Plain words for the replies a person meets most: a passkey OpenKey does not know, and a passkey request that ran out. */
+export const PASSKEY_NOT_KNOWN_TEXT = "OpenKey doesn't know this passkey. Choose another way to sign in.";
+export const PASSKEY_REQUEST_EXPIRED_TEXT = 'This passkey request has ended. Tap Passkey to try again.';
+
+/**
+ * What the frame says when a passkey call is refused. Plain words for a passkey the account does not have
+ * (`PASSKEY_NOT_FOUND`) and for a passkey request that ran out (`CHALLENGE_NOT_FOUND`, or the API's own "Challenge token ..." replies); else the
+ * server's own words from `error` (the API's replies) or `message` (Better Auth's replies); else `HTTP <status>` with
+ * the reply's `code` when it has one. Every tap on Passkey asks the API for a fresh challenge.
+ */
+export function passkeyFailureText(body: unknown, status: number): string {
+  const reply = (body && typeof body === 'object' ? body : {}) as { error?: unknown; message?: unknown; code?: unknown };
+  if (reply.code === 'PASSKEY_NOT_FOUND') return PASSKEY_NOT_KNOWN_TEXT;
+  if (reply.code === 'CHALLENGE_NOT_FOUND') return PASSKEY_REQUEST_EXPIRED_TEXT;
+  if (typeof reply.error === 'string' && reply.error.startsWith('Challenge token ')) return PASSKEY_REQUEST_EXPIRED_TEXT;
+  for (const words of [reply.error, reply.message]) {
+    if (typeof words === 'string' && words.trim() !== '') return words;
+  }
+  return typeof reply.code === 'string' && reply.code !== '' ? `HTTP ${status} · ${reply.code}` : `HTTP ${status}`;
+}
+
+/**
+ * Passkey sign-in for the iframe. `flowHeaders` names the web sign flow the sign-in was opened for (see
+ * `webSignFlowHeaders`); it goes only with the verification, where the API records it.
+ */
+export async function embedSignInPasskey(flowHeaders: Record<string, string> = {}): Promise<{ session: any; user: any; sessionToken: string }> {
   // 1. Get authentication options + challengeToken
   const optionsRes = await fetch(`${API_BASE}/api/passkey/generate-authenticate-options`, {
     method: 'POST',
@@ -192,7 +242,7 @@ export async function embedSignInPasskey(): Promise<{ session: any; user: any; s
   });
   if (!optionsRes.ok) {
     const err = await optionsRes.json().catch(() => ({ error: 'Failed to get passkey options' }));
-    throw new Error(err.error || `HTTP ${optionsRes.status}`);
+    throw new Error(passkeyFailureText(err, optionsRes.status));
   }
   const options = await optionsRes.json();
   const { challengeToken, ...authOptions } = options;
@@ -203,12 +253,12 @@ export async function embedSignInPasskey(): Promise<{ session: any; user: any; s
   // 3. Verify with server, get session token back
   const verifyRes = await fetch(`${API_BASE}/api/passkey/verify-authentication`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...flowHeaders },
     body: JSON.stringify({ response: assertion, challengeToken }),
   });
   if (!verifyRes.ok) {
     const err = await verifyRes.json().catch(() => ({ error: 'Passkey verification failed' }));
-    throw new Error(err.error || `HTTP ${verifyRes.status}`);
+    throw new Error(passkeyFailureText(err, verifyRes.status));
   }
   const result = await verifyRes.json();
 
@@ -229,7 +279,7 @@ export async function embedRegisterPasskey(name?: string): Promise<any> {
   });
   if (!optionsRes.ok) {
     const err = await optionsRes.json().catch(() => ({ error: 'Failed to get registration options' }));
-    throw new Error(err.error || `HTTP ${optionsRes.status}`);
+    throw new Error(passkeyFailureText(err, optionsRes.status));
   }
   const options = await optionsRes.json();
   const { challengeToken, ...registrationOptions } = options;
@@ -245,7 +295,7 @@ export async function embedRegisterPasskey(name?: string): Promise<any> {
   });
   if (!verifyRes.ok) {
     const err = await verifyRes.json().catch(() => ({ error: 'Registration verification failed' }));
-    throw new Error(err.error || `HTTP ${verifyRes.status}`);
+    throw new Error(passkeyFailureText(err, verifyRes.status));
   }
   const result = await verifyRes.json();
 
