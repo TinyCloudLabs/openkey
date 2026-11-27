@@ -673,6 +673,7 @@ describe('TinyCloud bootstrap background sweep', () => {
         id: `state-${n}`, userId: `user-${n}`, keyId: `key-${n}`, address: ORG_ADDRESS, chainId: 1, tinycloudHost: HOST,
         bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION, status: 'failed', checkedAt: at(-3 * 60 * MIN),
         failureCode: 'tinycloud_bootstrap_node_timeout', failureReason: 'node timed out', sweepAttempts: 2,
+        authority: STORED_AUTHORITY,
       },
     });
   }
@@ -716,6 +717,7 @@ describe('TinyCloud bootstrap background sweep', () => {
         privateKey: PRIVATE_KEY,
         host: HOST,
         chainId: 1,
+        authority,
         sweepClaim: {
           observed: { status: 'failed', sweepAttempts: 2, checkedAt: before!.checkedAt, attemptId: null },
           onClaimed: () => { claimed = true; },
@@ -759,6 +761,7 @@ describe('TinyCloud bootstrap background sweep', () => {
             privateKey: async () => { resolved.push(`key-${n}`); return PRIVATE_KEY; },
             host: HOST,
             chainId: 1,
+            authority,
             sweepClaim: {
               observed: { status: 'failed', sweepAttempts: 2, checkedAt: before!.checkedAt, attemptId: null },
               onClaimed: () => { won = true; claimed.push(`key-${n}`); },
