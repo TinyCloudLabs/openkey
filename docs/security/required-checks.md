@@ -53,6 +53,10 @@ imports (`.svelte-kit/output/server`, `.svelte-kit/cloudflare-tmp`) with
 Reports name the file and the pattern, never the value. A hit is a finding: fix the source,
 don't widen the allow-list without a security review.
 
+`apps/web/Dockerfile` is the local Docker Compose image only. It builds with `bunx vite build`,
+so it skips this audit, which `bun run build` runs. Nothing deploys from it; production web
+ships only through the Cloudflare Pages build above.
+
 ## Baselines
 
 - `.gitleaksignore`: 40 fingerprints from the full-history scan on 2026-11-22, each reviewed
