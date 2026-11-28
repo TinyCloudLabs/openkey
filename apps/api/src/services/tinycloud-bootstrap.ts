@@ -928,11 +928,11 @@ function shortService(service: string): string {
 async function submitRequiredHostDelegation(host: string, headers: Record<string, string>): Promise<string[] | undefined> {
   const response = await nodeFetch(`${host}/delegate`, { method: 'POST', headers }, tinyCloudBootstrapNodeCallTimeoutMs());
   if (!response.ok) {
-    const error = await response.text().catch(() => response.statusText);
-    throw new Error(`Failed to submit host delegation: ${error || 'unknown error'}`);
+    await discardNodeBody(response);
+    throw new Error(`Failed to submit host delegation: HTTP ${response.status}`);
   }
   // Read the body outside the parse guard: a timeout while reading must fail the call, not look like "nothing activated".
-  const text = await response.text();
+  const text = await readNodeText(response);
   try {
     const body = JSON.parse(text) as { activated?: unknown };
     return Array.isArray(body.activated) ? body.activated.map(String) : undefined;
@@ -957,10 +957,10 @@ async function nodeFetchPeerId(host: string, spaceId: string): Promise<string> {
     tinyCloudBootstrapNodeCallTimeoutMs(),
   );
   if (!response.ok) {
-    const error = await response.text().catch(() => response.statusText);
-    throw new Error(`Failed to get peer ID: ${response.status} - ${error}`);
+    await discardNodeBody(response);
+    throw new Error(`Failed to get peer ID: HTTP ${response.status}`);
   }
-  return response.text();
+  return readNodeText(response);
 }
 
 interface NodeActivation {
@@ -978,10 +978,11 @@ async function nodeActivateSession(host: string, delegationHeader: Record<string
     tinyCloudBootstrapNodeCallTimeoutMs(),
   );
   if (!response.ok) {
-    return { success: false, error: await response.text().catch(() => response.statusText) };
+    await discardNodeBody(response);
+    return { success: false, error: `HTTP ${response.status}` };
   }
   // Read the body outside the parse guard: a timeout while reading must fail the call, not look like "nothing skipped".
-  const text = await response.text();
+  const text = await readNodeText(response);
   try {
     const body = JSON.parse(text) as { skipped?: unknown };
     return { success: true, skipped: Array.isArray(body.skipped) ? body.skipped.map(String) : [] };
@@ -990,13 +991,82 @@ async function nodeActivateSession(host: string, delegationHeader: Record<string
   }
 }
 
+/** The most a node may send as one response body. */
+const NODE_RESPONSE_MAX_BYTES = 64 * 1024;
+/** The most a node may send as response headers (every name and value together). */
+const NODE_RESPONSE_HEADERS_MAX_BYTES = 16 * 1024;
+
+function nodeResponseTooLarge(): TinyCloudBootstrapError {
+  return new TinyCloudBootstrapError(
+    'TinyCloud node response was larger than allowed.',
+    'tinycloud_bootstrap_node_response_too_large',
+    false,
+  );
+}
+
+function nodeRedirected(): TinyCloudBootstrapError {
+  return new TinyCloudBootstrapError(
+    'TinyCloud node answered with a redirect.',
+    'tinycloud_bootstrap_node_redirect',
+    false,
+  );
+}
+
+/** What a fetch with `redirect: 'error'` throws when the node answers 3xx (Bun: TypeError with code UnexpectedRedirect). */
+function isRedirectRefusal(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return code === 'UnexpectedRedirect' || (typeof message === 'string' && /redirect/i.test(message));
+}
+
+/** Drops a response body that is not read, so no node text reaches a message, a stored reason or a log. */
+async function discardNodeBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => {});
+}
+
+/** Reads a node response body as text, up to NODE_RESPONSE_MAX_BYTES; a larger body fails the call. */
+async function readNodeText(response: Response): Promise<string> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > NODE_RESPONSE_MAX_BYTES) {
+    await discardNodeBody(response);
+    throw nodeResponseTooLarge();
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > NODE_RESPONSE_MAX_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw nodeResponseTooLarge();
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Reads a node response body as JSON under the same cap. A body that is not JSON fails with fixed text. */
+async function readNodeJson(response: Response): Promise<unknown> {
+  const text = await readNodeText(response);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('TinyCloud node response was not JSON.');
+  }
+}
+
 async function nodeFetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   // The run's signal is ambient (see runUnderSignal), so no call can forget to pass it on.
   const runSignal = bootstrapRunSignal.getStore();
   const callSignal = AbortSignal.timeout(timeoutMs);
   const signal = runSignal ? AbortSignal.any([callSignal, runSignal]) : callSignal;
+  let response: Response;
   try {
-    return await fetch(url, { ...init, signal });
+    // A node never sends a request on to another address: a redirect fails the call and no body is resent.
+    response = await fetch(url, { ...init, redirect: 'error', signal });
   } catch (error) {
     if (runSignal?.aborted) throw runSignal.reason;
     if (callSignal.aborted) {
@@ -1005,8 +1075,20 @@ async function nodeFetch(url: string, init: RequestInit, timeoutMs: number): Pro
         'tinycloud_bootstrap_node_timeout',
       );
     }
+    if (isRedirectRefusal(error)) throw nodeRedirected();
     throw error;
   }
+  if (response.redirected) {
+    await discardNodeBody(response);
+    throw nodeRedirected();
+  }
+  let headerBytes = 0;
+  for (const [name, value] of response.headers) headerBytes += name.length + value.length + 4;
+  if (headerBytes > NODE_RESPONSE_HEADERS_MAX_BYTES) {
+    await discardNodeBody(response);
+    throw nodeResponseTooLarge();
+  }
+  return response;
 }
 
 async function runAccountSchema(
@@ -1157,7 +1239,7 @@ async function ensureEncryptionNetwork(
   if (!info.ok) {
     throw new Error(`Failed to fetch TinyCloud node info: HTTP ${info.status}`);
   }
-  const { nodeId } = await info.json() as { nodeId?: unknown };
+  const { nodeId } = await readNodeJson(info) as { nodeId?: unknown };
   if (typeof nodeId !== 'string' || nodeId.length === 0) {
     throw new Error('TinyCloud node /info response did not include nodeId');
   }
@@ -1194,7 +1276,8 @@ async function ensureEncryptionNetwork(
     body: canonicalizeJson(body),
   }, tinyCloudBootstrapNodeInvokeTimeoutMs());
   if (!created.ok && created.status !== 409) {
-    throw new Error(`Failed to create encryption network ${networkId}: HTTP ${created.status} ${await created.text()}`);
+    await discardNodeBody(created);
+    throw new Error(`Failed to create encryption network ${networkId}: HTTP ${created.status}`);
   }
 }
 
@@ -1229,7 +1312,8 @@ async function invokeJsonWithActions(
     body: JSON.stringify(body),
   }, tinyCloudBootstrapNodeInvokeTimeoutMs());
   if (!response.ok) {
-    throw new Error(`TinyCloud multi-action invocation failed: HTTP ${response.status} ${await response.text()}`);
+    await discardNodeBody(response);
+    throw new Error(`TinyCloud multi-action invocation failed: HTTP ${response.status}`);
   }
 }
 
@@ -1244,7 +1328,8 @@ async function invokeRaw(
 ): Promise<void> {
   const response = await invokeResponse(host, session, service, path, action, body, extraHeaders);
   if (!response.ok) {
-    throw new Error(`TinyCloud ${service}/${path} ${action} failed: HTTP ${response.status} ${await response.text()}`);
+    await discardNodeBody(response);
+    throw new Error(`TinyCloud ${service}/${path} ${action} failed: HTTP ${response.status}`);
   }
 }
 
